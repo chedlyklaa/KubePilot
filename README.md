@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Autonomous Multi-Cluster AKS Agent
 
 AI-powered autonomous management system for Azure Kubernetes Service (AKS) clusters.
