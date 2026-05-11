@@ -1,0 +1,12 @@
+clusters:
+  - name: dev-cluster
+    context: aks-dev
+    tier: dev
+
+  - name: staging-cluster
+    context: aks-staging
+    tier: staging
+
+  - name: prod-cluster
+    context: aks-prod
+    tier: production

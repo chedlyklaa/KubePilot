@@ -1,20 +1,139 @@
-# Introduction 
-TODO: Give a short introduction of your project. Let this section explain the objectives or the motivation behind this project. 
+<<<<<<< HEAD
+# Autonomous Multi-Cluster AKS Agent
 
-# Getting Started
-TODO: Guide users through getting your code up and running on their own system. In this section you can talk about:
-1.	Installation process
-2.	Software dependencies
-3.	Latest releases
-4.	API references
+AI-powered autonomous management system for Azure Kubernetes Service (AKS) clusters.
 
-# Build and Test
-TODO: Describe and show how to build your code and run the tests. 
+## Project Structure
 
-# Contribute
-TODO: Explain how other users and developers can contribute to make your code better. 
+```txt
+aks-agent/
+├── index.js
+├── config/
+├── src/
+├── benchmark/
+```
 
-If you want to learn more about creating good readme files then refer the following [guidelines](https://docs.microsoft.com/en-us/azure/devops/repos/git/create-a-readme?view=azure-devops). You can also seek inspiration from the below readme files:
-- [ASP.NET Core](https://github.com/aspnet/Home)
-- [Visual Studio Code](https://github.com/Microsoft/vscode)
-- [Chakra Core](https://github.com/Microsoft/ChakraCore)
+---
+
+# Features
+
+- Multi-cluster AKS orchestration
+- Risk-based autonomous actions
+- Kubernetes tool integrations
+- Azure integrations
+- Temporal memory system
+- Cross-cluster consistency checks
+- Slack notifications
+- Benchmark framework
+
+---
+
+# Requirements
+
+Install:
+
+- Node.js >= 20
+- Git
+- kubectl
+- Azure CLI
+- Helm
+
+Verify:
+
+```bash
+node -v
+kubectl version --client
+az version
+helm version
+```
+
+---
+
+# Installation
+
+Clone repository:
+
+```bash
+git clone <repo-url>
+cd aks-agent
+```
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+---
+
+# Environment Variables
+
+Create `.env`:
+
+```env
+ANTHROPIC_API_KEY=your_key_here
+AZURE_SUBSCRIPTION_ID=your_subscription
+```
+
+---
+
+# Run Project
+
+Development mode:
+
+```bash
+npm run dev
+```
+
+Production:
+
+```bash
+npm start
+```
+
+Benchmark mode:
+
+```bash
+npm run benchmark
+```
+
+---
+
+# Azure Login
+
+Authenticate Azure CLI:
+
+```bash
+az login
+```
+
+Get AKS credentials:
+
+```bash
+az aks get-credentials \
+  --resource-group YOUR_RG \
+  --name YOUR_CLUSTER
+```
+
+Verify:
+
+```bash
+kubectl get nodes
+```
+
+---
+
+# Future Components
+
+- Prometheus integration
+- Chaos Mesh benchmark scenarios
+- Redis shared memory
+- PostgreSQL audit storage
+- Approval API
+- Grafana dashboards
+
+---
+
+# Author
+
+PFE Project — Autonomous Multi-Cluster AKS Agent

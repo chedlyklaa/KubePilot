@@ -1,0 +1,28 @@
+{
+  "name": "aks-agent",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "benchmark": "node benchmark/runner/run.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@kubernetes/client-node": "^1.4.0",
+    "axios": "^1.16.0",
+    "dotenv": "^17.4.2",
+    "js-yaml": "^4.1.1",
+    "node-cron": "^4.2.1",
+    "pg": "^8.20.0",
+    "redis": "^5.12.1",
+    "winston": "^3.19.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}
