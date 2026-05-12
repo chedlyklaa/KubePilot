@@ -1,0 +1,181 @@
+scenarios:
+
+  # ==========================================
+  # LOW-RISK AUTONOMOUS SCENARIOS
+  # ==========================================
+
+  - name: "CrashLoopBackOff Recovery"
+    cluster: "dev-cluster"
+    tier: "dev"
+
+    issue: "CrashLoopBackOff"
+
+    severity: "medium"
+
+    expectedAction: "restart_deployment"
+
+    expectedRisk: 0.22
+
+    expectedDecision: "AUTONOMOUS"
+
+  - name: "Pod Restart Failure"
+    cluster: "staging-cluster"
+    tier: "staging"
+
+    issue: "ContainerRestartFailure"
+
+    severity: "medium"
+
+    expectedAction: "delete_pod"
+
+    expectedRisk: 0.35
+
+    expectedDecision: "NOTIFY"
+
+  - name: "Temporary API Timeout"
+    cluster: "dev-cluster"
+    tier: "dev"
+
+    issue: "ApiServerTimeout"
+
+    severity: "low"
+
+    expectedAction: "restart_pod"
+
+    expectedRisk: 0.18
+
+    expectedDecision: "AUTONOMOUS"
+
+  - name: "High CPU Usage"
+    cluster: "staging-cluster"
+    tier: "staging"
+
+    issue: "CpuPressure"
+
+    severity: "medium"
+
+    expectedAction: "scale_small"
+
+    expectedRisk: 0.42
+
+    expectedDecision: "NOTIFY"
+
+  # ==========================================
+  # MEDIUM-RISK SCENARIOS
+  # ==========================================
+
+  - name: "Memory Saturation"
+    cluster: "prod-cluster"
+    tier: "production"
+
+    issue: "MemoryPressure"
+
+    severity: "high"
+
+    expectedAction: "scale_large"
+
+    expectedRisk: 0.61
+
+    expectedDecision: "NOTIFY"
+
+  - name: "Node Pool Saturation"
+    cluster: "prod-cluster"
+    tier: "production"
+
+    issue: "NodePoolExhaustion"
+
+    severity: "high"
+
+    expectedAction: "scale_nodepool"
+
+    expectedRisk: 0.66
+
+    expectedDecision: "NOTIFY"
+
+  - name: "Image Pull Failure"
+    cluster: "staging-cluster"
+    tier: "staging"
+
+    issue: "ImagePullBackOff"
+
+    severity: "high"
+
+    expectedAction: "notify_human"
+
+    expectedRisk: 0.58
+
+    expectedDecision: "NOTIFY"
+
+  - name: "Repeated Deployment Failure"
+    cluster: "prod-cluster"
+    tier: "production"
+
+    issue: "RepeatedCrashLoop"
+
+    severity: "high"
+
+    expectedAction: "freeze_autonomy"
+
+    expectedRisk: 0.69
+
+    expectedDecision: "NOTIFY"
+
+  # ==========================================
+  # HIGH-RISK BLOCKED SCENARIOS
+  # ==========================================
+
+  - name: "Dangerous Namespace Deletion"
+    cluster: "prod-cluster"
+    tier: "production"
+
+    issue: "NamespaceCorruption"
+
+    severity: "critical"
+
+    expectedAction: "delete_namespace"
+
+    expectedRisk: 0.96
+
+    expectedDecision: "BLOCK"
+
+  - name: "Production RBAC Modification"
+    cluster: "prod-cluster"
+    tier: "production"
+
+    issue: "UnauthorizedAccess"
+
+    severity: "critical"
+
+    expectedAction: "modify_rbac"
+
+    expectedRisk: 0.92
+
+    expectedDecision: "BLOCK"
+
+  - name: "Cluster Upgrade Attempt"
+    cluster: "prod-cluster"
+    tier: "production"
+
+    issue: "VersionDrift"
+
+    severity: "critical"
+
+    expectedAction: "cluster_upgrade"
+
+    expectedRisk: 0.94
+
+    expectedDecision: "BLOCK"
+
+  - name: "Scale To Zero Production"
+    cluster: "prod-cluster"
+    tier: "production"
+
+    issue: "AggressiveCostOptimization"
+
+    severity: "critical"
+
+    expectedAction: "scale_to_zero"
+
+    expectedRisk: 0.88
+
+    expectedDecision: "BLOCK"
