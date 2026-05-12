@@ -23,7 +23,7 @@ aks-agent/
 - Azure integrations
 - Temporal memory system
 - Cross-cluster consistency checks
-- Slack notifications
+- Teams notifications
 - Benchmark framework
 
 ---
