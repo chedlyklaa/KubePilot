@@ -109,10 +109,15 @@ class FleetOrchestrator {
     // Run first cycle immediately
     await this.runFleetCycle();
 
-    // Schedule every 5 minutes
-    setInterval(async () => {
+    // Loop: wait for cycle to finish, then wait CYCLE_INTERVAL_MS, repeat
+    const intervalMs = parseInt(process.env.CYCLE_INTERVAL_MS || '30000', 10);
+    console.log(`\nNext cycle in ${intervalMs / 1000}s (set CYCLE_INTERVAL_MS in .env to change)`);
+
+    const loop = async () => {
       await this.runFleetCycle();
-    }, 5 * 60 * 1000);
+      setTimeout(loop, intervalMs);
+    };
+    setTimeout(loop, intervalMs);
   }
 }
 

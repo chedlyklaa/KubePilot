@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e \"require\\('./src/api/logStore'\\); require\\('./src/agents/clusterAgent'\\); console.log\\('OK'\\)\")",
+      "Bash(node -e ' *)",
+      "Bash(git checkout *)",
+      "Bash(kubectl config *)"
+    ]
+  }
+}
