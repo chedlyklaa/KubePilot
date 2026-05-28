@@ -1,6 +1,18 @@
 require('dotenv').config();
+require('./src/api/logStore');
 
-const Orchestrator = require('./src/orchestrator/orchestrator');
+const { connect }        = require('./src/db/connection');
+const { seedUsers }      = require('./src/api/authService');
+const { createServer }   = require('./src/api/server');
+const escalationStore    = require('./src/api/escalationStore');
+
+connect()
+  .then(() => seedUsers())
+  .then(() => escalationStore.init())
+  .then(() => createServer(process.env.API_PORT || 3001))
+  .catch(err => { console.error('[DB] Connection failed:', err.message); process.exit(1); });
+
+const Orchestrator = require('./src/orchestrator/index.js');
 const ClusterAgent = require('./src/agents/clusterAgent');
 const yaml         = require('js-yaml');
 const fs           = require('fs');
@@ -9,9 +21,9 @@ const path         = require('path');
 const CONFIG_PATH = path.join(__dirname, 'config/clusters.yaml');
 
 // ─── Validate environment ───────────────────────────────────────────────────
-if (!process.env.ANTHROPIC_API_KEY) {
-  console.error('❌  ANTHROPIC_API_KEY is not set.');
-  console.error('    export ANTHROPIC_API_KEY=sk-ant-...');
+if (!process.env.OPENAI_API_KEY) {
+  console.error('❌  OPENAI_API_KEY is not set.');
+  console.error('    Add OPENAI_API_KEY=... to your .env file');
   process.exit(1);
 }
 

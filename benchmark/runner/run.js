@@ -242,11 +242,13 @@ class BenchmarkRunner {
   }
 }
 
-// ====================================
-// Run benchmark directly
-// ====================================
-(async () => {
+// ── Export for index.js --benchmark ──────────────────────────────────────────
+async function runBenchmark() {
   const runner = new BenchmarkRunner();
-
   await runner.run();
-})();
+}
+
+module.exports = { runBenchmark };
+
+// Allow running directly: node benchmark/runner/run.js
+if (require.main === module) runBenchmark();

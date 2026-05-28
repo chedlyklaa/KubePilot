@@ -9,7 +9,7 @@ function runCommand(command) {
   return new Promise((resolve, reject) => {
     exec(command, (error, stdout, stderr) => {
       if (error) {
-        return reject(stderr || error.message);
+        return reject(new Error(stderr?.trim() || error.message || 'Unknown kubectl error'));
       }
 
       resolve(stdout.trim());
@@ -20,10 +20,10 @@ function runCommand(command) {
 /**
  * Get all pods from a namespace
  */
-async function getPods(namespace = 'default', context) {
-  const cmd = `kubectl --context=${context} get pods -n ${namespace}`;
-
-  return await runCommand(cmd);
+async function getPods(namespace = 'default', context, asJson = false) {
+  const cmd = `kubectl --context=${context} get pods -n ${namespace}${asJson ? ' -o json' : ''}`;
+  const out  = await runCommand(cmd);
+  return asJson ? JSON.parse(out) : out;
 }
 
 /**
@@ -81,6 +81,7 @@ async function deletePod(podName, namespace = 'default', context) {
 }
 
 module.exports = {
+  runCommand,
   getPods,
   describePod,
   getLogs,
