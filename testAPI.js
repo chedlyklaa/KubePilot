@@ -3,7 +3,7 @@ const OpenAI = require("openai");
 
 async function main() {
   const client = new OpenAI({
-    apiKey: "REDACTED",
+    apiKey: "f8c180d8-e6e0-4863-a1b1-c6baef2bef70",
     baseURL: "https://api.scaleway.ai/415f75df-ce97-4134-bd3f-6d9624cf1186/v1",
   });
 
