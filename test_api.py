@@ -4,11 +4,7 @@ from openai import OpenAI
 
 def main():
     client = OpenAI(
-<<<<<<< HEAD
-        api_key="REDACTED",
-=======
         api_key="f8c180d8-e6e0-4863-a1b1-c6baef2bef70",
->>>>>>> 73b6f600ab4f8a69a41585a16ffab89bceebe66d
         base_url="https://api.scaleway.ai/415f75df-ce97-4134-bd3f-6d9624cf1186/v1",
     )
     print("Testing connection to OpenAI API...")
