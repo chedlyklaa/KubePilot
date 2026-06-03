@@ -8,9 +8,10 @@ import { STATE_LABEL } from '../constants'
 export default function EscalationRow({ item, onRemove, users }) {
   const { user }              = useAuth()
   const notify                = useNotify()
-  const [busy,     setBusy]   = useState(false)
-  const [open,     setOpen]   = useState(false)
-  const [assignId, setAssignId] = useState(users[0]?._id || '')
+  const [busy,        setBusy]      = useState(false)
+  const [open,        setOpen]      = useState(false)
+  const [assignId,    setAssignId]  = useState(users[0]?._id || '')
+  const [showDelModal, setShowDelModal] = useState(false)
 
   useEffect(() => { if (users.length) setAssignId(users[0]._id) }, [users])
 
@@ -41,8 +42,36 @@ export default function EscalationRow({ item, onRemove, users }) {
     setBusy(false)
   }
 
+  async function deleteEscalation() {
+    setBusy(true)
+    const res = await apiFetch(`/api/escalations/${item.id}`, { method: 'DELETE' })
+    if (res.ok) {
+      notify('success', `Escalation deleted: ${item.issueKey}`)
+      onRemove(item.id)
+    } else {
+      notify('error', 'Failed to delete escalation')
+    }
+    setBusy(false)
+    setConfirmDelete(false)
+  }
+
   return (
     <>
+      {showDelModal && (
+        <div className="modal-overlay" onClick={e => e.target === e.currentTarget && setShowDelModal(false)}>
+          <div className="modal" style={{ maxWidth: 380 }}>
+            <div style={{ fontSize: 32, textAlign: 'center', marginBottom: 8 }}>🗑</div>
+            <h3 style={{ margin: '0 0 6px', textAlign: 'center' }}>Delete Escalation?</h3>
+            <p style={{ margin: '0 0 20px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 13 }}>
+              <strong>{item.issueKey}</strong> will be permanently removed.
+            </p>
+            <div className="signout-actions">
+              <button className="btn-secondary" onClick={() => setShowDelModal(false)}>Cancel</button>
+              <button className="btn-danger-solid" disabled={busy} onClick={deleteEscalation}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
       <tr className={item.reassignRequested ? 'row-warn' : ''}>
         <td>
           <span className="esc-type fw-500">{item.issue?.type ?? 'Unknown'}</span>
@@ -101,11 +130,18 @@ export default function EscalationRow({ item, onRemove, users }) {
         <td className="text-dim">{fmtDT(item.createdAt)}</td>
 
         <td>
-          {user.role === 'developer' && isAssigned && !item.reassignRequested && (
-            <button className="btn-sm" disabled={busy} onClick={requestReassign} style={{ whiteSpace: 'nowrap' }}>
-              Request Reassign
-            </button>
-          )}
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            {user.role === 'developer' && isAssigned && !item.reassignRequested && (
+              <button className="btn-sm" disabled={busy} onClick={requestReassign} style={{ whiteSpace: 'nowrap' }}>
+                Request Reassign
+              </button>
+            )}
+            {user.role === 'admin' && (
+              <button className="btn-sm btn-danger-sm" disabled={busy} onClick={() => setShowDelModal(true)} title="Delete escalation">
+                Delete
+              </button>
+            )}
+          </div>
         </td>
       </tr>
 

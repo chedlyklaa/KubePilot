@@ -1,7 +1,7 @@
-require('dotenv').config();
+require('dotenv').config({ override: true });
 const OpenAI = require('openai');
 
 module.exports = new OpenAI({
-  apiKey:  "f8c180d8-e6e0-4863-a1b1-c6baef2bef70",
+  apiKey:  process.env.OPENAI_API_KEY,
   baseURL: process.env.OPENAI_BASE_URL,
 });

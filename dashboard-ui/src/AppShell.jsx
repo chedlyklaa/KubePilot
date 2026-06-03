@@ -8,6 +8,7 @@ import ThemeToggle from './components/ThemeToggle'
 import NotificationPanel from './components/NotificationPanel'
 import DashboardPage from './pages/DashboardPage'
 import EscalationsPage from './pages/EscalationsPage'
+import ClusterHealthPage from './pages/ClusterHealthPage'
 import ChatPage from './pages/ChatPage'
 import HistoryPage from './pages/HistoryPage'
 import UsersPage from './pages/UsersPage'
@@ -61,6 +62,7 @@ export default function AppShell() {
 
           <nav className="header-nav">
             <button className={`nav-btn ${page === 'dashboard'   ? 'active' : ''}`} onClick={() => setPage('dashboard')}>Dashboard</button>
+            <button className={`nav-btn ${page === 'health'      ? 'active' : ''}`} onClick={() => setPage('health')}>Cluster Health</button>
             <button className={`nav-btn ${page === 'escalations' ? 'active' : ''}`} onClick={() => setPage('escalations')}>Escalations</button>
             <button className={`nav-btn ${page === 'chat'        ? 'active' : ''}`} onClick={() => setPage('chat')}>Chat</button>
             <button className={`nav-btn ${page === 'history'     ? 'active' : ''}`} onClick={() => setPage('history')}>History</button>
@@ -86,6 +88,7 @@ export default function AppShell() {
         </header>
 
         {page === 'dashboard'                      && <DashboardPage />}
+        {page === 'health'                         && <ClusterHealthPage />}
         {page === 'escalations'                    && <EscalationsPage />}
         {page === 'chat'                           && <ChatPage />}
         {page === 'history'                        && <HistoryPage />}

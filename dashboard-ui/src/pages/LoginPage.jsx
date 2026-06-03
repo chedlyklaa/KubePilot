@@ -43,8 +43,9 @@ export default function LoginPage() {
           <button type="submit" className="login-btn" disabled={loading}>{loading ? 'Signing in…' : 'Sign in'}</button>
         </form>
         <div className="login-hint">
-          <span>admin@admin.com / admin</span>
-          <span>developer@developer.com / developer</span>
+          <span>Quick fill:</span>
+          <button type="button" className="autofill-chip" onClick={() => { setEmail('admin@admin.com'); setPassword('admin') }}>Admin</button>
+          <button type="button" className="autofill-chip" onClick={() => { setEmail('developer@developer.com'); setPassword('developer') }}>Developer</button>
         </div>
       </div>
     </div>

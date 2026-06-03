@@ -141,7 +141,7 @@ class PodAnalyzer {
   // Strips the last ReplicaSet hash (10 hex chars).
   static _deploymentFromReplicaSet(rsName) {
     // Strip the trailing pod-template-hash segment (variable length hex)
-    return rsName.replace(/-[a-f0-9]+$/, "") || null;
+    return rsName.replace(/-[a-z0-9]+$/, '') || null;
   }
 }
 

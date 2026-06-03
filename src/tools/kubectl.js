@@ -66,8 +66,19 @@ async function scaleDeployment(
   namespace = 'default',
   context
 ) {
-  const cmd = `kubectl --context=${context} scale deployment ${deployment} --replicas=${replicas} -n ${namespace}`;
+  // Pre-flight: confirm the Deployment actually exists before scaling.
+  // Without this, kubectl emits two concatenated stderr lines that look like
+  // "no objects passed to scale deployments.apps "<name>" not found".
+  try {
+    await runCommand(`kubectl --context=${context} get deployment/${deployment} -n ${namespace} --no-headers`);
+  } catch {
+    throw new Error(
+      `Deployment "${deployment}" not found in namespace "${namespace}". ` +
+      `The pod may be a bare pod or managed by a ReplicaSet — use delete_pod instead.`
+    );
+  }
 
+  const cmd = `kubectl --context=${context} scale deployment/${deployment} --replicas=${replicas} -n ${namespace}`;
   return await runCommand(cmd);
 }
 

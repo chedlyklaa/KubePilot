@@ -99,7 +99,7 @@ export default function ChatPage() {
       <div className="chat-page-header">
         <div>
           <h2>AI Assistant</h2>
-          <p className="page-subtitle">Direct LLM test — measure response time</p>
+          <p className="page-subtitle">Senior Kubernetes SRE &amp; DevOps expert</p>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {elapsed != null && <span className="elapsed-badge">⏱ {(elapsed / 1000).toFixed(2)}s</span>}
@@ -110,10 +110,17 @@ export default function ChatPage() {
       <div className="chat-page-msgs">
         {messages.length === 0 && (
           <div className="chat-page-empty">
-            <span style={{ fontSize: 44, opacity: .2 }}>🤖</span>
-            <p>Ask anything about Kubernetes, YAML, or deployments…</p>
+            <span style={{ fontSize: 44, opacity: .2 }}>⎈</span>
+            <p>Ask anything about Kubernetes, YAML, Helm, GitOps, or cloud infrastructure…</p>
             <div className="chat-suggestions">
-              {['Why is my pod in CrashLoopBackOff?', 'How do I rollback a deployment?', 'What does OOMKilled mean?'].map(s => (
+              {[
+                'Why is my pod in CrashLoopBackOff?',
+                'How do I rollback a deployment?',
+                'What does OOMKilled mean and how do I fix it?',
+                'Explain HPA vs VPA vs KEDA',
+                'How do I debug a pod stuck in Pending?',
+                'What is the difference between a Deployment and a StatefulSet?',
+              ].map(s => (
                 <button key={s} className="suggestion-chip" onClick={() => setInput(s)}>{s}</button>
               ))}
             </div>

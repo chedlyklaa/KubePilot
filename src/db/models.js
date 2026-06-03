@@ -59,6 +59,12 @@ const ChatHistorySchema = new Schema({
   messages: [{ role: { type: String, enum: ['user', 'assistant'] }, content: String }],
 }, { timestamps: true });
 
+// ── Command (Orders) history ──────────────────────────────────────────────────
+const CommandHistorySchema = new Schema({
+  userId: { type: String, required: true, unique: true, index: true },
+  turns:  [Schema.Types.Mixed],
+}, { timestamps: true });
+
 // ── Notification ──────────────────────────────────────────────────────────────
 const NotificationSchema = new Schema({
   targetUserIds: [String],   // user _id strings
@@ -74,4 +80,5 @@ module.exports = {
   EscalationHistory:  mongoose.model('EscalationHistory',  EscalationHistorySchema),
   Notification:       mongoose.model('Notification',       NotificationSchema),
   ChatHistory:        mongoose.model('ChatHistory',        ChatHistorySchema),
+  CommandHistory:     mongoose.model('CommandHistory',     CommandHistorySchema),
 };

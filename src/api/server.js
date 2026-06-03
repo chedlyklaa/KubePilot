@@ -10,7 +10,7 @@ const approvalStore       = require('./approvalStore');
 const escalationStore     = require('./escalationStore');
 const notificationStore   = require('./notificationStore');
 const authService         = require('./authService');
-const { User, ApprovalHistory, EscalationHistory, ChatHistory } = require('../db/models');
+const { User, ApprovalHistory, EscalationHistory, ChatHistory, CommandHistory } = require('../db/models');
 
 const CONFIG_PATH = path.join(__dirname, '../../config/clusters.yaml');
 
@@ -114,6 +114,13 @@ function createServer(port = 3001) {
     res.json({ success: await escalationStore.requestReassign(req.params.id, req.user) });
   });
 
+  // Delete escalation (admin only)
+  app.delete('/api/escalations/:id', requireAuth, requireAdmin, async (req, res) => {
+    const success = await escalationStore.remove(req.params.id);
+    if (!success) return res.status(404).json({ error: 'Escalation not found' });
+    res.json({ success: true });
+  });
+
   // Reassign a historical escalation record (admin only)
   app.put('/api/history/escalations/:id/assign', requireAuth, requireAdmin, async (req, res) => {
     const target = await User.findById(req.body.userId);
@@ -187,6 +194,143 @@ function createServer(port = 3001) {
     res.json({ success: true });
   });
 
+  // ── Cluster pod health ────────────────────────────────────────────────────
+  app.get('/api/cluster/pods', requireAuth, async (_req, res) => {
+    let clusters = [];
+    try { clusters = yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8')).clusters ?? []; } catch {}
+
+    const GPU_RESOURCES = ['nvidia.com/gpu', 'amd.com/gpu', 'intel.com/gpu', 'gpu.intel.com/i915'];
+
+    // Parse a Kubernetes memory/cpu string into a number (bytes for memory, millicores for cpu)
+    function parseK8sQuantity(str) {
+      if (!str) return null;
+      const n = parseFloat(str);
+      if (str.endsWith('Ki')) return n * 1024;
+      if (str.endsWith('Mi')) return n * 1024 ** 2;
+      if (str.endsWith('Gi')) return n * 1024 ** 3;
+      if (str.endsWith('Ti')) return n * 1024 ** 4;
+      if (str.endsWith('m'))  return n;           // millicores
+      if (str.endsWith('k'))  return n * 1000;
+      return n;
+    }
+
+    // Parse `kubectl top pods --no-headers` plain-text output into a map
+    function parseTopOutput(raw, namespace) {
+      const map = {};
+      for (const line of (raw ?? '').split('\n').filter(Boolean)) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length >= 3) {
+          const [name, cpu, memory] = parts;
+          map[`${namespace}/${name}`] = {
+            cpuRaw:    cpu,
+            memRaw:    memory,
+            cpuMilli:  parseK8sQuantity(cpu),
+            memBytes:  parseK8sQuantity(memory),
+          };
+        }
+      }
+      return map;
+    }
+
+    const results = await Promise.allSettled(clusters.map(async cluster => {
+      const { name, context: ctx, tier = 'dev', namespaces: ns = ['default'] } = cluster;
+
+      const rawPods = [];
+      const metricsMap = {};
+
+      await Promise.allSettled(ns.map(async namespace => {
+        // Pod list
+        try {
+          const json = await kubectl.getPods(namespace, ctx, true);
+          rawPods.push(...(json.items ?? []));
+        } catch (err) {
+          console.warn(`[HEALTH] ${name}/${namespace} pods: ${err.message}`);
+        }
+        // Live metrics (requires metrics-server — best-effort)
+        try {
+          const topOut = await kubectl.runCommand(
+            `kubectl --context=${ctx} top pods -n ${namespace} --no-headers`
+          );
+          Object.assign(metricsMap, parseTopOutput(topOut, namespace));
+        } catch { /* metrics-server not installed — skip */ }
+      }));
+
+      const pods = rawPods.map(pod => {
+        const meta      = pod.metadata  ?? {};
+        const spec      = pod.spec      ?? {};
+        const status    = pod.status    ?? {};
+        const csArr     = status.containerStatuses ?? [];
+        const icArr     = status.initContainerStatuses ?? [];
+        const allCS     = [...csArr, ...icArr];
+
+        const readyCount = csArr.filter(c => c.ready).length;
+        const totalCount = csArr.length;
+        const restarts   = allCS.reduce((s, c) => s + (c.restartCount ?? 0), 0);
+        const readyCond  = (status.conditions ?? []).find(c => c.type === 'Ready');
+
+        const containers = (spec.containers ?? []).map(c => {
+          const lim  = c.resources?.limits   ?? {};
+          const req  = c.resources?.requests ?? {};
+          const cs   = csArr.find(x => x.name === c.name) ?? {};
+          const gpu  = GPU_RESOURCES.reduce((v, k) => v ?? lim[k] ?? req[k] ?? null, null);
+          return {
+            name:          c.name,
+            image:         c.image,
+            ready:         cs.ready         ?? false,
+            state:         Object.keys(cs.state ?? { waiting: true })[0],
+            reason:        cs.state?.waiting?.reason ?? cs.state?.terminated?.reason ?? null,
+            restartCount:  cs.restartCount  ?? 0,
+            memLimitBytes: parseK8sQuantity(lim.memory   ?? null),
+            memReqBytes:   parseK8sQuantity(req.memory   ?? null),
+            cpuLimitMilli: parseK8sQuantity(lim.cpu      ?? null),
+            cpuReqMilli:   parseK8sQuantity(req.cpu      ?? null),
+            gpuRequested:  gpu ? parseInt(gpu, 10) : 0,
+          };
+        });
+
+        const metricKey = `${meta.namespace}/${meta.name}`;
+        const metrics   = metricsMap[metricKey] ?? null;
+
+        return {
+          name:       meta.name,
+          namespace:  meta.namespace ?? 'default',
+          phase:      status.phase   ?? 'Unknown',
+          ready:      `${readyCount}/${totalCount}`,
+          isReady:    readyCond?.status === 'True',
+          restarts,
+          node:       spec.nodeName  ?? '—',
+          startTime:  status.startTime ?? null,
+          containers,
+          // Live metrics
+          cpuRaw:    metrics?.cpuRaw    ?? null,
+          cpuMilli:  metrics?.cpuMilli  ?? null,
+          memRaw:    metrics?.memRaw    ?? null,
+          memBytes:  metrics?.memBytes  ?? null,
+          hasMetrics: !!metrics,
+          // Aggregate limits across containers
+          totalMemLimitBytes: containers.reduce((s, c) => s != null && c.memLimitBytes != null ? s + c.memLimitBytes : null, 0) || null,
+          totalGpu:           containers.reduce((s, c) => s + c.gpuRequested, 0),
+        };
+      });
+
+      return { name, context: ctx, tier, connected: true, podCount: pods.length, pods };
+    }));
+
+    const data = results.map((r, i) =>
+      r.status === 'fulfilled' ? r.value : {
+        name:      clusters[i].name,
+        context:   clusters[i].context,
+        tier:      clusters[i].tier ?? 'dev',
+        connected: false,
+        podCount:  0,
+        pods:      [],
+        error:     r.reason?.message ?? 'Failed to connect',
+      }
+    );
+
+    res.json({ clusters: data, timestamp: new Date().toISOString() });
+  });
+
   // ── Chat config (returns LLM settings for the UI) ────────────────────────
   app.get('/api/chat/config', requireAuth, (_req, res) => {
     res.json({
@@ -195,6 +339,51 @@ function createServer(port = 3001) {
       apiKey:  process.env.OPENAI_API_KEY  || '',
     });
   });
+
+  // ── Chat system prompt ────────────────────────────────────────────────────
+  const CHAT_SYSTEM_PROMPT = `You are a senior Kubernetes SRE (Site Reliability Engineer) and Platform Engineer with deep, hands-on expertise in production cluster operations. You are embedded inside KubePilot — an autonomous Kubernetes management dashboard that monitors pod health, auto-remediates issues with LLM-driven agents, and routes unresolved problems to on-call engineers.
+
+KUBERNETES EXPERTISE:
+- Pod lifecycle, scheduler, kubelet, kube-proxy, etcd, API server internals
+- Resource management: Requests/Limits, QoS classes (Guaranteed / Burstable / BestEffort), LimitRange, ResourceQuota
+- Workload controllers: Deployment, StatefulSet, DaemonSet, Job, CronJob, ReplicaSet
+- Networking: CNI (Calico, Flannel, Cilium), Services (ClusterIP / NodePort / LoadBalancer / ExternalName), Ingress, Gateway API, NetworkPolicy
+- Storage: PV, PVC, StorageClass, CSI drivers, ReadWriteOnce/ReadWriteMany access modes
+- RBAC: Roles, ClusterRoles, ServiceAccounts, RoleBindings — principle of least privilege
+- Operators and Custom Resource Definitions (CRDs)
+- Autoscaling: HPA, VPA, KEDA, Cluster Autoscaler, Karpenter
+- Pod disruption budgets, topology spread constraints, affinity/anti-affinity
+
+DISTRIBUTIONS & CLOUD:
+- Local: Minikube, k3s, kind, Rancher Desktop
+- Managed: AWS EKS, Azure AKS, GCP GKE (including node pools, managed node groups, spot/preemptible)
+- On-prem: kubeadm, RKE2, OpenShift
+
+TOOLING:
+- kubectl (advanced: jsonpath, custom-columns, --dry-run, diff, patch)
+- Helm v3 (charts, hooks, library charts, values hierarchy)
+- ArgoCD, Flux CD (GitOps workflows, sync policies, health checks)
+- Prometheus, Grafana, AlertManager, Loki, Tempo (full observability stack)
+- Kustomize, yq, kubectx/kubens
+- Terraform, Pulumi (IaC for cluster and add-ons)
+- Istio, Linkerd (service mesh: mTLS, traffic management, observability)
+- Velero (backup and DR), External Secrets Operator, Sealed Secrets, HashiCorp Vault
+
+DEVOPS & CI/CD:
+- GitHub Actions, GitLab CI, Azure DevOps, Jenkins, Tekton
+- Docker, containerd, BuildKit, multi-stage builds, image security scanning
+- GitOps patterns, progressive delivery (Argo Rollouts, Flagger — canary, blue/green)
+- SBOM, policy enforcement (OPA Gatekeeper, Kyverno)
+
+RESPONSE RULES:
+- Be concise but complete. Lead with the direct answer, add detail below.
+- Always include working kubectl commands with proper flags (--context, -n, -o yaml).
+- Use fenced code blocks for commands, YAML, and config snippets.
+- Explain the root cause first, then the fix, then prevention.
+- Mention relevant Kubernetes internals when they clarify WHY something fails.
+- If a question is ambiguous, state your assumption before answering.
+- Flag any destructive or irreversible operations with a ⚠ warning.
+- Prefer safe, idempotent solutions (--dry-run=client, patch over replace).`;
 
   // ── Chat — full response (no streaming) ───────────────────────────────────
   app.post('/api/chat', requireAuth, async (req, res) => {
@@ -215,7 +404,7 @@ function createServer(port = 3001) {
         temperature: 0.7,
         stream:      true,
         messages: [
-          { role: 'system', content: 'You are a helpful Kubernetes and DevOps assistant. Help with K8s issues, cluster management, YAML, and cloud infrastructure.' },
+          { role: 'system', content: CHAT_SYSTEM_PROMPT },
           ...messages,
         ],
       });
@@ -247,7 +436,7 @@ function createServer(port = 3001) {
         temperature: 0.7,
         stream:      true,
         messages: [
-          { role: 'system', content: 'You are a helpful Kubernetes and DevOps assistant. Help with K8s issues, cluster management, YAML, and cloud infrastructure.' },
+          { role: 'system', content: CHAT_SYSTEM_PROMPT },
           ...messages,
         ],
       });
@@ -290,6 +479,40 @@ function createServer(port = 3001) {
   app.delete('/api/chat/history', requireAuth, async (req, res) => {
     try {
       await ChatHistory.findOneAndUpdate({ userId: req.user.id }, { messages: [] });
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Command history (per-user, persisted in MongoDB) ─────────────────────
+  app.get('/api/command/history', requireAuth, async (req, res) => {
+    try {
+      const doc = await CommandHistory.findOne({ userId: req.user.id });
+      res.json({ turns: doc?.turns ?? [] });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.put('/api/command/history', requireAuth, async (req, res) => {
+    try {
+      const { turns } = req.body;
+      if (!Array.isArray(turns)) return res.status(400).json({ error: 'turns array required' });
+      await CommandHistory.findOneAndUpdate(
+        { userId: req.user.id },
+        { turns: turns.slice(-50) },   // cap at 50 turns per user
+        { upsert: true }
+      );
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete('/api/command/history', requireAuth, async (req, res) => {
+    try {
+      await CommandHistory.findOneAndUpdate({ userId: req.user.id }, { turns: [] });
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -382,6 +605,63 @@ Return ONLY valid JSON (no markdown):
       if (!plan.command?.trim()) return res.status(422).json({ error: 'LLM did not return a command' });
 
       res.json(plan);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Command error diagnosis ───────────────────────────────────────────────
+  app.post('/api/command/diagnose', requireAuth, async (req, res) => {
+    const { order, command, error } = req.body;
+    if (!order?.trim() || !error?.trim())
+      return res.status(400).json({ error: 'order and error are required' });
+
+    let clusters = [];
+    try { clusters = yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8')).clusters ?? []; } catch {}
+
+    const clusterList = clusters.length
+      ? clusters.map(c =>
+          `- ${c.name} (context: ${c.context}, tier: ${c.tier ?? 'dev'}, namespaces: ${(c.namespaces ?? ['default']).join(', ')})`
+        ).join('\n')
+      : '(no clusters configured yet)';
+
+    const prompt = `A user tried to execute a kubectl command and it failed. Diagnose the problem and suggest a concrete fix.
+
+Available clusters:
+${clusterList}
+
+User wanted to: "${order}"
+Command tried: ${command ? `\`${command}\`` : '(command not generated)'}
+Error received: ${error}
+
+Think about:
+- Does the resource actually exist? (e.g. Deployment vs bare Pod vs ReplicaSet)
+- Is the resource type correct for what the user wants to do?
+- Is there a corrected command that would achieve the user's actual goal?
+
+Return ONLY valid JSON (no markdown, no extra text):
+{
+  "diagnosis": "one sentence: what went wrong and why",
+  "suggestion": "one or two sentences: what the user should do to achieve their goal",
+  "fixedCommand": "full corrected kubectl command if applicable, or null"
+}`;
+
+    try {
+      const stream = await llm.chat.completions.create({
+        model: process.env.OPENAI_MODEL, temperature: 0.2, stream: true,
+        messages: [
+          { role: 'system', content: 'You are a Kubernetes SRE. Output ONLY valid JSON. No markdown.' },
+          { role: 'user',   content: prompt },
+        ],
+      });
+      let raw = '';
+      for await (const chunk of stream) raw += chunk.choices[0]?.delta?.content ?? '';
+
+      let result;
+      try { result = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] ?? raw); }
+      catch { return res.status(422).json({ error: 'LLM returned unparseable response' }); }
+
+      res.json(result);
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

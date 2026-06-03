@@ -212,6 +212,22 @@ async function requestReassign(id, user) {
   return true;
 }
 
+async function remove(id) {
+  const entry = escalations.get(id);
+  if (!entry) return false;
+
+  try {
+    const { EscalationHistory } = require('../db/models');
+    if (entry.mongoId) await EscalationHistory.findByIdAndDelete(entry.mongoId);
+  } catch (err) {
+    console.error('[EscalationStore] DB delete failed:', err.message);
+  }
+
+  escalations.delete(id);
+  _notify({ type: 'resolved', id });
+  return true;
+}
+
 function getAll()      { return [...escalations.values()].map(_safe); }
 function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
@@ -248,4 +264,4 @@ async function init() {
   }
 }
 
-module.exports = { init, escalate, acknowledge, updateState, assign, requestReassign, getAll, subscribe };
+module.exports = { init, escalate, acknowledge, updateState, assign, requestReassign, remove, getAll, subscribe };
