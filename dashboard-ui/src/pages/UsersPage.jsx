@@ -3,16 +3,18 @@ import { useAuth } from '../contexts/AuthContext'
 import { useNotify } from '../contexts/NotifyContext'
 import { apiFetch } from '../lib/api'
 import { fmtDT } from '../utils/format'
+import UserProfileModal from '../components/UserProfileModal'
 
 export default function UsersPage() {
-  const { user: me }            = useAuth()
-  const notify                  = useNotify()
-  const [users, setUsers]       = useState([])
-  const [loading, setLoading]   = useState(true)
-  const [showForm, setShowForm] = useState(false)
-  const [editing, setEditing]   = useState(null)
-  const [form, setForm]         = useState({ name: '', email: '', password: '', role: 'developer' })
-  const [formErr, setFormErr]   = useState('')
+  const { user: me }              = useAuth()
+  const notify                    = useNotify()
+  const [users, setUsers]         = useState([])
+  const [loading, setLoading]     = useState(true)
+  const [showForm, setShowForm]   = useState(false)
+  const [editing, setEditing]     = useState(null)
+  const [viewUser, setViewUser]   = useState(null)   // userId being viewed in profile modal
+  const [form, setForm]           = useState({ name: '', email: '', password: '', role: 'developer' })
+  const [formErr, setFormErr]     = useState('')
 
   const load = () => apiFetch('/api/users').then(r => r.json()).then(d => { setUsers(d); setLoading(false) })
   useEffect(() => { load() }, [])
@@ -50,6 +52,7 @@ export default function UsersPage() {
 
   return (
     <div className="users-page">
+      {viewUser && <UserProfileModal userId={viewUser} onClose={() => setViewUser(null)} />}
       <div className="page-header">
         <div><h2>Account Management</h2><p className="page-subtitle">Manage dashboard users and roles</p></div>
         <button className="btn-primary" onClick={openCreate}>+ Add User</button>
@@ -68,6 +71,7 @@ export default function UsersPage() {
                 <td className="text-dim">{fmtDT(u.createdAt)}</td>
                 <td>
                   <div className="action-btns">
+                    <button className="btn-sm btn-view" onClick={() => setViewUser(u._id)}>View</button>
                     <button className="btn-sm" onClick={() => openEdit(u)}>Edit</button>
                     <button className={`btn-sm ${u.active ? 'btn-warn' : 'btn-success'}`} onClick={() => toggleActive(u)} disabled={u._id === me.id}>
                       {u.active ? 'Deactivate' : 'Activate'}

@@ -21,7 +21,9 @@ function runCommand(command) {
  * Get all pods from a namespace
  */
 async function getPods(namespace = 'default', context, asJson = false) {
-  const cmd = `kubectl --context=${context} get pods -n ${namespace}${asJson ? ' -o json' : ''}`;
+  // "*" means all namespaces — maps to --all-namespaces flag
+  const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
+  const cmd = `kubectl --context=${context} get pods ${nsFlag}${asJson ? ' -o json' : ''}`;
   const out  = await runCommand(cmd);
   return asJson ? JSON.parse(out) : out;
 }

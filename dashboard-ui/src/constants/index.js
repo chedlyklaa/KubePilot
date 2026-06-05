@@ -22,6 +22,7 @@ export const CATEGORY_ICON = {
   'scaling':        { icon: '⇅',  label: 'Scaling'        },
   'config-change':  { icon: '⚙',  label: 'Config change'  },
   'destructive':    { icon: '⚠',  label: 'Destructive'    },
+  'provision':      { icon: '🔧', label: 'Provision cluster' },
 }
 
 export const LOG_LEVELS = ['ALL', 'INFO', 'WARN', 'ERROR']

@@ -6,6 +6,58 @@ const { seedUsers }      = require('./src/api/authService');
 const { createServer }   = require('./src/api/server');
 const escalationStore    = require('./src/api/escalationStore');
 
+// ─── Auto port-forward: Prometheus ──────────────────────────────────────────
+// Spawns kubectl port-forward in the background so PROMETHEUS_URL=http://localhost:9090
+// works without manual setup. Restarts automatically if the process dies.
+// Only runs when PROMETHEUS_URL points to localhost (skip for remote clusters).
+;(function startPrometheusForward() {
+  const url = process.env.PROMETHEUS_URL || '';
+  if (!url.includes('localhost') && !url.includes('127.0.0.1')) return;
+
+  const { spawn } = require('child_process');
+  const net   = require('net');
+  const SVC   = 'svc/kube-prometheus-stack-prometheus';
+  const NS    = process.env.PROMETHEUS_NAMESPACE || 'monitoring';
+  const LOCAL = new URL(url).port || '9090';
+  let   stopping = false;
+
+  process.on('SIGINT',  () => { stopping = true; });
+  process.on('SIGTERM', () => { stopping = true; });
+
+  function spawnForward() {
+    const pf = spawn('kubectl', [
+      'port-forward', SVC, '-n', NS, `${LOCAL}:9090`, '--address=127.0.0.1',
+    ], { stdio: 'pipe' });
+
+    pf.on('spawn', () => console.log(`[PROM] Port-forward started → localhost:${LOCAL}`));
+    pf.on('error', () => {});
+    pf.stderr?.on('data', d => {
+      // suppress "address already in use" noise — probe handles that case
+      const msg = d.toString().trim();
+      if (msg && !msg.includes('address already in use')) console.warn(`[PROM] ${msg}`);
+    });
+    pf.on('close', () => {
+      if (!stopping) setTimeout(start, 5_000);
+    });
+    process._prometheusForward = pf;
+  }
+
+  function start() {
+    if (stopping) return;
+    // Probe: if port already bound (previous forward still alive) skip spawn
+    const probe = net.createConnection({ port: Number(LOCAL), host: '127.0.0.1' });
+    probe.setTimeout(800);
+    probe.on('connect', () => {
+      probe.destroy();
+      console.log(`[PROM] localhost:${LOCAL} already reachable — skipping port-forward`);
+    });
+    probe.on('error',   () => { probe.destroy(); spawnForward(); });
+    probe.on('timeout', () => { probe.destroy(); spawnForward(); });
+  }
+
+  start();
+}());
+
 connect()
   .then(() => seedUsers())
   .then(() => escalationStore.init())

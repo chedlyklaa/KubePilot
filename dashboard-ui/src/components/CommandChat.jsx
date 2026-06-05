@@ -91,8 +91,59 @@ export default function CommandChat() {
   }
 
   async function approve(id) {
+    const turn = turnsRef.current.find(t => t.id === id)
+
+    // ── Cluster provisioning (polling) ───────────────────────────────────────
+    if (turn?.plan?.type === 'provision') {
+      patchById(id, t => ({ ...t, status: 'provisioning', provisionLog: '' }))
+      const { profileName, tier } = turn.plan
+
+      let jobId
+      try {
+        const r = await apiFetch('/api/cluster/provision/start', {
+          method: 'POST',
+          body: { profile: profileName, tier: tier ?? 'dev' },
+        })
+        const d = await r.json()
+        if (!r.ok) {
+          patchById(id, t => ({ ...t, status: 'error', error: d.error ?? 'Failed to start provision' }))
+          return
+        }
+        jobId = d.jobId
+      } catch (err) {
+        patchById(id, t => ({ ...t, status: 'error', error: err.message }))
+        return
+      }
+
+      // Poll every 2 s — safe through any proxy, no SSE/EventSource issues
+      const poll = setInterval(async () => {
+        try {
+          const r    = await apiFetch(`/api/cluster/provision/status?id=${jobId}`)
+          const data = await r.json()
+
+          patchById(id, t => ({ ...t, provisionLog: data.log ?? '' }))
+
+          if (data.status === 'done') {
+            clearInterval(poll)
+            patchById(id, t => ({
+              ...t, status: 'done',
+              result: `✓ Cluster "${data.profile}" created and added to monitoring.`,
+            }))
+          } else if (data.status === 'failed') {
+            clearInterval(poll)
+            patchById(id, t => ({
+              ...t, status: 'error',
+              error: data.error ?? 'minikube start failed — check logs above',
+            }))
+          }
+        } catch { /* network hiccup — keep polling */ }
+      }, 2000)
+
+      return
+    }
+
+    // ── Regular kubectl command ───────────────────────────────────────────────
     patchById(id, t => ({ ...t, status: 'executing' }))
-    const turn    = turnsRef.current.find(t => t.id === id)
     const command = turn?.plan?.command
     try {
       const res  = await apiFetch('/api/command/execute', { method: 'POST', body: { command } })
@@ -212,6 +263,18 @@ export default function CommandChat() {
             {t.status === 'executing' && (
               <div className="cmd-bubble-agent">
                 <span className="thinking-dots"><span /><span /><span /></span> Executing…
+              </div>
+            )}
+
+            {t.status === 'provisioning' && (
+              <div className="cmd-bubble-agent cmd-provisioning">
+                <div className="cmd-prov-header">
+                  <span className="thinking-dots"><span /><span /><span /></span>
+                  Provisioning cluster — this takes 1–5 minutes…
+                </div>
+                {t.provisionLog && (
+                  <pre className="cmd-prov-log">{t.provisionLog}</pre>
+                )}
               </div>
             )}
 

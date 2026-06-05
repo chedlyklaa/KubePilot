@@ -14,6 +14,14 @@ export function AuthProvider({ children }) {
     setToken(tok); setUser(u)
   }, [])
 
+  const updateUser = useCallback(patch => {
+    setUser(prev => {
+      const next = { ...prev, ...patch }
+      localStorage.setItem('k8s_user', JSON.stringify(next))
+      return next
+    })
+  }, [])
+
   const logout = useCallback(async () => {
     setUnauthorizedHandler(null)
     await fetch('/api/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${getToken()}` } }).catch(() => {})
@@ -41,5 +49,5 @@ export function AuthProvider({ children }) {
     }
   }, [user, logout])
 
-  return <AuthCtx.Provider value={{ user, token, login, logout }}>{children}</AuthCtx.Provider>
+  return <AuthCtx.Provider value={{ user, token, login, logout, updateUser }}>{children}</AuthCtx.Provider>
 }

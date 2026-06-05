@@ -1,0 +1,140 @@
+# Helm values override for kube-prometheus-stack Grafana integration.
+# Apply with:
+#   helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+#     -n monitoring -f config/grafana-values.yaml
+#
+# These dashboards answer the four KubePilot diagnostic questions:
+#   1. Was OOM caused by gradual memory growth?
+#   2. Was CPU throttling happening before the crash?
+#   3. Did node pressure affect multiple pods?
+#   4. Is this a systemic issue or isolated?
+
+grafana:
+  adminPassword: kubepilot
+  defaultDashboardsEnabled: true
+
+  dashboards:
+    default:
+      kubepilot-pod-health:
+        json: |
+          {
+            "title": "KubePilot — Pod Health",
+            "uid":   "kubepilot-pod-health",
+            "tags":  ["kubepilot"],
+            "time":  { "from": "now-1h", "to": "now" },
+            "panels": [
+              {
+                "id": 1,
+                "title": "CPU Usage by Pod",
+                "type":  "timeseries",
+                "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+                "targets": [{
+                  "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{container!=\"\"}[5m]))",
+                  "legendFormat": "{{pod}}"
+                }]
+              },
+              {
+                "id": 2,
+                "title": "Memory Working Set by Pod",
+                "type":  "timeseries",
+                "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+                "targets": [{
+                  "expr": "sum by (pod) (container_memory_working_set_bytes{container!=\"\"})",
+                  "legendFormat": "{{pod}}"
+                }]
+              },
+              {
+                "id": 3,
+                "title": "Container Restart Count",
+                "type":  "timeseries",
+                "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+                "targets": [{
+                  "expr": "sum by (pod) (kube_pod_container_status_restarts_total)",
+                  "legendFormat": "{{pod}}"
+                }]
+              },
+              {
+                "id": 4,
+                "title": "OOMKilled Events",
+                "type":  "timeseries",
+                "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+                "targets": [{
+                  "expr": "sum by (pod) (kube_pod_container_status_last_terminated_reason{reason=\"OOMKilled\"})",
+                  "legendFormat": "{{pod}}"
+                }]
+              }
+            ]
+          }
+
+      kubepilot-node-pressure:
+        json: |
+          {
+            "title": "KubePilot — Node Pressure",
+            "uid":   "kubepilot-node-pressure",
+            "tags":  ["kubepilot"],
+            "time":  { "from": "now-1h", "to": "now" },
+            "panels": [
+              {
+                "id": 1,
+                "title": "Node Pressure Conditions",
+                "type":  "timeseries",
+                "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+                "targets": [{
+                  "expr": "kube_node_status_condition{condition=~\"MemoryPressure|DiskPressure|PIDPressure\",status=\"true\"}",
+                  "legendFormat": "{{node}} / {{condition}}"
+                }]
+              },
+              {
+                "id": 2,
+                "title": "Node CPU Utilisation",
+                "type":  "timeseries",
+                "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+                "targets": [{
+                  "expr": "sum by (instance) (rate(node_cpu_seconds_total{mode!=\"idle\"}[5m]))",
+                  "legendFormat": "{{instance}}"
+                }]
+              },
+              {
+                "id": 3,
+                "title": "Node Memory Consumed",
+                "type":  "timeseries",
+                "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+                "targets": [{
+                  "expr": "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes",
+                  "legendFormat": "{{instance}}"
+                }]
+              }
+            ]
+          }
+
+      kubepilot-incidents:
+        json: |
+          {
+            "title": "KubePilot — Incident Correlation",
+            "uid":   "kubepilot-incidents",
+            "tags":  ["kubepilot"],
+            "time":  { "from": "now-3h", "to": "now" },
+            "panels": [
+              {
+                "id": 1,
+                "title": "High-Restart Pods (>3 restarts)",
+                "type":  "table",
+                "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+                "targets": [{
+                  "expr":    "sum by (namespace, pod) (kube_pod_container_status_restarts_total) > 3",
+                  "instant": true,
+                  "legendFormat": "{{namespace}}/{{pod}}"
+                }]
+              },
+              {
+                "id": 2,
+                "title": "Memory Pressure Trend (namespace avg)",
+                "type":  "timeseries",
+                "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
+                "targets": [{
+                  "expr": "avg by (namespace) (container_memory_working_set_bytes{container!=\"\"})",
+                  "legendFormat": "{{namespace}}"
+                }]
+              }
+            ]
+          }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useNotify } from '../contexts/NotifyContext'
 import { apiFetch, sseUrl } from '../lib/api'
@@ -24,9 +24,13 @@ export default function EscalationsPage() {
   const [filters, setFilters]         = useState(EMPTY_FILTERS)
   const [datePreset, setDatePreset]   = useState('all')
   const [drawerOpen, setDrawerOpen]   = useState(false)
+  const escSseReady = useRef(false)
 
   useEffect(() => {
-    apiFetch('/api/escalations').then(r => r.json()).then(d => { if (Array.isArray(d)) setEscalations(d) })
+    // HTTP pre-load while SSE is connecting — skipped if SSE init already fired.
+    apiFetch('/api/escalations').then(r => r.json()).then(d => {
+      if (Array.isArray(d) && !escSseReady.current) setEscalations(d)
+    })
     if (user.role === 'admin') {
       apiFetch('/api/users').then(r => r.json()).then(d => { if (Array.isArray(d)) setUsers(d.filter(u => u.active)) })
     }
@@ -36,9 +40,16 @@ export default function EscalationsPage() {
     const es = new EventSource(sseUrl('/api/escalations/stream'))
     es.onmessage = e => {
       const ev = JSON.parse(e.data)
-      if (ev.type === 'init')       setEscalations(ev.escalations)
+      if (ev.type === 'init') {
+        escSseReady.current = true
+        setEscalations(ev.escalations)
+      }
       else if (ev.type === 'added')    { setEscalations(p => [...p, ev.escalation]); notify('error', `New escalation: ${ev.escalation.issueKey}`) }
-      else if (ev.type === 'updated')  setEscalations(p => p.map(x => x.id === ev.escalation.id ? ev.escalation : x))
+      else if (ev.type === 'updated')  setEscalations(p => {
+        // Upsert: if the item arrived before our init (reconnect scenario), add it
+        const exists = p.some(x => x.id === ev.escalation.id)
+        return exists ? p.map(x => x.id === ev.escalation.id ? ev.escalation : x) : [...p, ev.escalation]
+      })
       else if (ev.type === 'resolved') setEscalations(p => p.filter(x => x.id !== ev.id))
     }
     return () => es.close()

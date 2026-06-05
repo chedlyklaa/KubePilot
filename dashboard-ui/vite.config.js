@@ -9,6 +9,10 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:3001',
         changeOrigin: true,
+        // Required for SSE — disable proxy timeout so long-running streams
+        // (minikube start can take 5+ minutes) are not killed mid-flight.
+        timeout: 0,
+        proxyTimeout: 0,
       },
     },
   },

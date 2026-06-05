@@ -50,4 +50,12 @@ function logout(token) {
   tokens.delete(token);
 }
 
-module.exports = { seedUsers, login, getUser, logout };
+// Update the in-memory payload for all active sessions belonging to a user.
+// Call this after a profile name change so req.user.name stays current.
+function updateUserPayload(userId, patch) {
+  for (const entry of tokens.values()) {
+    if (entry.id === userId) Object.assign(entry, patch);
+  }
+}
+
+module.exports = { seedUsers, login, getUser, logout, updateUserPayload };

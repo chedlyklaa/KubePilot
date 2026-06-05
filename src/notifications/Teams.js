@@ -7,7 +7,6 @@
 //   DASHBOARD_URL            — e.g. http://localhost:5173
 
 const https = require('https');
-const url   = require('url');
 
 // ── Low-level POST ─────────────────────────────────────────────────────────────
 function post(webhookUrl, body) {
@@ -18,10 +17,10 @@ function post(webhookUrl, body) {
     }
 
     const data    = JSON.stringify(body);
-    const parsed  = url.parse(webhookUrl);
+    const parsed  = new URL(webhookUrl);
     const options = {
       hostname: parsed.hostname,
-      path:     parsed.path,
+      path:     parsed.pathname + parsed.search,
       method:   'POST',
       headers:  { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
     };
@@ -44,6 +43,14 @@ function factRow(title, value) {
 
 function riskColor(risk) {
   return risk === 'HIGH' ? 'attention' : risk === 'MEDIUM' ? 'warning' : 'good';
+}
+
+function nowString() {
+  return new Date().toLocaleString('en-GB', {
+    day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  });
 }
 
 // ── Send to admin webhook (approval requests) ─────────────────────────────────
@@ -74,6 +81,7 @@ async function sendApprovalRequest({ issueKey, action, risk, cluster, namespace,
           {
             type:  'FactSet',
             facts: [
+              factRow('Time',       nowString()),
               factRow('Issue Key',  issueKey),
               factRow('Cluster',    cluster),
               factRow('Namespace',  namespace),
@@ -139,6 +147,7 @@ async function sendEscalation({ issueKey, cluster, namespace, type, attempts, da
           {
             type:  'FactSet',
             facts: [
+              factRow('Time',       nowString()),
               factRow('Issue Key',  issueKey),
               factRow('Cluster',    cluster),
               factRow('Namespace',  namespace),

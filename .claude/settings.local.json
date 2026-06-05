@@ -4,7 +4,13 @@
       "Bash(node -e \"require\\('./src/api/logStore'\\); require\\('./src/agents/clusterAgent'\\); console.log\\('OK'\\)\")",
       "Bash(node -e ' *)",
       "Bash(git checkout *)",
-      "Bash(kubectl config *)"
+      "Bash(kubectl config *)",
+      "PowerShell(kubectl get nodes --request-timeout=5s 2>&1)",
+      "PowerShell(docker port minikube 2>&1)",
+      "PowerShell(kubectl get nodes --request-timeout=10s 2>&1)",
+      "Bash(kubectl get *)",
+      "PowerShell(kubectl get pods -n monitoring 2>&1)",
+      "PowerShell(kubectl logs prometheus-kube-state-metrics-68ff7c5cc5-4h6p7 -n monitoring --tail=20 2>&1)"
     ]
   }
 }

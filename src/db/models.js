@@ -51,6 +51,10 @@ const EscalationHistorySchema = new Schema({
   reassignRequested:   { type: Boolean, default: false },
   reassignRequestedAt: Date,
   reassignRequestedBy: { name: String, email: String },
+
+  // Timestamp of the last Teams notification sent for this escalation.
+  // Persisted so the 30-min rate-limit survives server restarts.
+  lastTeamsNotif: Date,
 }, { timestamps: true });
 
 // ── Chat history ─────────────────────────────────────────────────────────────
@@ -74,6 +78,88 @@ const NotificationSchema = new Schema({
   readBy:  [String],          // user _id strings who read it
 }, { timestamps: true });
 
+// ── Incident Episode (self-improving memory) ──────────────────────────────────
+// One document per resolved or escalated incident.
+// Accumulated across multiple fix attempts within the same incident lifecycle.
+const IncidentEpisodeSchema = new Schema({
+  // Structural fingerprint — used for fast in-memory index lookup
+  fingerprint: {
+    issueType:    { type: String, required: true, index: true },
+    oomKilled:    { type: Boolean, default: false },
+    exitCode:     { type: Number, default: null },
+    hasDeployment:{ type: Boolean, default: true },
+    tier:         { type: String, default: 'dev' },
+    imagePrefix:  { type: String, default: '' },
+  },
+
+  // Execution context captured at incident start
+  context: {
+    cluster:      String,
+    namespace:    String,
+    deployment:   String,
+    pod:          String,
+    restartCount: Number,
+    logSnippet:   String,   // last 500 chars of pod logs
+  },
+
+  // Ordered list of actions attempted during this incident
+  timeline: [{
+    action:         String,
+    outcome:        { type: String, enum: ['success', 'failed', 'blocked'] },
+    guardianVerdict:String,
+    note:           String,
+    at:             { type: Date, default: Date.now },
+  }],
+
+  // Reflection Agent output — extracted after the incident concludes
+  reflection: {
+    rootCause:      String,
+    lessonsLearned: String,
+    suggestedRule:  String,
+    confidence:     Number,
+  },
+
+  resolved:       { type: Boolean, default: false },
+  resolvedAction: String,     // the action that finally worked, or null
+  totalAttempts:  Number,
+
+  qdrantId: String,           // UUID of the corresponding vector in Qdrant
+
+  // Prometheus metrics captured at the time of the incident (null when unavailable)
+  metricsSnapshot: {
+    cpu: {
+      avgCores:  Number,
+      peakCores: Number,
+      avgPct:    Number,
+      peakPct:   Number,
+      trend:     String,
+    },
+    memory: {
+      avgMi:  Number,
+      peakMi: Number,
+      trend:  String,
+    },
+    restarts: {
+      count: Number,
+    },
+    oomDetected: Boolean,
+    collectedAt: Date,
+  },
+}, { timestamps: true });
+
+// ── Learned Rule ──────────────────────────────────────────────────────────────
+// Auto-generated from repeated failure patterns.
+// Injected into PlannerAgent prompts to prevent known-bad decisions.
+const LearnedRuleSchema = new Schema({
+  issueType:   { type: String, required: true, index: true },
+  condition:   { type: String, required: true },   // human-readable trigger condition
+  rule:        { type: String, required: true },   // the constraint or guidance
+  source:      { type: String, enum: ['pattern_detected', 'manual'], default: 'pattern_detected' },
+  occurrences: { type: Number, default: 1 },
+  confidence:  { type: Number, default: 0.5 },
+  active:      { type: Boolean, default: true, index: true },
+}, { timestamps: true });
+
 module.exports = {
   User:               mongoose.model('User',               UserSchema),
   ApprovalHistory:    mongoose.model('ApprovalHistory',    ApprovalHistorySchema),
@@ -81,4 +167,6 @@ module.exports = {
   Notification:       mongoose.model('Notification',       NotificationSchema),
   ChatHistory:        mongoose.model('ChatHistory',        ChatHistorySchema),
   CommandHistory:     mongoose.model('CommandHistory',     CommandHistorySchema),
+  IncidentEpisode:    mongoose.model('IncidentEpisode',    IncidentEpisodeSchema),
+  LearnedRule:        mongoose.model('LearnedRule',        LearnedRuleSchema),
 };

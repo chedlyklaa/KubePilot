@@ -10,9 +10,20 @@ export default function EscalationClaimCard({ item, onTake }) {
 
   async function take() {
     setBusy(true)
-    await apiFetch(`/api/escalations/${item.id}/acknowledge`, { method: 'POST' })
-    notify('success', `You claimed: ${item.issueKey}`)
-    onTake(item.id)
+    try {
+      const r = await apiFetch(`/api/escalations/${item.id}/acknowledge`, { method: 'POST' })
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}))
+        notify('error', d.error || 'Failed to claim — please try again')
+        return
+      }
+      notify('success', `You claimed: ${item.issueKey}`)
+      onTake(item.id)
+    } catch {
+      notify('error', 'Network error — could not claim escalation')
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (

@@ -1,6 +1,7 @@
 'use strict';
 require('dotenv').config({ override: true });
-const OpenAI = require('openai');
+const OpenAI     = require('openai');
+const tokenStore = require('../api/tokenStore');
 
 // ── Build an independent LLM client for the guardian ─────────────────────────
 // Uses GUARDIAN_* env vars when set, falls back to the main OPENAI_* credentials
@@ -123,19 +124,24 @@ Review this proposal and return your JSON verdict.`;
 
     try {
       const stream = await guardianLlm.chat.completions.create({
-        model:       GUARDIAN_MODEL,
-        temperature: 0.1,
-        stream:      true,
+        model:          GUARDIAN_MODEL,
+        temperature:    0.1,
+        stream:         true,
+        stream_options: { include_usage: true },
         messages: [
           { role: 'system', content: SYSTEM      },
           { role: 'user',   content: userPrompt  },
         ],
       });
 
-      let raw = '';
-      for await (const chunk of stream) raw += chunk.choices[0]?.delta?.content ?? '';
+      let raw = '', usage = null;
+      for await (const chunk of stream) {
+        raw += chunk.choices[0]?.delta?.content ?? '';
+        if (chunk.usage) usage = chunk.usage;
+      }
 
-      console.log(`[${this.clusterName}] [GUARDIAN] Response time: ${Date.now() - t0}ms`);
+      tokenStore.record('guardian', usage);
+      console.log(`[${this.clusterName}] [GUARDIAN] Response time: ${Date.now() - t0}ms${usage ? `  tokens=${usage.total_tokens}` : ''}`);
 
       let result;
       try {

@@ -21,6 +21,73 @@ async function _getAdminIds() {
 
 // ── Escalate (called by agent) ────────────────────────────────────────────────
 async function escalate(issueKey, issue, history) {
+  // Deduplication: if an active escalation already exists for this issueKey,
+  // don't create a new record. Instead:
+  //   - still pending  → leave it, nothing to do
+  //   - acknowledged / in_progress → agent failed again, bump attempts and
+  //     reset to pending so it re-appears in the Unclaimed queue
+  const existing = [...escalations.values()].find(e => e.issueKey === issueKey);
+  if (existing) {
+    if (existing.status === 'pending') {
+      console.warn(`[EscalationStore] Duplicate suppressed for "${issueKey}" — already pending (id=${existing.id})`);
+      return existing.id;
+    }
+    // Re-surface as unclaimed so the team sees the agent is still failing.
+    // Clear all ownership metadata so the item is truly unclaimed.
+    existing.status              = 'pending';
+    existing.attempts            = (existing.attempts ?? 0) + 1;
+    existing.assignedTo          = null;
+    existing.assignedAt          = null;
+    existing.acknowledgedBy      = null;   // C2: was left set, misleading on re-escalated items
+    existing.acknowledgedAt      = null;
+    existing.reassignRequested   = false;
+    existing.stateUpdatedAt      = new Date().toISOString();
+    console.warn(`[EscalationStore] Re-escalated "${issueKey}" (id=${existing.id}) — reset to pending after ${existing.attempts} total attempt(s)`);
+
+    // C3: update failedHistory so operators see the new failure context
+    const updatedHistory = [...(existing.history ?? []), ...history];
+    existing.history = updatedHistory;
+
+    try {
+      const { EscalationHistory } = require('../db/models');
+      if (existing.mongoId) await EscalationHistory.findByIdAndUpdate(existing.mongoId, {
+        status:        'pending',
+        attempts:      existing.attempts,
+        failedHistory: updatedHistory,
+        assignedTo:    null,
+        acknowledgedBy: null,
+        acknowledgedAt: null,
+        reassignRequested: false,
+      });
+    } catch {}
+    _notify({ type: 'updated', escalation: _safe(existing) });
+
+    // Rate-limit: skip if we notified Teams for this entry less than 30 min ago.
+    // _lastTeamsNotif is set AFTER the send succeeds so a failed webhook doesn't
+    // consume the rate-limit window.
+    const now = Date.now();
+    const lastNotif = existing._lastTeamsNotif ?? 0;
+    if (now - lastNotif >= 30 * 60 * 1000) {
+      teams.sendEscalation({
+        issueKey:     issueKey,
+        cluster:      existing.issue?.clusterName ?? issue?.clusterName,
+        namespace:    existing.issue?.namespace   ?? issue?.namespace,
+        type:         existing.issue?.type        ?? issue?.type,
+        attempts:     existing.attempts,
+        dashboardUrl: process.env.DASHBOARD_URL,
+      }).then(async () => {
+        existing._lastTeamsNotif = Date.now();
+        try {
+          const { EscalationHistory } = require('../db/models');
+          if (existing.mongoId)
+            await EscalationHistory.findByIdAndUpdate(existing.mongoId, { lastTeamsNotif: new Date() });
+        } catch {}
+      }).catch(() => {});
+    }
+
+    return existing.id;
+  }
+
   const id    = String(++seq);
   const entry = {
     id, issueKey,
@@ -125,8 +192,9 @@ async function updateState(id, state, user) {
     });
   }
 
-  // Remove from active list when fixed
-  if (state === 'fixed') {
+  // Remove from active list when fixed or not_fixed (both are terminal outcomes).
+  // need_help stays active so admins can see it and reassign.
+  if (state === 'fixed' || state === 'not_fixed') {
     escalations.delete(id);
     _notify({ type: 'resolved', id });
   } else {
@@ -235,7 +303,8 @@ function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 async function init() {
   try {
     const { EscalationHistory } = require('../db/models');
-    const docs = await EscalationHistory.find({ status: { $nin: ['fixed'] } }).sort({ escalatedAt: 1 });
+    // Exclude terminal statuses — fixed and not_fixed are done, no need to resurface them.
+    const docs = await EscalationHistory.find({ status: { $nin: ['fixed', 'not_fixed'] } }).sort({ escalatedAt: 1 });
 
     for (const doc of docs) {
       const id = String(++seq);
@@ -247,13 +316,16 @@ async function init() {
         attempts:            doc.attempts ?? 0,
         status:              doc.status ?? 'pending',
         createdAt:           (doc.escalatedAt ?? doc.createdAt)?.toISOString(),
-        assignedTo:          doc.assignedTo ?? null,
-        assignedAt:          doc.assignedAt?.toISOString() ?? null,
-        reassignRequested:   doc.reassignRequested ?? false,
-        reassignRequestedBy: doc.reassignRequestedBy ?? null,
-        stateUpdatedAt:      doc.stateUpdatedAt?.toISOString() ?? null,
-        stateUpdatedBy:      doc.stateUpdatedBy ?? null,
+        assignedTo:          doc.assignedTo          ?? null,
+        assignedAt:          doc.assignedAt?.toISOString()          ?? null,
+        acknowledgedBy:      doc.acknowledgedBy       ?? null,   // C5: was missing
+        acknowledgedAt:      doc.acknowledgedAt?.toISOString()       ?? null,
+        reassignRequested:   doc.reassignRequested    ?? false,
+        reassignRequestedBy: doc.reassignRequestedBy  ?? null,
+        stateUpdatedAt:      doc.stateUpdatedAt?.toISOString()  ?? null,
+        stateUpdatedBy:      doc.stateUpdatedBy       ?? null,
         mongoId:             doc._id.toString(),
+        _lastTeamsNotif:     doc.lastTeamsNotif?.getTime()      ?? 0,
       });
     }
 

@@ -22,17 +22,7 @@ class PodAnalyzer {
       for (const cs of pod.status?.containerStatuses ?? []) {
         const waiting    = cs.state?.waiting;
         const terminated = cs.state?.terminated;
-         if (phase === "Succeeded" && cs.restartCount > 2) {
-  issues.push({
-    type: "CompletedWithRestarts",
-    podName,
-    deployment,
-    restartCount: cs.restartCount,
-    // Remonter le owner pour savoir si c'est un Deployment ou un Job
-    ownerKind: ownerRefs[0]?.kind ?? "Unknown",
-  });
-}
-        // ── CrashLoopBackOff ────────────────────────────
+         // ── CrashLoopBackOff ────────────────────────────
         if (waiting?.reason === "CrashLoopBackOff") {
 
           // Try to detect OOM: check lastState exit code 137

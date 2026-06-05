@@ -1,19 +1,16 @@
 clusters:
+  - name: cluster2
+    context: cluster2
+    tier: dev
+    namespaces:
+      - '*'
   - name: local-cluster
     context: minikube
     tier: dev
     namespaces:
-      - default
-
-# Uncomment when AKS contexts are available (az aks get-credentials ...)
-#  - name: dev-cluster
-#    context: aks-dev
-#    tier: dev
-
-#  - name: staging-cluster
-#    context: aks-staging
-#    tier: staging
-
-#  - name: prod-cluster
-#    context: aks-prod
-#    tier: production
+      - '*'
+  - name: staging-cluster
+    context: staging-cluster
+    tier: staging
+    namespaces:
+      - '*'

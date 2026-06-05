@@ -1,30 +1,39 @@
-// src/agents/clusterAgent.js
+'use strict';
 require('dotenv').config({ override: true });
-const OpenAI          = require('openai');
-const kubectl         = require('../tools/kubectl');
-const PodAnalyzer     = require('./podAnalyzer');
-const GuardianAgent   = require('./guardianAgent');
-const approvalStore   = require('../api/approvalStore');
-const escalationStore = require('../api/escalationStore');
-const temporal        = require('../memory/temporal');
-const audit           = require('../audit/logger');
-const RiskEngine      = require('../risk/engine');
 
-const client = new OpenAI({
-  apiKey:  process.env.OPENAI_API_KEY,
-  baseURL: process.env.OPENAI_BASE_URL,
-});
+const kubectl          = require('../tools/kubectl');
+const PodAnalyzer      = require('./podAnalyzer');
+const GuardianAgent    = require('./guardianAgent');
+const PlannerAgent     = require('./plannerAgent');
+const ReflectionAgent  = require('./reflectionAgent');
+const approvalStore    = require('../api/approvalStore');
+const escalationStore  = require('../api/escalationStore');
+const episodicMemory   = require('../memory/episodicMemory');
+const vectorStore      = require('../memory/vectorStore');
+const ruleEngine       = require('../memory/ruleEngine');
+const temporal         = require('../memory/temporal');
+const audit            = require('../audit/logger');
+const RiskEngine       = require('../risk/engine');
+const PolicyEngine     = require('../policy/policyEngine');
+const metricsCollector = require('../monitoring/metricsCollector');
 
 const riskEngine = new RiskEngine();
 
-// Actions that must pause and wait for human approval before executing
+// Parse a Kubernetes memory quantity string (e.g. "128Mi", "1Gi", "512M") into MiB.
+function _parseMiB(str) {
+  if (!str) return 128;
+  const num = parseFloat(str);
+  if (isNaN(num)) return 128;
+  if (/Gi$/i.test(str)) return Math.round(num * 1024);
+  if (/G$/i.test(str))  return Math.round(num * 1000);
+  if (/Mi$/i.test(str) || /M$/i.test(str)) return Math.round(num);
+  if (/Ki$/i.test(str)) return Math.round(num / 1024);
+  if (/k$/i.test(str))  return Math.round(num / 1000);
+  return Math.round(num / (1024 * 1024)); // assume raw bytes
+}
+
 const HIGH_RISK_ACTIONS = new Set(['increase_memory']);
 
-const VALID_ACTIONS = new Set([
-  'restart', 'rollback', 'delete_pod', 'scale_down', 'increase_memory', 'noop',
-]);
-
-// Map agent actions → risk engine parameters
 const ACTION_RISK_PARAMS = {
   restart:         { engineAction: 'restart_deployment', blastRadius: 2, reversibility: 0.9, costImpact: 0   },
   rollback:        { engineAction: 'apply_manifest',     blastRadius: 3, reversibility: 0.8, costImpact: 0   },
@@ -40,18 +49,19 @@ class ClusterAgent {
     this.tier       = clusterConfig.tier ?? 'dev';
     this.namespaces = clusterConfig.namespaces ?? ['default'];
 
-    this.guardian           = new GuardianAgent(this.name, this.tier);
+    this.guardian     = new GuardianAgent(this.name, this.tier);
+    this.policyEngine = new PolicyEngine();
 
-    this.cooldowns          = new Map(); // issueKey → last attempt timestamp
-    this.attemptCounts      = new Map(); // issueKey → number of failed attempts
-    this.permanentlyIgnored = new Set(); // escalated issues — agent never retries
+    this.cooldowns        = new Map();  // issueKey → last attempt timestamp
+    this.attemptCounts    = new Map();  // issueKey → number of failed attempts
+    this.episodeTimelines = new Map();  // issueKey → { fingerprint, context, timeline[] }
 
     this.COOLDOWN_MS      = 45_000;
-    this.VALIDATE_WAIT_MS = 15_000;
+    this.VALIDATE_WAIT_MS = 30_000;
     this.MAX_FIX_ATTEMPTS = 3;
   }
 
-  // ── Called once per cycle by runAgent.js ──────────────────────────────────
+  // ── Called once per cycle by orchestrator ─────────────────────────────────
   async run() {
     console.log(`\n${'='.repeat(50)}`);
     console.log(`[${this.name}] Cycle started`);
@@ -59,22 +69,34 @@ class ClusterAgent {
 
     const allIssues = [];
 
-    for (const ns of this.namespaces) {
-      let pods;
+    if (this.namespaces.includes('*')) {
+      // Single call — discovers every namespace automatically
       try {
-        pods = await kubectl.getPods(ns, this.context, true);
+        const pods   = await kubectl.getPods('*', this.context, true);
+        const issues = PodAnalyzer.extractIssues(pods).map(i => ({
+          ...i,
+          clusterName: this.name,
+        }));
+        allIssues.push(...issues);
       } catch (err) {
-        console.error(`[${this.name}] kubectl failed (${ns}): ${err.message}`);
-        continue;
+        console.error(`[${this.name}] kubectl failed (all-namespaces): ${err.message}`);
       }
-
-      const issues = PodAnalyzer.extractIssues(pods).map(i => ({
-        ...i,
-        namespace:   i.namespace ?? ns,
-        clusterName: this.name,
-      }));
-
-      allIssues.push(...issues);
+    } else {
+      for (const ns of this.namespaces) {
+        let pods;
+        try {
+          pods = await kubectl.getPods(ns, this.context, true);
+        } catch (err) {
+          console.error(`[${this.name}] kubectl failed (${ns}): ${err.message}`);
+          continue;
+        }
+        const issues = PodAnalyzer.extractIssues(pods).map(i => ({
+          ...i,
+          namespace:   i.namespace ?? ns,
+          clusterName: this.name,
+        }));
+        allIssues.push(...issues);
+      }
     }
 
     if (allIssues.length === 0) {
@@ -89,12 +111,10 @@ class ClusterAgent {
     console.log(`[${this.name}] Cycle complete\n`);
   }
 
-  // ── Per-issue handler with retry loop + approval gate + escalation ─────────
+  // ── 12-step self-improving pipeline ───────────────────────────────────────
   async _handle(issue) {
     const target = issue.deployment ?? issue.podName;
     const key    = `${issue.type}:${target}:${issue.namespace}`;
-
-    if (this.permanentlyIgnored.has(key)) return;
 
     const last = this.cooldowns.get(key);
     if (last && Date.now() - last < this.COOLDOWN_MS) {
@@ -106,43 +126,212 @@ class ClusterAgent {
     const attempt = (this.attemptCounts.get(key) ?? 0) + 1;
     this.attemptCounts.set(key, attempt);
 
+    // ── Build fingerprint (used by all memory layers) ─────────────────────────
+    const fingerprint = {
+      issueType:    issue.type,
+      oomKilled:    issue.oomKilled    ?? false,
+      exitCode:     issue.exitCode     ?? null,
+      hasDeployment: !!issue.deployment,
+      tier:         this.tier,
+      imagePrefix:  '',
+    };
+
     if (attempt > this.MAX_FIX_ATTEMPTS) {
       console.warn(`[${this.name}] [ESCALATE] ${key} — ${this.MAX_FIX_ATTEMPTS} attempts exhausted`);
+
+      // Store the failed episode before escalating
+      const epDraft = this.episodeTimelines.get(key);
+      if (epDraft) {
+        // Fetch fresh logs — stale logSnippet in epDraft.context is from attempt 1
+        let escalationLogs = '';
+        if (issue.podName) {
+          try {
+            escalationLogs = await kubectl.getLogs(issue.podName, issue.namespace ?? 'default', this.context);
+          } catch { /* unavailable */ }
+        }
+        const reflection = await ReflectionAgent.reflect({
+          issue,
+          planAction:         epDraft.timeline.at(-1)?.action ?? 'unknown',
+          rootCauseDiagnosis: epDraft.lastDiagnosis ?? 'unknown',
+          timeline:           epDraft.timeline,
+          resolved:           false,
+          podLogs:            escalationLogs,
+        });
+        await episodicMemory.store({
+          fingerprint,
+          context:         epDraft.context,
+          timeline:        epDraft.timeline,
+          reflection,
+          resolved:        false,
+          resolvedAction:  null,
+          totalAttempts:   attempt - 1,
+          metricsSnapshot: epDraft.metricsSnapshot ?? null,
+        });
+        await ruleEngine.analyze(issue.type);
+        this.episodeTimelines.delete(key);
+      }
+
       const history = temporal.getClusterHistory(this.name)
         .filter(e => e.issue === issue.type)
         .slice(-this.MAX_FIX_ATTEMPTS);
+
       await escalationStore.escalate(key, issue, history);
-      this.permanentlyIgnored.add(key);
+      // Reset attempt counter so the agent keeps retrying next cycle.
+      // Duplicate escalation records are suppressed by escalationStore.escalate().
+      this.attemptCounts.delete(key);
       return;
     }
 
     console.log(`\n[${this.name}] ── ${key}  (attempt ${attempt}/${this.MAX_FIX_ATTEMPTS}) ──`);
 
-    // ── 1. Ask LLM (applicative agent) ───────────────────────────────────────
-    let diagnosis;
+    // ── Step 1: Fetch pod logs once — reused by planner, guardian, reflection ──
     let podLogs = '';
+    if (issue.podName) {
+      try {
+        podLogs = await kubectl.getLogs(issue.podName, issue.namespace ?? 'default', this.context);
+      } catch { /* logs unavailable — not critical */ }
+    }
+
+    // ── Step 1a: Collect Prometheus metrics (non-blocking, fails gracefully) ───
+    let podMetrics = null;
+    if (issue.podName && metricsCollector.isAvailable()) {
+      try {
+        podMetrics = await metricsCollector.collectPodMetrics(
+          issue.namespace ?? 'default',
+          issue.podName,
+        );
+      } catch { /* metrics unavailable */ }
+    }
+
+    // Pre-initialize the episode draft so metricsSnapshot is attached before the
+    // first _recordTimelineEntry call (which may fire as early as policy rejection).
+    if (!this.episodeTimelines.has(key)) {
+      this.episodeTimelines.set(key, {
+        fingerprint,
+        context:         this._buildContext(issue, podLogs),
+        timeline:        [],
+        lastDiagnosis:   null,
+        metricsSnapshot: podMetrics,
+      });
+    } else {
+      // Refresh the snapshot every cycle so the stored episode has the latest reading.
+      this.episodeTimelines.get(key).metricsSnapshot = podMetrics;
+    }
+
+    // ── Step 2: Retrieve similar past episodes from memory ────────────────────
+    const structuralMatches = episodicMemory.findByFingerprint(fingerprint);
+    const queryText         = vectorStore.issueToQueryText({ ...issue, tier: this.tier }, podLogs);
+    const semanticMatches   = await episodicMemory.findSemantic(queryText);
+
+    if (structuralMatches.length > 0) {
+      console.log(`[${this.name}] [MEMORY] ${structuralMatches.length} structural match(es) retrieved`);
+    }
+    if (semanticMatches.length > 0) {
+      console.log(`[${this.name}] [MEMORY] ${semanticMatches.length} semantic match(es) retrieved (top score: ${semanticMatches[0]?.score?.toFixed(3)})`);
+    }
+
+    // ── Step 3: Load learned rules for this issue type ────────────────────────
+    const learnedRules = await ruleEngine.getRules(issue.type);
+    if (learnedRules.length > 0) {
+      console.log(`[${this.name}] [RULES] ${learnedRules.length} active rule(s) for ${issue.type}`);
+    }
+
+    // ── Step 4: Planner Agent generates an informed execution plan ────────────
+    let diagnosis;
     try {
-      const result = await this._askLLM(issue);
-      podLogs   = result._podLogs ?? '';
-      diagnosis = result;
-      delete diagnosis._podLogs;
+      diagnosis = await PlannerAgent.plan({
+        issue,
+        podLogs,
+        structuralMatches,
+        semanticMatches,
+        learnedRules,
+        attempt,
+        metrics: podMetrics,
+      });
     } catch (err) {
-      console.error(`[${this.name}] [LLM] Error: ${err.message}`);
+      console.error(`[${this.name}] [PLANNER] Error: ${err.message}`);
       this.cooldowns.set(key, Date.now());
       return;
     }
 
-    console.log(`[${this.name}] [AI] Root cause : ${diagnosis.rootCause}`);
-    console.log(`[${this.name}] [AI] Action      : ${diagnosis.action}  risk=${diagnosis.risk}`);
+    // Normalize risk to uppercase so downstream === 'HIGH' comparisons are reliable
+    // regardless of what case the LLM returned.
+    if (diagnosis.risk) diagnosis.risk = diagnosis.risk.toUpperCase();
+
+    console.log(`[${this.name}] [PLANNER] rootCause : ${diagnosis.rootCause}`);
+    console.log(`[${this.name}] [PLANNER] action     : ${diagnosis.action}  risk=${diagnosis.risk}`);
+    console.log(`[${this.name}] [PLANNER] rationale  : ${diagnosis.rationale}`);
 
     if (diagnosis.action === 'noop') {
-      console.log(`[${this.name}] [AI] No safe fix available`);
+      console.log(`[${this.name}] [PLANNER] No safe fix available`);
       temporal.add({ cluster: this.name, action: 'noop', status: 'skipped', issue: issue.type, riskScore: 0 });
+      this._recordTimelineEntry(key, fingerprint, issue, podLogs, diagnosis, null, 'skipped', 'planner returned noop — no safe fix available');
       this.cooldowns.set(key, Date.now());
       return;
     }
 
-    // ── 2. Guardian review (supervisor agent) ────────────────────────────────
+    // ── Step 5: PolicyEngine — deterministic non-bypassable safety gate ───────
+    const policyPlan = {
+      action: diagnosis.action,
+      target: {
+        kind:      issue.deployment ? 'deployment' : 'pod',
+        name:      issue.deployment ?? issue.podName,
+        namespace: issue.namespace ?? 'default',
+      },
+      reason: diagnosis.rootCause,
+      risk:   diagnosis.risk,
+    };
+    const policyCtx = {
+      cluster:          this.name,
+      issueType:        issue.type,
+      tier:             this.tier,
+      deploymentExists: !!issue.deployment,
+      exitCode:         issue.exitCode   ?? null,
+      oomKilled:        issue.oomKilled  ?? false,
+      attemptHistory:   this.episodeTimelines.get(key)?.timeline ?? [],
+    };
+
+    const policyResult = this.policyEngine.validate(policyPlan, policyCtx);
+    console.log(`[${this.name}] [POLICY] status=${policyResult.status}  action=${policyResult.action}`);
+    policyResult.warnings.forEach(w => console.warn(`[${this.name}] [POLICY] ⚠ ${w}`));
+
+    if (policyResult.status === 'rejected') {
+      // Don't count policy rejections as fix attempts — no remediation was ever applied.
+      // Without this, a permanently-forbidden action exhausts MAX_FIX_ATTEMPTS and
+      // fires a spurious escalation that looks like 3 failed fixes.
+      this.attemptCounts.set(key, attempt - 1);
+      console.error(`[${this.name}] [POLICY] BLOCKED — ${policyResult.reason}`);
+      temporal.add({ cluster: this.name, action: diagnosis.action, status: 'blocked', issue: issue.type, riskScore: 0.9 });
+      this._recordTimelineEntry(key, fingerprint, issue, podLogs, diagnosis, null, 'blocked', `policy rejected: ${policyResult.reason}`);
+      this.cooldowns.set(key, Date.now());
+      return;
+    }
+
+    if (policyResult.status === 'modified') {
+      console.warn(`[${this.name}] [POLICY] Action MODIFIED: ${diagnosis.action} → ${policyResult.action}`);
+      diagnosis.action = policyResult.action;
+      if (policyResult.action === 'noop') {
+        // Policy reduced the action to noop (e.g. retry-protection, ImagePullBackOff, bare-pod
+        // scale_down). Continuing would burn an attempt slot, run Guardian/risk engine, and
+        // emit a spurious audit entry — all for an operation that does nothing.
+        this.attemptCounts.set(key, attempt - 1);
+        this._recordTimelineEntry(key, fingerprint, issue, podLogs, diagnosis, null, 'skipped', `policy modified action to noop: ${policyResult.reason}`);
+        this.cooldowns.set(key, Date.now());
+        return;
+      }
+    }
+
+    // Policy can escalate risk independently of LLM classification
+    const riskOverride = this.policyEngine.evaluateRiskOverrides(
+      { ...policyPlan, action: policyResult.action },
+      policyCtx
+    );
+    if (riskOverride.forceApproval || riskOverride.risk !== (diagnosis.risk || '').toUpperCase()) {
+      console.warn(`[${this.name}] [POLICY] Risk escalated: ${diagnosis.risk} → ${riskOverride.risk}  (${riskOverride.reason})`);
+      diagnosis.risk = riskOverride.risk;
+    }
+
+    // ── Step 6: Guardian Agent reviews the plan ───────────────────────────────
     const guardian = await this.guardian.review({ issue, diagnosis, podLogs, attempt });
 
     console.log(`[${this.name}] [GUARDIAN] verdict=${guardian.verdict}  class=${guardian.classification}  confidence=${guardian.confidence?.toFixed(2)}`);
@@ -158,192 +347,172 @@ class ClusterAgent {
         metadata: { issueKey: key, guardianClass: guardian.classification },
       });
       temporal.add({ cluster: this.name, action: diagnosis.action, status: 'blocked', issue: issue.type, riskScore: 0.8 });
+      this._recordTimelineEntry(key, fingerprint, issue, podLogs, diagnosis, guardian, 'blocked', 'guardian rejected');
       this.cooldowns.set(key, Date.now());
       return;
     }
 
     if (guardian.verdict === 'MODIFY') {
       console.warn(`[${this.name}] [GUARDIAN] Action MODIFIED: ${diagnosis.action} → ${guardian.suggestedAction}`);
-      console.warn(`[${this.name}] [GUARDIAN] Reason: ${guardian.reason}`);
       diagnosis.action = guardian.suggestedAction;
     }
 
-    // DANGEROUS classification forces the human approval gate regardless of risk engine
     if (guardian.classification === 'DANGEROUS') {
-      console.warn(`[${this.name}] [GUARDIAN] Classification DANGEROUS — forcing human approval`);
+      console.warn(`[${this.name}] [GUARDIAN] DANGEROUS — forcing human approval gate`);
       diagnosis.risk = 'HIGH';
     }
 
-    // ── 3. Risk engine — tier-aware override ─────────────────────────────────
+    // ── Step 7: Risk engine — tier-aware score ────────────────────────────────
     const riskParams = ACTION_RISK_PARAMS[diagnosis.action];
     if (riskParams) {
       const engineResult = riskEngine.calculateRisk({
-        action:         riskParams.engineAction,
-        clusterTier:    this.tier,
-        blastRadius:    riskParams.blastRadius,
-        reversibility:  riskParams.reversibility,
-        llmConfidence:  diagnosis.risk === 'LOW' ? 0.9 : diagnosis.risk === 'MEDIUM' ? 0.7 : 0.5,
-        costImpact:     riskParams.costImpact,
+        action:        riskParams.engineAction,
+        clusterTier:   this.tier,
+        blastRadius:   riskParams.blastRadius,
+        reversibility: riskParams.reversibility,
+        llmConfidence: diagnosis.risk === 'LOW' ? 0.9 : diagnosis.risk === 'MEDIUM' ? 0.7 : 0.5,
+        costImpact:    riskParams.costImpact,
       });
       console.log(`[${this.name}] [RISK] score=${engineResult.score}  engine=${engineResult.decision}  tier=${this.tier}`);
 
       if (engineResult.decision === 'BLOCK' && diagnosis.risk !== 'HIGH') {
-        console.warn(`[${this.name}] [RISK] Engine overrides LLM risk → HIGH`);
+        console.warn(`[${this.name}] [RISK] Engine overrides to HIGH`);
         diagnosis.risk = 'HIGH';
       }
     }
 
-    // ── 4. Approval gate for high-risk actions ────────────────────────────────
+    // ── Step 8: Approval gate for high-risk actions ───────────────────────────
     if (HIGH_RISK_ACTIONS.has(diagnosis.action) || diagnosis.risk === 'HIGH') {
-      console.log(`[${this.name}] [APPROVAL] High-risk action — waiting for human decision…`);
+      console.log(`[${this.name}] [APPROVAL] High-risk — waiting for human decision…`);
       const approved = await approvalStore.requestApproval({ issue, diagnosis, issueKey: key, guardianNote: guardian.reason });
       if (!approved) {
-        console.log(`[${this.name}] [APPROVAL] Denied — skipping this attempt`);
-        audit.blocked({ cluster: this.name, agent: this.name, action: diagnosis.action, reason: 'approval denied or timed out', metadata: { issueKey: key, guardianClass: guardian.classification } });
+        console.log(`[${this.name}] [APPROVAL] Denied — skipping`);
+        audit.blocked({ cluster: this.name, agent: this.name, action: diagnosis.action, reason: 'approval denied or timed out', metadata: { issueKey: key } });
         temporal.add({ cluster: this.name, action: diagnosis.action, status: 'blocked', issue: issue.type, riskScore: 1 });
+        this._recordTimelineEntry(key, fingerprint, issue, podLogs, diagnosis, guardian, 'blocked', 'approval denied');
         this.cooldowns.set(key, Date.now());
         return;
       }
-      console.log(`[${this.name}] [APPROVAL] Approved — applying fix`);
+      console.log(`[${this.name}] [APPROVAL] Approved — proceeding`);
     }
 
-    // ── 5. Apply fix ──────────────────────────────────────────────────────────
+    // ── Step 9: Executor applies the fix ─────────────────────────────────────
     try {
       await this._applyFix(issue, diagnosis.action);
       console.log(`[${this.name}] [FIX] Applied: ${diagnosis.action} on ${target}`);
     } catch (err) {
       console.error(`[${this.name}] [FIX] Failed: ${err.message}`);
-      audit.failure({ cluster: this.name, agent: this.name, action: diagnosis.action, reason: err.message, metadata: { issueKey: key, guardianClass: guardian.classification } });
+      audit.failure({ cluster: this.name, agent: this.name, action: diagnosis.action, reason: err.message, metadata: { issueKey: key } });
       temporal.add({ cluster: this.name, action: diagnosis.action, status: 'failed', issue: issue.type, riskScore: 0.5 });
+      this._recordTimelineEntry(key, fingerprint, issue, podLogs, diagnosis, guardian, 'failed', err.message);
       this.cooldowns.set(key, Date.now());
       return;
     }
 
-    // ── 6. Validate ───────────────────────────────────────────────────────────
+    // ── Step 10: Validate — did the fix work? ─────────────────────────────────
     console.log(`[${this.name}] [VALIDATE] Waiting ${this.VALIDATE_WAIT_MS / 1000}s…`);
     await new Promise(r => setTimeout(r, this.VALIDATE_WAIT_MS));
 
     const resolved = await this._validateFix(issue);
+
     if (resolved) {
       console.log(`[${this.name}] [RESOLVED] ${key} fixed after ${attempt} attempt(s)`);
-      audit.success({ cluster: this.name, agent: this.name, action: diagnosis.action, metadata: { issueKey: key, attempt, guardianClass: guardian.classification } });
+      audit.success({ cluster: this.name, agent: this.name, action: diagnosis.action, metadata: { issueKey: key, attempt } });
       temporal.add({ cluster: this.name, action: diagnosis.action, status: 'success', issue: issue.type, riskScore: 0.2 });
-      this.attemptCounts.delete(key);
     } else {
       console.log(`[${this.name}] [UNRESOLVED] Fix did not work — will retry next cycle`);
       audit.failure({ cluster: this.name, agent: this.name, action: diagnosis.action, reason: 'validation failed — issue persists', metadata: { issueKey: key, attempt } });
       temporal.add({ cluster: this.name, action: diagnosis.action, status: 'failed', issue: issue.type, riskScore: 0.5 });
     }
 
+    // Record this attempt in the episode timeline draft
+    this._recordTimelineEntry(
+      key, fingerprint, issue, podLogs, diagnosis, guardian,
+      resolved ? 'success' : 'failed',
+      resolved ? 'issue resolved' : 'issue persists after fix',
+    );
+
+    // ── Step 11: Reflection + episode persistence on resolution ──────────────
+    if (resolved) {
+      const epDraft = this.episodeTimelines.get(key);
+
+      const reflection = await ReflectionAgent.reflect({
+        issue,
+        planAction:         diagnosis.action,
+        rootCauseDiagnosis: diagnosis.rootCause,
+        timeline:           epDraft?.timeline ?? [],
+        resolved:           true,
+        podLogs,
+      });
+
+      // ── Step 12: Store episode in MongoDB + Qdrant + extract rules ───────
+      await episodicMemory.store({
+        fingerprint,
+        context:         epDraft?.context         ?? this._buildContext(issue, podLogs),
+        timeline:        epDraft?.timeline         ?? [],
+        reflection,
+        resolved:        true,
+        resolvedAction:  diagnosis.action,
+        totalAttempts:   attempt,
+        metricsSnapshot: epDraft?.metricsSnapshot  ?? null,
+      });
+
+      await ruleEngine.analyze(issue.type);
+
+      const stats = episodicMemory.stats();
+      console.log(`[${this.name}] [MEMORY] Index: ${stats.buckets} buckets, ${stats.episodes} episodes`);
+
+      this.episodeTimelines.delete(key);
+      this.attemptCounts.delete(key);
+    }
+
     this.cooldowns.set(key, Date.now());
   }
 
-  // ── LLM diagnosis ──────────────────────────────────────────────────────────
-  async _askLLM(issue) {
-    const { logs, env, secrets, ...safe } = issue;
-    const hasDeployment = !!safe.deployment;
-
-    // Fetch live pod logs for richer LLM context (best-effort)
-    let podLogs = '';
-    if (safe.podName) {
-      try {
-        podLogs = await kubectl.getLogs(safe.podName, safe.namespace ?? 'default', this.context);
-      } catch { /* logs unavailable — not critical */ }
+  // ── Accumulate timeline entries across attempts ────────────────────────────
+  _recordTimelineEntry(key, fingerprint, issue, podLogs, diagnosis, guardian, outcome, note) {
+    if (!this.episodeTimelines.has(key)) {
+      this.episodeTimelines.set(key, {
+        fingerprint,
+        context:       this._buildContext(issue, podLogs),
+        timeline:      [],
+        lastDiagnosis: null,
+      });
     }
-
-    // Recent failure history for this issue type on this cluster
-    const recentHistory = temporal.getClusterHistory(this.name)
-      .filter(e => e.issue === safe.type)
-      .slice(-3);
-
-    const prompt = `Kubernetes issue detected:
-${JSON.stringify(safe, null, 2)}
-${podLogs ? `\nRecent pod logs (last 50 lines):\n${podLogs}\n` : ''}
-${recentHistory.length > 0 ? `\nPrevious fix attempts on this issue type:\n${JSON.stringify(recentHistory, null, 2)}\n` : ''}
-ACTION RULES — follow strictly:
-- "increase_memory": use when oomKilled=true or exitCode=137. The container was killed because it exceeded its memory limit. ⚠ REQUIRES HUMAN APPROVAL.
-- "rollback"       : use when a Deployment exists and the current version is broken (bad image, bad command). Undoes the last rollout.
-- "restart"        : use when a Deployment exists and the crash is transient (not OOM, not bad image).
-- "delete_pod"     : use ONLY for bare pods with NO deployment. Useless for deployment-managed pods — Kubernetes recreates them instantly.
-- "scale_down"     : use when the deployment has too many replicas causing resource pressure.
-- "noop"           : only when no automated fix is safe.
-
-deployment present: ${hasDeployment}
-oomKilled: ${safe.oomKilled ?? false}
-
-Return ONLY valid JSON:
-{
-  "rootCause": "one-sentence diagnosis",
-  "action": "increase_memory|restart|rollback|delete_pod|scale_down|noop",
-  "risk": "LOW|MEDIUM|HIGH"
-}`;
-
-    const systemMsg   = 'You are a Kubernetes SRE. Output ONLY valid JSON. No markdown.';
-    const model       = process.env.OPENAI_MODEL;
-    const temperature = 0.1;
-
-    const estimatedInputTokens = Math.ceil((systemMsg.length + prompt.length) / 4);
-
-    console.log(`[${this.name}] [LLM] ── Request params ──────────────────`);
-    console.log(`[${this.name}] [LLM]   model       : ${model}`);
-    console.log(`[${this.name}] [LLM]   temperature : ${temperature}`);
-    console.log(`[${this.name}] [LLM]   stream      : true`);
-    console.log(`[${this.name}] [LLM]   pod logs    : ${podLogs ? `${podLogs.split('\n').length} lines` : 'unavailable'}`);
-    console.log(`[${this.name}] [LLM]   history ctx : ${recentHistory.length} prior attempt(s)`);
-    console.log(`[${this.name}] [LLM]   prompt chars: ${systemMsg.length + prompt.length} (system: ${systemMsg.length}, user: ${prompt.length})`);
-    console.log(`[${this.name}] [LLM]   est. tokens : ~${estimatedInputTokens} input`);
-    console.log(`[${this.name}] [LLM] ─────────────────────────────────────`);
-
-    const t0 = Date.now();
-
-    const stream = await client.chat.completions.create({
-      model,
-      temperature,
-      stream:         true,
-      stream_options: { include_usage: true },
-      messages: [
-        { role: 'system', content: systemMsg },
-        { role: 'user',   content: prompt },
-      ],
+    const draft = this.episodeTimelines.get(key);
+    draft.timeline.push({
+      action:         diagnosis.action,
+      outcome,
+      guardianVerdict: guardian?.verdict ?? null,
+      note,
+      at:             new Date(),
     });
+    draft.lastDiagnosis = diagnosis.rootCause;
+  }
 
-    let raw = '';
-    let usage = null;
-    for await (const chunk of stream) {
-      raw   += chunk.choices[0]?.delta?.content ?? '';
-      if (chunk.usage) usage = chunk.usage;
+  // ── Snapshot execution context at incident start ───────────────────────────
+  _buildContext(issue, podLogs) {
+    return {
+      cluster:     this.name,
+      namespace:   issue.namespace ?? 'default',
+      deployment:  issue.deployment ?? null,
+      pod:         issue.podName,
+      restartCount: issue.restartCount ?? 0,
+      logSnippet:  podLogs ? podLogs.slice(-500) : '',
+    };
+  }
+
+  // ── Execute a kubectl command after sanitization ──────────────────────────
+  // All direct kubectl.runCommand() calls go through here so the PolicyEngine
+  // sanitizer and the dryRunMode flag are always applied.
+  async _runSafeCommand(cmd) {
+    const { safe, command, reason } = this.policyEngine.sanitizeCommand(cmd);
+    if (!safe) throw new Error(`Command blocked by policy sanitizer: ${reason}`);
+    if (this.policyEngine.dryRunMode) {
+      console.log(`[${this.name}] [DRY-RUN] would execute: ${command}`);
+      return '(dry-run)';
     }
-
-    const elapsed = Date.now() - t0;
-
-    if (usage) {
-      console.log(`[${this.name}] [LLM] ── Token usage (real) ───────────────`);
-      console.log(`[${this.name}] [LLM]   prompt tokens     : ${usage.prompt_tokens}`);
-      console.log(`[${this.name}] [LLM]   completion tokens : ${usage.completion_tokens}`);
-      console.log(`[${this.name}] [LLM]   total tokens      : ${usage.total_tokens}`);
-    } else {
-      console.log(`[${this.name}] [LLM] ── Token usage (estimated) ──────────`);
-      console.log(`[${this.name}] [LLM]   input  tokens : ~${estimatedInputTokens}`);
-      console.log(`[${this.name}] [LLM]   output tokens : ~${Math.ceil(raw.length / 4)}`);
-    }
-    console.log(`[${this.name}] [LLM]   response time : ${elapsed}ms`);
-    console.log(`[${this.name}] [LLM] ─────────────────────────────────────`);
-
-    console.log(`[${this.name}] [LLM] Raw response: ${raw}`);
-    const parsed = JSON.parse(raw);
-    if (!VALID_ACTIONS.has(parsed.action)) {
-      console.warn(`[${this.name}] [GUARD] invalid LLM action '${parsed.action}' — defaulting to noop`);
-      parsed.action = 'noop';
-    }
-
-    if (parsed.action === 'delete_pod' && hasDeployment) {
-      console.warn(`[${this.name}] [GUARD] delete_pod overridden to rollback (deployment exists)`);
-      parsed.action = 'rollback';
-    }
-
-    // Attach pod logs so the guardian can reuse them without a second kubectl call
-    parsed._podLogs = podLogs;
-    return parsed;
+    return kubectl.runCommand(command);
   }
 
   // ── Apply the chosen fix ───────────────────────────────────────────────────
@@ -352,25 +521,48 @@ Return ONLY valid JSON:
     const dep = issue.deployment;
     const pod = issue.podName;
 
+    // Dry-run mode: log intent but skip all kubectl calls
+    if (this.policyEngine.dryRunMode) {
+      console.log(`[${this.name}] [DRY-RUN] Simulating "${action}" on ${dep ?? pod} (ns: ${ns})`);
+      return;
+    }
+
     switch (action) {
       case 'restart':
         if (!dep) throw new Error('restart requires a deployment');
         console.log(`[${this.name}] kubectl rollout restart deployment/${dep} -n ${ns}`);
-        await kubectl.restartDeployment(dep, ns, this.context);
+        await this._runSafeCommand(
+          `kubectl --context=${this.context} rollout restart deployment/${dep} -n ${ns}`
+        );
         break;
 
       case 'rollback':
         if (!dep) throw new Error('rollback requires a deployment');
         console.log(`[${this.name}] kubectl rollout undo deployment/${dep} -n ${ns}`);
-        await kubectl.runCommand(`kubectl --context=${this.context} rollout undo deployment/${dep} -n ${ns}`);
+        await this._runSafeCommand(
+          `kubectl --context=${this.context} rollout undo deployment/${dep} -n ${ns}`
+        );
         break;
 
       case 'increase_memory': {
         if (!dep) throw new Error('increase_memory requires a deployment');
-        console.log(`[${this.name}] kubectl set resources deployment/${dep} --limits=memory=256Mi -n ${ns}`);
-        await kubectl.runCommand(
+        // Read current memory limit so we increase from the real baseline, not a hardcoded 256Mi.
+        // The GET is read-only so it bypasses the write sanitizer intentionally.
+        let currentLimitMi = 128;
+        try {
+          const raw = await kubectl.runCommand(
+            `kubectl --context=${this.context} get deployment/${dep} -n ${ns}` +
+            ` -o jsonpath={.spec.template.spec.containers[0].resources.limits.memory}`
+          );
+          if (raw.trim()) currentLimitMi = _parseMiB(raw.trim());
+        } catch { /* use fallback 128Mi */ }
+
+        const newLimitMi   = Math.max(256, Math.ceil(currentLimitMi * 1.5));
+        const newRequestMi = Math.ceil(newLimitMi * 0.5);
+        console.log(`[${this.name}] memory ${currentLimitMi}Mi → ${newLimitMi}Mi (×1.5) for deployment/${dep} -n ${ns}`);
+        await this._runSafeCommand(
           `kubectl --context=${this.context} set resources deployment/${dep}` +
-          ` -n ${ns} --limits=memory=256Mi --requests=memory=128Mi`
+          ` -n ${ns} --limits=memory=${newLimitMi}Mi --requests=memory=${newRequestMi}Mi`
         );
         break;
       }
@@ -378,19 +570,20 @@ Return ONLY valid JSON:
       case 'delete_pod':
         if (!pod) throw new Error('delete_pod requires a pod name');
         console.log(`[${this.name}] kubectl delete pod ${pod} -n ${ns}`);
-        await kubectl.deletePod(pod, ns, this.context);
+        await this._runSafeCommand(
+          `kubectl --context=${this.context} delete pod ${pod} -n ${ns}`
+        );
         break;
 
       case 'scale_down':
-        if (!dep) {
-          // Bare pod — no deployment to scale. Delete the pod instead so it
-          // doesn't keep crashing without the agent being able to remediate.
-          console.warn(`[${this.name}] [GUARD] scale_down on bare pod — falling back to delete_pod`);
-          await kubectl.deletePod(pod, ns, this.context);
-        } else {
-          console.log(`[${this.name}] kubectl scale deployment/${dep} --replicas=1 -n ${ns}`);
-          await kubectl.scaleDeployment(dep, 1, ns, this.context);
-        }
+        // Policy (Rule 3a) rejects scale_down when deploymentExists is false, so dep should
+        // always be set here. Throw rather than silently falling back to delete_pod, which
+        // would execute a different action than what the risk/approval gates evaluated.
+        if (!dep) throw new Error('scale_down requires a Deployment — bare pod scale is not supported');
+        console.log(`[${this.name}] kubectl scale deployment/${dep} --replicas=1 -n ${ns}`);
+        await this._runSafeCommand(
+          `kubectl --context=${this.context} scale deployment/${dep} --replicas=1 -n ${ns}`
+        );
         break;
 
       default:
