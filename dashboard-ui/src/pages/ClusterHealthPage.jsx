@@ -2,7 +2,9 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { apiFetch } from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
 
-const ERRORS_REFRESH_MS = 30_000
+const ERRORS_REFRESH_MS  = 30_000
+const METRICS_REFRESH_MS = 30_000
+const NODES_REFRESH_MS   = 30_000
 import FilterDrawer, { FilterSection, FilterChips } from '../components/FilterDrawer'
 
 const REFRESH_INTERVAL = 10
@@ -558,6 +560,240 @@ function AlertsTable({ errors }) {
   )
 }
 
+// ── Node Health view ──────────────────────────────────────────────────────────
+const NODE_COND_LABEL = {
+  MemoryPressure:    { label: 'Mem Pressure',  cls: 'nc-cond-warn'   },
+  DiskPressure:      { label: 'Disk Pressure', cls: 'nc-cond-warn'   },
+  PIDPressure:       { label: 'PID Pressure',  cls: 'nc-cond-warn'   },
+  NetworkUnavailable:{ label: 'Net Unavail',   cls: 'nc-cond-danger' },
+}
+
+function ConditionTags({ conditions }) {
+  const tags = []
+  for (const [k, active] of Object.entries(conditions ?? {})) {
+    if (k === 'Ready' || !active) continue
+    const c = NODE_COND_LABEL[k] ?? { label: k, cls: 'nc-cond-warn' }
+    tags.push(<span key={k} className={`nc-cond-tag ${c.cls}`}>{c.label}</span>)
+  }
+  return tags.length ? <div className="nc-cond-wrap">{tags}</div> : <span className="hcell-dim">—</span>
+}
+
+function PctBar({ pct, warnAt = 70, dangerAt = 90 }) {
+  if (pct == null) return <span className="hcell-dim">—</span>
+  const cls = pct >= dangerAt ? 'mf-danger' : pct >= warnAt ? 'mf-warn' : 'mf-ok'
+  return (
+    <div className="nh-pct-wrap">
+      <div className="mbar-track nh-pct-track">
+        <div className={`mbar-fill ${cls}`} style={{ width: `${Math.min(pct, 100)}%` }} />
+      </div>
+      <span className={`nh-pct-val${pct >= dangerAt ? ' pct-danger' : pct >= warnAt ? ' pct-warn' : ''}`}>{pct}%</span>
+    </div>
+  )
+}
+
+function NodeHealthView({ nodeClusters, loading }) {
+  const [search, setSearch] = useState('')
+  const q = search.trim().toLowerCase()
+
+  if (loading) return <div className="page-loading" style={{ marginTop: 16 }}>Loading node data…</div>
+  if (!nodeClusters?.length) return (
+    <div className="alerts-empty"><span style={{ fontSize: 28 }}>🖥</span><span>No node data available</span></div>
+  )
+
+  return (
+    <div className="nh-section">
+      <div className="prom-pods-header" style={{ marginBottom: 12 }}>
+        <div className="prom-pods-title">
+          Node Health
+          {nodeClusters.map(c => (
+            <span key={c.clusterName} className="prom-pods-count">
+              {c.clusterName}: {c.nodes.length} nodes
+            </span>
+          ))}
+        </div>
+        <div className="prom-pods-search-wrap">
+          <span className="health-search-icon">⌕</span>
+          <input className="health-search" placeholder="Filter nodes…"
+            value={search} onChange={e => setSearch(e.target.value)} />
+          {search && <button className="health-search-clear" onClick={() => setSearch('')}>✕</button>}
+        </div>
+      </div>
+
+      {nodeClusters.map(cluster => {
+        const visible       = q ? cluster.nodes.filter(n => n.name.includes(q)) : cluster.nodes
+        const notReadyCount = visible.filter(n => !n.isReady).length
+        const issueCount    = visible.filter(n => n.issues?.length > 0).length
+        if (!cluster.connected) return (
+          <div key={cluster.clusterName} className="health-error">⚠ {cluster.clusterName}: {cluster.error}</div>
+        )
+        return (
+          <div key={cluster.clusterName} className="nh-cluster-block">
+            <div className="nh-cluster-header">
+              <span className="hc-name">{cluster.clusterName}</span>
+              <span className={`tier-badge tier-${cluster.tier}`}>{cluster.tier}</span>
+              {notReadyCount > 0 && <span className="prom-pods-errbadge">{notReadyCount} NotReady</span>}
+              {issueCount    > 0 && <span className="prom-pods-oombadge">{issueCount} with issues</span>}
+            </div>
+            <div className="prom-pods-table-wrap">
+              <table className="prom-pods-table">
+                <thead>
+                  <tr>
+                    <th>Node</th><th>Status</th><th>Role</th>
+                    <th>CPU</th><th>Memory</th><th>Disk</th>
+                    <th>Conditions</th><th>Issues</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visible.map(node => (
+                    <tr key={node.name} className={`prom-pod-row${node.issues?.length > 0 ? ' prom-pod-row-err' : ''}`}>
+                      <td className="prom-pod-name mono-small" title={node.name}>
+                        {node.name.length > 38 ? node.name.slice(0, 36) + '…' : node.name}
+                      </td>
+                      <td>
+                        {node.isReady
+                          ? <span className="phase-b pb-running">Ready</span>
+                          : <span className="phase-b pb-failed">NotReady</span>}
+                      </td>
+                      <td>
+                        {node.isControlPlane
+                          ? <span className="nc-role-cp">control-plane</span>
+                          : <span className="hcell-dim">worker</span>}
+                      </td>
+                      <td><PctBar pct={node.cpuUsagePct} warnAt={70} dangerAt={90} /></td>
+                      <td><PctBar pct={node.memUsedPct}  warnAt={75} dangerAt={90} /></td>
+                      <td><PctBar pct={node.diskUsedPct} warnAt={80} dangerAt={95} /></td>
+                      <td><ConditionTags conditions={node.conditions} /></td>
+                      <td>
+                        {node.issues?.length
+                          ? <div className="prom-err-types">{node.issues.map((iss, i) => (
+                              <span key={i} className="prom-err-badge">{iss.type.replace('Node','')}</span>
+                            ))}</div>
+                          : <span className="prom-ok">✓</span>}
+                      </td>
+                    </tr>
+                  ))}
+                  {visible.length === 0 && (
+                    <tr><td colSpan={8} className="nc-history-empty">No nodes match "{search}"</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ── Prometheus all-pods metrics table ─────────────────────────────────────────
+function CpuBar({ cores }) {
+  if (cores == null) return <span className="hcell-dim">—</span>
+  const pct = Math.min(100, cores * 100)
+  const cls = pct > 80 ? 'mf-danger' : pct > 50 ? 'mf-warn' : 'mf-ok'
+  return (
+    <div className="prom-cpu-wrap">
+      <span className="prom-cpu-val">{cores < 0.001 ? '<0.001' : cores.toFixed(3)}</span>
+      <div className="mbar-track prom-cpu-track">
+        <div className={`mbar-fill ${cls}`} style={{ width: `${pct.toFixed(1)}%` }} />
+      </div>
+    </div>
+  )
+}
+
+function OomBadge({ oomKilled }) {
+  return oomKilled
+    ? <span className="prom-oom-yes" title="OOMKilled detected">OOM</span>
+    : <span className="prom-oom-no">—</span>
+}
+
+function ErrorTypeBadges({ types }) {
+  if (!types?.length) return <span className="prom-ok">✓</span>
+  return (
+    <div className="prom-err-types">
+      {types.map(t => (
+        <span key={t} className="prom-err-badge">{ALERT_LABELS[t] ?? t}</span>
+      ))}
+    </div>
+  )
+}
+
+function PrometheusPodsTable({ pods, loading }) {
+  const [search, setSearch] = useState('')
+  const q = search.trim().toLowerCase()
+  const visible = q
+    ? pods.filter(p => p.pod.includes(q) || p.namespace.includes(q))
+    : pods
+
+  if (loading) return <div className="page-loading" style={{ marginTop: 16 }}>Loading Prometheus metrics…</div>
+
+  if (!pods.length) return (
+    <div className="alerts-empty" style={{ marginTop: 16 }}>
+      <span style={{ fontSize: 24 }}>📊</span>
+      <span>No pod metrics found in Prometheus</span>
+    </div>
+  )
+
+  const errorCount   = pods.filter(p => p.errorTypes.length > 0).length
+  const oomCount     = pods.filter(p => p.oomKilled).length
+
+  return (
+    <div className="prom-pods-section">
+      <div className="prom-pods-header">
+        <div className="prom-pods-title">
+          All Pods — Prometheus Metrics
+          <span className="prom-pods-count">{pods.length} pods</span>
+          {errorCount > 0 && <span className="prom-pods-errbadge">{errorCount} with issues</span>}
+          {oomCount   > 0 && <span className="prom-pods-oombadge">{oomCount} OOM</span>}
+        </div>
+        <div className="prom-pods-search-wrap">
+          <span className="health-search-icon">⌕</span>
+          <input className="health-search" placeholder="Filter by pod or namespace…"
+            value={search} onChange={e => setSearch(e.target.value)} />
+          {search && <button className="health-search-clear" onClick={() => setSearch('')}>✕</button>}
+        </div>
+      </div>
+
+      <div className="prom-pods-table-wrap">
+        <table className="prom-pods-table">
+          <thead>
+            <tr>
+              <th>Namespace</th>
+              <th>Pod</th>
+              <th>CPU (cores)</th>
+              <th>Memory</th>
+              <th>Restarts</th>
+              <th>OOM</th>
+              <th>Issues</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map(p => (
+              <tr key={p.key} className={`prom-pod-row${p.errorTypes.length > 0 ? ' prom-pod-row-err' : ''}`}>
+                <td><span className="ns-tag">{p.namespace}</span></td>
+                <td className="prom-pod-name mono-small" title={p.pod}>
+                  {p.pod.length > 42 ? p.pod.slice(0, 40) + '…' : p.pod}
+                </td>
+                <td><CpuBar cores={p.cpuCores} /></td>
+                <td>
+                  {p.memBytes != null
+                    ? <span className="hcell-mono">{fmtBytes(p.memBytes)}</span>
+                    : <span className="hcell-dim">—</span>}
+                </td>
+                <td><RestartCount n={p.restarts ?? 0} /></td>
+                <td><OomBadge oomKilled={p.oomKilled} /></td>
+                <td><ErrorTypeBadges types={p.errorTypes} /></td>
+              </tr>
+            ))}
+            {visible.length === 0 && (
+              <tr><td colSpan={7} className="nc-history-empty">No pods match "{search}"</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function ClusterHealthPage() {
   const [data,              setData]              = useState(null)
@@ -571,6 +807,10 @@ export default function ClusterHealthPage() {
   const [noticeDismiss,     setNoticeDismiss]     = useState(false)
   const [promNoticeDismiss, setPromNoticeDismiss] = useState(false)
   const [errors,            setErrors]            = useState([])
+  const [promPods,          setPromPods]          = useState([])
+  const [promPodsLoading,   setPromPodsLoading]   = useState(false)
+  const [nodeClusters,      setNodeClusters]      = useState([])
+  const [nodesLoading,      setNodesLoading]      = useState(false)
   const [activeView,        setActiveView]        = useState('pods')
   const [expandedClusters,  setExpandedClusters]  = useState({})
   const [showClusterMgr,    setShowClusterMgr]    = useState(false)
@@ -598,7 +838,7 @@ export default function ClusterHealthPage() {
     return () => clearInterval(t)
   }, [])
 
-  // Fetch Prometheus error alerts (OOMKilled, high restarts)
+  // Fetch Prometheus error alerts + all-pods metrics
   useEffect(() => {
     const fetchErrors = async () => {
       try {
@@ -609,6 +849,36 @@ export default function ClusterHealthPage() {
     }
     fetchErrors()
     const iv = setInterval(fetchErrors, ERRORS_REFRESH_MS)
+    return () => clearInterval(iv)
+  }, [])
+
+  useEffect(() => {
+    const fetchPromPods = async () => {
+      setPromPodsLoading(true)
+      try {
+        const res  = await apiFetch('/api/metrics/pods')
+        const json = await res.json()
+        setPromPods(json.pods ?? [])
+      } catch { /* Prometheus unavailable */ }
+      finally { setPromPodsLoading(false) }
+    }
+    fetchPromPods()
+    const iv = setInterval(fetchPromPods, METRICS_REFRESH_MS)
+    return () => clearInterval(iv)
+  }, [])
+
+  useEffect(() => {
+    const fetchNodes = async () => {
+      setNodesLoading(true)
+      try {
+        const res  = await apiFetch('/api/nodes')
+        const json = await res.json()
+        setNodeClusters(Array.isArray(json) ? json : [])
+      } catch { /* kubectl unavailable */ }
+      finally { setNodesLoading(false) }
+    }
+    fetchNodes()
+    const iv = setInterval(fetchNodes, NODES_REFRESH_MS)
     return () => clearInterval(iv)
   }, [])
 
@@ -727,6 +997,13 @@ export default function ClusterHealthPage() {
             <span className={`hvtab-count ${errors.some(e => e.severity === 'critical') ? 'hvtab-count-crit' : 'hvtab-count-warn'}`}>
               {errors.length}
             </span>
+          )}
+        </button>
+        <button className={`hvtab${activeView === 'nodes' ? ' hvtab-active' : ''}`}
+          onClick={() => setActiveView('nodes')}>
+          🖥 Nodes
+          {nodeClusters.some(c => c.nodes.some(n => !n.isReady)) && (
+            <span className="hvtab-count hvtab-count-crit">!</span>
           )}
         </button>
       </div>
@@ -926,8 +1203,19 @@ export default function ClusterHealthPage() {
           {data && hasPrometheusMetrics && !promNoticeDismiss && (
             <PrometheusNotice onDismiss={() => setPromNoticeDismiss(true)} />
           )}
-          <AlertsTable errors={errors} />
+          {errors.length > 0 && (
+            <div className="prom-errors-block">
+              <div className="prom-section-label">⚠ Issues Detected ({errors.length})</div>
+              <AlertsTable errors={errors} />
+            </div>
+          )}
+          <PrometheusPodsTable pods={promPods} loading={promPodsLoading} />
         </>
+      )}
+
+      {/* ── Nodes view ── */}
+      {activeView === 'nodes' && (
+        <NodeHealthView nodeClusters={nodeClusters} loading={nodesLoading} />
       )}
 
     </div>

@@ -93,6 +93,47 @@ async function deletePod(podName, namespace = 'default', context) {
   return await runCommand(cmd);
 }
 
+/**
+ * Get all nodes
+ */
+async function getNodes(context) {
+  const out = await runCommand(`kubectl --context=${context} get nodes -o json`);
+  return JSON.parse(out);
+}
+
+/**
+ * Get Kubernetes events (all namespaces)
+ */
+async function getEvents(context) {
+  const out = await runCommand(`kubectl --context=${context} get events --all-namespaces -o json`);
+  return JSON.parse(out);
+}
+
+/**
+ * Cordon a node — mark unschedulable
+ */
+async function cordonNode(nodeName, context) {
+  return await runCommand(`kubectl --context=${context} cordon ${nodeName}`);
+}
+
+/**
+ * Uncordon a node — re-enable scheduling
+ */
+async function uncordonNode(nodeName, context) {
+  return await runCommand(`kubectl --context=${context} uncordon ${nodeName}`);
+}
+
+/**
+ * Drain a node — evict all non-DaemonSet pods
+ */
+async function drainNode(nodeName, context, { deleteEmptyDir = false, gracePeriod = 60 } = {}) {
+  const deleteFlag = deleteEmptyDir ? ' --delete-emptydir-data' : '';
+  return await runCommand(
+    `kubectl --context=${context} drain ${nodeName}` +
+    ` --ignore-daemonsets${deleteFlag} --timeout=${gracePeriod}s`
+  );
+}
+
 module.exports = {
   runCommand,
   getPods,
@@ -101,4 +142,9 @@ module.exports = {
   restartDeployment,
   scaleDeployment,
   deletePod,
+  getNodes,
+  getEvents,
+  cordonNode,
+  uncordonNode,
+  drainNode,
 };

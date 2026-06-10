@@ -332,7 +332,7 @@ class MetricsCollector {
     }
   }
 
-  // ── Collect node metrics ─────────────────────────────────────────────────────
+  // ── Collect node metrics (single node) ──────────────────────────────────────
   async collectNodeMetrics(nodeName) {
     const cacheKey = `node:${nodeName}`;
     const cached   = this._cache.get(cacheKey);
@@ -345,6 +345,76 @@ class MetricsCollector {
       const summary = this._aggregateNode(raw);
       this._cache.set(cacheKey, { data: summary, expiresAt: Date.now() + CACHE_TTL_MS });
       return summary;
+    } catch {
+      return null;
+    }
+  }
+
+  // ── Collect all nodes metrics in one batch ────────────────────────────────────
+  // Returns map: nodeName → { cpu, memory, disk, network }
+  async collectAllNodesMetrics() {
+    const cacheKey = 'batch:all-nodes';
+    const cached   = this._cache.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) return cached.data;
+
+    if (!this.client.available) return null;
+
+    try {
+      const [cpuRes, memTotalRes, memAvailRes, diskTotalRes, diskAvailRes, netRxRes, netTxRes] =
+        await Promise.all([
+          // CPU utilization per node (fraction, 0–1)
+          this.client.query(
+            'sum by (instance) (rate(node_cpu_seconds_total{mode!="idle"}[5m])) / count by (instance) (node_cpu_seconds_total{mode="idle"})'
+          ),
+          // Memory total bytes
+          this.client.query('node_memory_MemTotal_bytes'),
+          // Memory available bytes
+          this.client.query('node_memory_MemAvailable_bytes'),
+          // Disk total bytes (root filesystem)
+          this.client.query('node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"}'),
+          // Disk available bytes
+          this.client.query('node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"}'),
+          // Network receive bytes/s
+          this.client.query('sum by (instance) (rate(node_network_receive_bytes_total{device!="lo"}[5m]))'),
+          // Network transmit bytes/s
+          this.client.query('sum by (instance) (rate(node_network_transmit_bytes_total{device!="lo"}[5m]))'),
+        ]);
+
+      const map = {};
+
+      const _inst = r => r.metric?.instance?.replace(/:.*/, '') ?? r.metric?.node ?? null;
+
+      const _set = (res, key, transform) => {
+        for (const r of res ?? []) {
+          const node = _inst(r);
+          if (!node) continue;
+          if (!map[node]) map[node] = {};
+          map[node][key] = transform(parseFloat(r.value[1]));
+        }
+      };
+
+      _set(cpuRes,      'cpuUsagePct',   v => +(v * 100).toFixed(1));
+      _set(memTotalRes, 'memTotalBytes', v => v);
+      _set(memAvailRes, 'memAvailBytes', v => v);
+      _set(diskTotalRes,'diskTotalBytes',v => v);
+      _set(diskAvailRes,'diskAvailBytes',v => v);
+      _set(netRxRes,    'netRxBytesPerSec', v => +v.toFixed(0));
+      _set(netTxRes,    'netTxBytesPerSec', v => +v.toFixed(0));
+
+      // Compute derived fields
+      for (const m of Object.values(map)) {
+        if (m.memTotalBytes && m.memAvailBytes) {
+          m.memUsedBytes = m.memTotalBytes - m.memAvailBytes;
+          m.memUsedPct   = +((m.memUsedBytes / m.memTotalBytes) * 100).toFixed(1);
+        }
+        if (m.diskTotalBytes && m.diskAvailBytes) {
+          m.diskUsedBytes = m.diskTotalBytes - m.diskAvailBytes;
+          m.diskUsedPct   = +((m.diskUsedBytes / m.diskTotalBytes) * 100).toFixed(1);
+        }
+      }
+
+      this._cache.set(cacheKey, { data: map, expiresAt: Date.now() + CACHE_TTL_MS });
+      return map;
     } catch {
       return null;
     }

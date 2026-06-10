@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAuth } from './contexts/AuthContext'
 import { NotifyCtx } from './contexts/NotifyContext'
-import { sseUrl } from './lib/api'
+import { sseUrl, apiFetch } from './lib/api'
 import Toasts from './components/Toasts'
 import SignOutModal from './components/SignOutModal'
 import ThemeToggle from './components/ThemeToggle'
@@ -14,6 +14,7 @@ import HistoryPage from './pages/HistoryPage'
 import UsersPage from './pages/UsersPage'
 import HelpModal from './components/HelpModal'
 import ProfilePage from './pages/ProfilePage'
+import NotificationsSettingsPage from './pages/NotificationsSettingsPage'
 
 export default function AppShell() {
   const { user, logout }            = useAuth()
@@ -61,6 +62,28 @@ export default function AppShell() {
     return () => es.close()
   }, [notify])
 
+  // Keep the dashboard badge accurate on every page — DashboardPage only updates
+  // dashCounts while it is mounted, so we poll independently here.
+  useEffect(() => {
+    async function fetchCounts() {
+      try {
+        const [ar, er] = await Promise.all([
+          apiFetch('/api/approvals'),
+          apiFetch('/api/escalations'),
+        ])
+        const approvals   = await ar.json()
+        const escalations = await er.json()
+        setDashCounts({
+          approvals: Array.isArray(approvals) ? approvals.length : 0,
+          unclaimed: Array.isArray(escalations) ? escalations.filter(e => e.status === 'pending').length : 0,
+        })
+      } catch { /* network unavailable — keep last known value */ }
+    }
+    fetchCounts()
+    const id = setInterval(fetchCounts, 15_000)
+    return () => clearInterval(id)
+  }, [])
+
   const dashBadge = dashCounts.approvals + dashCounts.unclaimed
 
   return (
@@ -87,7 +110,7 @@ export default function AppShell() {
             </button>
             <button className={`nav-btn ${page === 'health'      ? 'active' : ''}`} onClick={() => navigate('health')}>Cluster Health</button>
             <button className={`nav-btn ${page === 'escalations' ? 'active' : ''}`} onClick={() => navigate('escalations')}>Escalations</button>
-            <button className={`nav-btn ${page === 'chat'        ? 'active' : ''}`} onClick={() => navigate('chat')}>Chat</button>
+            <button className={`nav-btn ${page === 'chat'        ? 'active' : ''}`} onClick={() => navigate('chat')}>AI Assistant</button>
             <button className={`nav-btn ${page === 'history'     ? 'active' : ''}`} onClick={() => navigate('history')}>History</button>
           </nav>
 
@@ -113,6 +136,9 @@ export default function AppShell() {
                   <button className="dropdown-item" onClick={() => navigate('profile')}>
                     <span className="dropdown-item-icon">👤</span> My Profile
                   </button>
+                  <button className="dropdown-item" onClick={() => navigate('notifications')}>
+                    <span className="dropdown-item-icon">🔔</span> Notifications
+                  </button>
                   {user.role === 'admin' && (
                     <button className="dropdown-item" onClick={() => navigate('users')}>
                       <span className="dropdown-item-icon">👥</span> Users
@@ -137,8 +163,9 @@ export default function AppShell() {
         {page === 'escalations'                    && <EscalationsPage />}
         {page === 'chat'                           && <ChatPage />}
         {page === 'history'                        && <HistoryPage />}
-        {page === 'users'   && user.role === 'admin' && <UsersPage />}
-        {page === 'profile'                        && <ProfilePage />}
+        {page === 'users'         && user.role === 'admin' && <UsersPage />}
+        {page === 'profile'                               && <ProfilePage />}
+        {page === 'notifications'                         && <NotificationsSettingsPage />}
       </div>
     </NotifyCtx.Provider>
   )

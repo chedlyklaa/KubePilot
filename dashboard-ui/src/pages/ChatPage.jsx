@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { apiFetch, getToken } from '../lib/api'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import { marked } from 'marked'
 
 const GENERAL_CHIPS = [
   'Why is my pod in CrashLoopBackOff?',
@@ -20,111 +23,229 @@ const CLUSTER_CHIPS = [
   'Give me a full cluster health report as PDF',
 ]
 
-// Keywords that trigger the per-message PDF download button
-const PDF_KEYWORDS = /\b(pdf|report|download|export|summary|incident)\b/i
+// ── Intent classifier ──────────────────────────────────────────────────────
+// Returns { intent: 'chat' | 'cluster_debug' | 'export_pdf' | 'explain', confidence: 0–1 }
+function detectIntent(text) {
+  const lower = text.toLowerCase()
 
-function isPdfRequest(messages, index) {
-  if (messages[index]?.role !== 'assistant') return false
-  const prev = messages[index - 1]
-  return !!(prev?.role === 'user' && PDF_KEYWORDS.test(prev.content))
+  // export_pdf uses regex patterns so "generate me a report", "create a status report",
+  // "give me a full pdf", etc. all match regardless of filler words between the verbs.
+  const PDF_PATTERNS = [
+    { re: /\b(generate|create|make|build|give\s+me)\s+(\w+\s+){0,3}report\b/, score: 6 },
+    { re: /\b(download|export|save)\s+(\w+\s+){0,2}report\b/,                  score: 6 },
+    { re: /\b(generate|create|export|save|make)\s+(\w+\s+){0,2}pdf\b/,          score: 6 },
+    { re: /\bexport\s+as\s+pdf\b/,                                               score: 6 },
+    { re: /\bsave\s+as\s+pdf\b/,                                                 score: 6 },
+    { re: /\bhealth\s+report\b/,                                                 score: 5 },
+    { re: /\bcluster\s+(\w+\s+)?report\b/,                                       score: 6 },
+    { re: /\bstatus\s+report\b/,                                                 score: 5 },
+    { re: /\brapport\b/,                                                         score: 4 },
+  ]
+
+  const INTENTS = {
+    export_pdf: {
+      patterns: PDF_PATTERNS,
+      keywords: [
+        { text: 'pdf',      score: 3 },
+        { text: 'report',   score: 2 },
+        { text: 'download', score: 2 },
+        { text: 'export',   score: 2 },
+      ],
+    },
+    cluster_debug: {
+      phrases: [
+        { text: 'my pods are crashing',             score: 5 },
+        { text: 'cluster is down',                  score: 5 },
+        { text: 'what is wrong with my cluster',    score: 5 },
+        { text: 'show cluster health',              score: 5 },
+        { text: 'show me all pods',                 score: 5 },
+        { text: 'which pods have',                  score: 5 },
+        { text: 'active escalations',               score: 5 },
+        { text: 'health of the default namespace',  score: 5 },
+        { text: 'pending approvals',                score: 4 },
+        { text: 'my cluster',                       score: 4 },
+        { text: 'my pods',                          score: 4 },
+        { text: 'my nodes',                         score: 4 },
+        { text: 'right now',                        score: 3 },
+        { text: 'currently running',                score: 4 },
+        { text: 'currently failing',                score: 4 },
+        { text: 'show me',                          score: 3 },
+      ],
+      keywords: [
+        { text: 'cluster',    score: 2 },
+        { text: 'pods',       score: 2 },
+        { text: 'nodes',      score: 2 },
+        { text: 'crash',      score: 2 },
+        { text: 'crashing',   score: 2 },
+        { text: 'failing',    score: 2 },
+        { text: 'restart',    score: 2 },
+        { text: 'kubernetes', score: 2 },
+        { text: 'namespace',  score: 2 },
+        { text: 'deployment', score: 2 },
+        { text: 'escalation', score: 2 },
+        { text: 'minikube',   score: 3 },
+      ],
+    },
+    explain: {
+      phrases: [
+        { text: 'what is the difference', score: 5 },
+        { text: 'how does',               score: 5 },
+        { text: 'how do i',               score: 5 },
+        { text: 'how to',                 score: 5 },
+        { text: 'what is',                score: 4 },
+        { text: 'what are',               score: 4 },
+        { text: 'explain the',            score: 5 },
+        { text: 'can you explain',        score: 5 },
+        { text: 'difference between',     score: 5 },
+        { text: 'why does',               score: 4 },
+        { text: 'why is',                 score: 4 },
+        { text: 'what does',              score: 4 },
+        { text: 'what do',                score: 4 },
+      ],
+      keywords: [
+        { text: 'explain',    score: 2 },
+        { text: 'definition', score: 2 },
+        { text: 'meaning',    score: 2 },
+      ],
+    },
+  }
+
+  const scores = {}
+  for (const [intent, def] of Object.entries(INTENTS)) {
+    let score = 0
+    for (const pat of (def.patterns ?? [])) {
+      if (pat.re.test(lower)) score += pat.score
+    }
+    for (const phrase of (def.phrases ?? [])) {
+      if (lower.includes(phrase.text)) score += phrase.score
+    }
+    for (const kw of def.keywords) {
+      // word-boundary match; longer keywords get a small bonus
+      const re = new RegExp(`\\b${kw.text}\\b`)
+      if (re.test(lower)) score += kw.score + Math.floor(kw.text.length / 4)
+    }
+    scores[intent] = score
+  }
+
+  const maxScore = Math.max(...Object.values(scores))
+  if (maxScore < 2) return { intent: 'chat', confidence: 0, scores }
+
+  const [bestIntent] = Object.entries(scores).reduce(
+    (best, curr) => (curr[1] > best[1] ? curr : best),
+    ['chat', 0]
+  )
+
+  return { intent: bestIntent, confidence: Math.min(maxScore / 15, 1.0), scores }
 }
 
-// Minimal markdown → HTML converter for report PDFs
-function mdToHtml(raw) {
-  // Extract code blocks first so we don't mangle them
-  const blocks = []
-  let t = raw.replace(/```[\w]*\n?([\s\S]*?)```/gm, (_, code) => {
-    blocks.push(code.trim())
-    return `\x00CODE${blocks.length - 1}\x00`
-  })
 
-  const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  t = esc(t)
 
-  // Restore code blocks
-  t = t.replace(/\x00CODE(\d+)\x00/g, (_, i) =>
-    `<pre class="code">${esc(blocks[+i])}</pre>`)
-
-  t = t
-    .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
-    .replace(/^### (.+)$/gm,  '<h3>$1</h3>')
-    .replace(/^## (.+)$/gm,   '<h2>$1</h2>')
-    .replace(/^# (.+)$/gm,    '<h1>$1</h1>')
-    .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
-    .replace(/\*\*(.+?)\*\*/g,     '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g,         '<em>$1</em>')
-    .replace(/`([^`]+)`/g,         '<code>$1</code>')
-    .replace(/^[-*•] (.+)$/gm,     '<li>$1</li>')
-    .replace(/^\d+\. (.+)$/gm,     '<li class="ol">$1</li>')
-    .replace(/^---+$/gm,           '<hr>')
-
-  // Wrap consecutive li items
-  t = t.replace(/(<li(?:\s[^>]*)?>[\s\S]*?<\/li>\n?)+/g, m =>
-    m.includes('class="ol"')
-      ? `<ol>${m.replace(/ class="ol"/g, '')}</ol>`
-      : `<ul>${m}</ul>`)
-
-  // Paragraphs
-  t = `<p>${t.replace(/\n\n+/g, '</p><p>').replace(/\n/g, '<br>')}</p>`
-
-  // Clean up block-level tags wrapped in <p>
-  ;['h1','h2','h3','h4','ul','ol','pre','hr'].forEach(tag => {
-    t = t
-      .replace(new RegExp(`<p>(<${tag}[\\s>])`, 'g'), '$1')
-      .replace(new RegExp(`(</${tag}>)<\\/p>`, 'g'), '$1')
-  })
-  t = t.replace(/<p>\s*<\/p>/g, '').replace(/<p>(<hr>)<\/p>/g, '$1')
-  return t
+// ── Severity detection from markdown text ─────────────────────────────────
+function detectSeverity(text) {
+  const t = text.toLowerCase()
+  if (/critical|crashloop|oomkill|evict|not ready|down\b|unavailable/.test(t)) return 'critical'
+  if (/warn|high|pending|failed|error|throttl|pressure/.test(t))               return 'warn'
+  return 'ok'
 }
 
-function downloadReportPdf(content, question) {
-  const win = window.open('', '_blank', 'width=940,height=720')
+// ── Extract title from first markdown heading, else first sentence ──────────
+function extractTitle(text) {
+  const h = text.match(/^#{1,3}\s+(.+)/m)
+  if (h) return h[1].replace(/[*_`]/g, '').trim().slice(0, 100)
+  const s = text.replace(/```[\s\S]*?```/g, '').match(/[^.!?\n]{10,120}/)
+  return s ? s[0].trim().slice(0, 100) : 'Cluster Status Report'
+}
+
+// ── PDF renderer — markdown content, KubePilot header/footer ──────────────
+function renderStructuredPdf(markdown) {
+  const win = window.open('', '_blank', 'width=980,height=800')
   if (!win) return
 
-  // Strip the cluster data prefix from the question if present
-  const cleanQ = (question ?? 'Report')
-    .replace(/\[LIVE CLUSTER DATA\][\s\S]*?\[MY QUESTION\]\n?/i, '')
-    .trim()
-    .slice(0, 100)
+  const SEV_COLOR = { ok: '#059669', warn: '#d97706', critical: '#dc2626' }
+  const SEV_BG    = { ok: '#d1fae5', warn: '#fef3c7', critical: '#fee2e2' }
+  const SEV_LABEL = { ok: '✓ Healthy', warn: '⚠ Warning', critical: '🔴 Critical' }
+  const severity  = detectSeverity(markdown)
+  const sc  = SEV_COLOR[severity]
+  const sbg = SEV_BG[severity]
+  const slb = SEV_LABEL[severity]
+  const title     = extractTitle(markdown)
+  const bodyHtml  = marked.parse(markdown)
 
   win.document.write(`<!DOCTYPE html>
-<html lang="en"><head>
-<meta charset="UTF-8">
-<title>${cleanQ}</title>
+<html lang="en"><head><meta charset="UTF-8"><title>${title}</title>
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body   { font-family: 'Segoe UI', Arial, sans-serif; padding: 36px 48px; max-width: 900px; margin: 0 auto; color: #111827; font-size: 13.5px; line-height: 1.75; }
-  .rhead { display: flex; align-items: center; justify-content: space-between; border-bottom: 3px solid #6366f1; padding-bottom: 14px; margin-bottom: 6px; }
-  .rlogo { font-size: 18px; font-weight: 800; color: #6366f1; }
-  .rmeta { font-size: 11px; color: #9ca3af; margin-bottom: 26px; }
-  .rtitle{ font-size: 16px; font-weight: 700; color: #111827; margin-bottom: 22px; }
-  h1 { font-size: 18px; font-weight: 700; color: #1e293b; margin: 22px 0 10px; border-bottom: 1px solid #e5e7eb; padding-bottom: 5px; }
-  h2 { font-size: 15px; font-weight: 700; color: #1e293b; margin: 18px 0 8px; }
-  h3 { font-size: 13.5px; font-weight: 700; color: #374151; margin: 14px 0 6px; }
-  h4 { font-size: 13px; font-weight: 600; color: #4b5563; margin: 12px 0 5px; }
-  p  { margin: 6px 0; }
-  ul, ol { padding-left: 22px; margin: 8px 0; }
-  li { margin: 4px 0; }
-  pre.code { background: #f8fafc; border: 1px solid #e2e8f0; border-left: 3px solid #6366f1; border-radius: 6px; padding: 12px 16px; font-size: 11.5px; font-family: 'Cascadia Code','Consolas',monospace; white-space: pre-wrap; margin: 10px 0; }
-  code { background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 3px; padding: 1px 5px; font-family: 'Cascadia Code','Consolas',monospace; font-size: 11.5px; }
-  hr { border: none; border-top: 1px solid #e5e7eb; margin: 18px 0; }
-  strong { font-weight: 700; color: #1e293b; }
-  @page { margin: 18mm 20mm; }
-  @media print { body { padding: 0; } }
-</style>
-</head><body>
-<div class="rhead">
-  <div class="rlogo">⎈ KubePilot</div>
-  <div style="font-size:11px;color:#9ca3af;">${new Date().toLocaleString()}</div>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',Arial,sans-serif;color:#111827;font-size:13px;line-height:1.7;background:#fff}
+
+  .hdr{background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 55%,#6366f1 100%);color:#fff;padding:26px 48px 22px}
+  .hdr-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+  .logo{font-size:19px;font-weight:800;letter-spacing:-.5px}.logo span{opacity:.75;font-weight:400}
+  .hdate{font-size:11px;opacity:.8}
+  .htitle{font-size:20px;font-weight:700;margin-bottom:4px}
+  .hsub{font-size:12px;opacity:.75}
+
+  .sbar{display:flex;align-items:center;gap:10px;padding:9px 48px;background:${sbg};border-bottom:2px solid ${sc}}
+  .sbadge{display:inline-flex;align-items:center;gap:5px;background:${sc};color:#fff;font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px}
+  .slabel{font-size:12px;color:${sc};font-weight:600}
+
+  .body{padding:28px 48px}
+
+  /* ── Markdown content styles ── */
+  .md h1{font-size:18px;font-weight:700;color:#1e293b;border-bottom:2px solid #6366f1;padding-bottom:5px;margin:22px 0 10px}
+  .md h2{font-size:15px;font-weight:700;color:#1e293b;border-bottom:1px solid #e2e8f0;padding-bottom:4px;margin:18px 0 8px}
+  .md h3{font-size:13.5px;font-weight:700;color:#334155;margin:14px 0 6px}
+  .md h4{font-size:13px;font-weight:600;color:#475569;margin:10px 0 4px}
+  .md p{color:#374151;margin:6px 0 10px}
+  .md ul,.md ol{padding-left:22px;margin:6px 0 10px}
+  .md li{color:#374151;margin:3px 0}
+  .md strong{font-weight:700}
+  .md em{font-style:italic}
+  .md blockquote{border-left:3px solid #6366f1;padding:4px 14px;margin:10px 0;color:#475569;font-style:italic}
+  .md code{font-family:'Cascadia Code','Fira Mono',monospace;font-size:11.5px;background:#f1f5f9;border-radius:4px;padding:1px 5px;color:#4338ca}
+  .md pre{background:#1e293b;border-radius:8px;padding:14px 18px;margin:12px 0;overflow-x:visible;white-space:pre-wrap;word-break:break-all}
+  .md pre code{background:none;padding:0;color:#e2e8f0;font-size:11.5px;line-height:1.6;white-space:pre-wrap;word-break:break-all}
+  .md table{width:100%;border-collapse:collapse;font-size:12px;margin:12px 0}
+  .md thead th{background:#f1f5f9;text-align:left;padding:7px 12px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#475569;border-bottom:2px solid #e2e8f0}
+  .md tbody tr{border-bottom:1px solid #f1f5f9}
+  .md td{padding:7px 12px;color:#374151}
+  .md hr{border:none;border-top:1px solid #e2e8f0;margin:18px 0}
+  .md a{color:#6366f1;text-decoration:underline}
+
+  .footer{margin-top:30px;padding-top:12px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;font-size:10px;color:#9ca3af}
+
+  @page{margin:14mm 16mm}
+  @media print{
+    .hdr,.sbar{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    body{padding:0}
+  }
+</style></head><body>
+
+<div class="hdr">
+  <div class="hdr-row">
+    <div class="logo">⎈ KubePilot <span>Report</span></div>
+    <div class="hdate">${new Date().toLocaleString()}</div>
+  </div>
+  <div class="htitle">${title}</div>
+  <div class="hsub">AI-generated operations report · KubePilot Dashboard</div>
 </div>
-<div class="rmeta">AI-generated report · KubePilot Dashboard</div>
-<div class="rtitle">${cleanQ}</div>
-${mdToHtml(content)}
+
+<div class="sbar">
+  <span class="sbadge">${slb}</span>
+  <span class="slabel">Overall Status</span>
+</div>
+
+<div class="body">
+  <div class="md">${bodyHtml}</div>
+  <div class="footer">
+    <span>KubePilot AI · Autonomous Kubernetes Management</span>
+    <span>Generated ${new Date().toUTCString()}</span>
+  </div>
+</div>
 </body></html>`)
 
   win.document.close()
   win.focus()
-  setTimeout(() => win.print(), 400)
+  setTimeout(() => win.print(), 500)
 }
 
 export default function ChatPage() {
@@ -139,6 +260,7 @@ export default function ChatPage() {
   const [elapsed,            setElapsed]            = useState(null)
   const [withClusterContext, setWithClusterContext]  = useState(false)
   const [clusterLoading,     setClusterLoading]      = useState(false)
+  const [pdfGenerating,      setPdfGenerating]       = useState(null)
   const bottomRef = useRef(null)
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
@@ -156,12 +278,47 @@ export default function ChatPage() {
     apiFetch('/api/chat/history', { method: 'PUT', body: { messages: msgs } }).catch(() => {})
   }
 
+  function generatePdf(msgIndex) {
+    const content = messages[msgIndex]?.content
+    if (!content) return
+    setPdfGenerating(msgIndex)
+    try {
+      renderStructuredPdf(content)
+    } finally {
+      setPdfGenerating(null)
+    }
+  }
+
   async function send() {
     const text = input.trim()
     if (!text || busy) return
 
-    const displayHistory = [...messages, { role: 'user', content: text }]
-    setMessages([...displayHistory, { role: 'assistant', content: '' }])
+    const { intent, confidence, scores } = detectIntent(text)
+    const userMsg      = { role: 'user', content: text }
+    const nextMessages = [...messages, userMsg]
+
+    // ── Require live cluster context when needed ───────────────────────────
+    // export_pdf that also scores on cluster_debug needs live data for the report
+    const needsCluster = intent === 'cluster_debug' ||
+      (intent === 'export_pdf' && (scores.cluster_debug ?? 0) > 2)
+
+    if (needsCluster && !withClusterContext) {
+      const prompt = {
+        role:            'assistant',
+        content:         '⎈ This question is about your live cluster. Please click the **⎈ Live** button above to connect, then ask again.',
+        isClusterPrompt: true,
+      }
+      const next = [...nextMessages, prompt]
+      setMessages(next)
+      setInput('')
+      localStorage.setItem(chatKey, JSON.stringify(next))
+      saveToDb(next)
+      return
+    }
+
+    // ── Stream LLM response; mark for PDF button if export_pdf intent ──────
+    const wantsPdf = intent === 'export_pdf' && confidence > 0.2
+    setMessages([...nextMessages, { role: 'assistant', content: '' }])
     setInput(''); setBusy(true); setElapsed(null)
 
     const patch = fn => setMessages(prev => {
@@ -170,13 +327,13 @@ export default function ChatPage() {
       return upd
     })
 
-    let apiHistory = displayHistory
+    let apiHistory = nextMessages.slice(-3)
     if (withClusterContext) {
       try {
         const r = await apiFetch('/api/chat/cluster-context')
         const { text: snapshot } = await r.json()
         apiHistory = [
-          ...messages,
+          ...messages.slice(-1),
           { role: 'user', content: `[LIVE CLUSTER DATA]\n${snapshot}\n\n[MY QUESTION]\n${text}` },
         ]
       } catch { /* cluster unreachable */ }
@@ -218,7 +375,10 @@ export default function ChatPage() {
       patch(m => ({ ...m, content: `⚠ ${err.message}`, error: true }))
     }
 
-    const finalMessages = [...displayHistory, { role: 'assistant', content: assistantContent }]
+    const assistantMsg  = { role: 'assistant', content: assistantContent, ...(wantsPdf && { isPdfRequest: true }) }
+    const finalMessages = [...nextMessages, assistantMsg]
+    // keep the isPdfRequest flag visible in the last bubble
+    setMessages(finalMessages)
     localStorage.setItem(chatKey, JSON.stringify(finalMessages))
     saveToDb(finalMessages)
     setBusy(false)
@@ -296,19 +456,30 @@ export default function ChatPage() {
           <div key={i} className={`chat-msg-row chat-msg-${msg.role}`}>
             {msg.role === 'assistant' ? (
               <div className="chat-assistant-wrap">
-                <div className={`chat-bubble-page ${msg.error ? 'bubble-error' : ''}`}>
-                  {msg.content || (busy && i === messages.length - 1
-                    ? <span className="thinking-dots"><span /><span /><span /></span>
-                    : null
-                  )}
-                </div>
-                {isPdfRequest(messages, i) && msg.content && !(busy && i === messages.length - 1) && (
+                {msg.isClusterPrompt ? (
+                  <div className="chat-bubble-page cluster-prompt-bubble">
+                    <span>⎈ This question is about your live cluster. Connect first, then ask again.</span>
+                    <button className="cluster-prompt-btn" onClick={toggleClusterMode}>Enable Live Mode</button>
+                  </div>
+                ) : (
+                  <div className={`chat-bubble-page ${msg.error ? 'bubble-error' : ''}`}>
+                    {!msg.content && busy && i === messages.length - 1
+                      ? <span className="thinking-dots"><span /><span /><span /></span>
+                      : <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                    }
+                  </div>
+                )}
+                {msg.isPdfRequest && msg.content && !(busy && i === messages.length - 1) && (
                   <button
                     className="msg-pdf-btn"
-                    onClick={() => downloadReportPdf(msg.content, messages[i - 1]?.content)}
+                    onClick={() => generatePdf(i)}
+                    disabled={pdfGenerating === i}
                     title="Download this report as PDF"
                   >
-                    📥 Download PDF
+                    {pdfGenerating === i
+                      ? <><span className="thinking-dots"><span /><span /><span /></span> Preparing report…</>
+                      : <><span className="pdf-btn-icon">⬇</span> Download Report</>
+                    }
                   </button>
                 )}
               </div>
@@ -334,7 +505,7 @@ export default function ChatPage() {
           disabled={busy}
         />
         <button className="btn-primary chat-send-btn" onClick={send} disabled={busy || !input.trim()}>
-          {busy ? '◌' : '↑'}
+          {busy || pdfGenerating ? '◌' : '↑'}
         </button>
       </div>
     </div>

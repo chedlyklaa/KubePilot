@@ -40,11 +40,19 @@ dev tier        → be permissive, mistakes are easily reversed
 staging tier    → moderate caution
 production tier → maximum caution; when in doubt, REJECT and let the human gate handle it
 
+━━━ NODE ACTION RULES ━━━
+cordon_node   → Acceptable when node has active conditions (NotReady/Pressure) AND multiple pods are affected.
+                REJECT if proposed for a single isolated pod failure with no node-level evidence.
+drain_node    → RISKY — evicts all pods on the node.
+                REJECT if: isControlPlane=true, affectedPods < 3 with no NodeNotReady, or same action attempted twice.
+                MODIFY to cordon_node if drain is premature but node isolation is still warranted.
+uncordon_node → Only APPROVE if original node condition is confirmed resolved.
+
 ━━━ CLASSIFICATION ━━━
-SAFE      → Action is clearly correct, minimal blast radius (restart, noop)
-CAUTIOUS  → Action is likely correct but some uncertainty (rollback, delete_pod on bare pod)
-RISKY     → Action may not solve the problem or has significant side effects (scale_down, repeated rollback)
-DANGEROUS → Action is wrong for this issue type, targets a non-existent resource, or contradicts the issue context
+SAFE      → Action is clearly correct, minimal blast radius (restart, noop, cordon on confirmed degraded node)
+CAUTIOUS  → Action is likely correct but some uncertainty (rollback, delete_pod on bare pod, cordon moderate confidence)
+RISKY     → Action may not solve the problem or has significant side effects (scale_down, drain_node, repeated rollback)
+DANGEROUS → Action is wrong for this issue type, contradicts context, or targets a control-plane node for drain
 
 ━━━ VERDICT ━━━
 APPROVE → Proceed with the proposed action as-is

@@ -23,6 +23,7 @@ export default function DashboardPage({ onCountsChange }) {
   const [escalations, setEscalations] = useState([])
   const [connected, setConnected]     = useState(false)
   const [filter, setFilter]           = useState('ALL')
+  const [search, setSearch]           = useState('')
   const [autoScroll, setAutoScroll]   = useState(true)
   const [rightTab, setRightTab]       = useState('approvals')
   const [tokens, setTokens]           = useState(null)
@@ -111,7 +112,8 @@ export default function DashboardPage({ onCountsChange }) {
     onCountsChange?.({ approvals: approvals.length, unclaimed: pendingEsc.length })
   }, [approvals.length, pendingEsc.length, onCountsChange])
 
-  const filtered   = filter === 'ALL' ? logs : logs.filter(l => l.level === filter)
+  const byLevel    = filter === 'ALL' ? logs : logs.filter(l => l.level === filter)
+  const filtered   = search ? byLevel.filter(l => l.message.toLowerCase().includes(search.toLowerCase())) : byLevel
   const warnCount  = logs.filter(l => l.level === 'WARN').length
   const errorCount = logs.filter(l => l.level === 'ERROR').length
 
@@ -141,11 +143,22 @@ export default function DashboardPage({ onCountsChange }) {
                 {lvl === 'ERROR' && errorCount > 0 && <span className="chip-count">{errorCount}</span>}
               </button>
             ))}
+            <div className="log-search-wrap">
+              <span className="log-search-icon">⌕</span>
+              <input
+                className="log-search-input"
+                placeholder="Search logs…"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+              />
+              {search && <button className="log-search-clear" onClick={() => setSearch('')}>×</button>}
+              {search && <span className="log-search-count">{filtered.length}</span>}
+            </div>
           </div>
           <div className="log-scroll" ref={logScrollRef} onScroll={onLogScroll}>
             {filtered.length === 0
-              ? <div className="log-empty">No {filter === 'ALL' ? '' : filter + ' '}log entries yet…</div>
-              : filtered.map(e => <LogRow key={e.id} entry={e} />)
+              ? <div className="log-empty">{search ? `No results for "${search}"` : `No ${filter === 'ALL' ? '' : filter + ' '}log entries yet…`}</div>
+              : filtered.map(e => <LogRow key={e.id} entry={e} search={search} />)
             }
             <div ref={logEndRef} />
           </div>

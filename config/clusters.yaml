@@ -4,13 +4,13 @@ clusters:
     tier: dev
     namespaces:
       - '*'
-  - name: local-cluster
+  - name: minikube
     context: minikube
     tier: dev
     namespaces:
       - '*'
   - name: staging-cluster
     context: staging-cluster
-    tier: staging
+    tier: dev
     namespaces:
       - '*'

@@ -32,7 +32,14 @@
       "Bash(curl -s \"http://localhost:9090/api/v1/query?query=kube_pod_container_status_restarts_total\")",
       "Bash(curl -s \"http://localhost:9090/api/v1/query?query=kube_node_status_condition\")",
       "Bash(helm upgrade *)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(git diff *)",
+      "PowerShell(\\(Get-Content 'C:\\\\Users\\\\temp\\\\Desktop\\\\BigApps_PFE\\\\k8s_ai_agent\\\\src\\\\agents\\\\clusterAgent.js' | Measure-Object -Line\\).Lines)",
+      "Bash(find . -name \"Teams.js\" -o -name \"teams.js\" 2>nul)",
+      "Bash(git show *)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\temp\\Desktop\\BigApps_PFE\\k8s_ai_agent"
     ]
   }
 }

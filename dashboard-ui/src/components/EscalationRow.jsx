@@ -1,9 +1,79 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useNotify } from '../contexts/NotifyContext'
 import { apiFetch } from '../lib/api'
 import { fmtDT } from '../utils/format'
 import { STATE_LABEL } from '../constants'
+
+const STATUS_OPTIONS = [
+  { value: 'acknowledged', label: 'Acknowledged' },
+  { value: 'in_progress',  label: 'Working on it' },
+  { value: 'not_fixed',    label: 'Not Fixed'     },
+  { value: 'need_help',    label: 'Need Help'      },
+  { value: 'fixed',        label: 'Fixed ✓'        },
+]
+
+function StatusDropdown({ value, onChange, disabled }) {
+  const [open,    setOpen]  = useState(false)
+  const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
+  const triggerRef = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    function onOutside(e) {
+      if (triggerRef.current && !triggerRef.current.contains(e.target)) setOpen(false)
+    }
+    function onScroll() { setOpen(false) }
+    document.addEventListener('mousedown', onOutside)
+    document.addEventListener('scroll', onScroll, true)
+    return () => {
+      document.removeEventListener('mousedown', onOutside)
+      document.removeEventListener('scroll', onScroll, true)
+    }
+  }, [open])
+
+  function toggle() {
+    if (disabled) return
+    if (!open) {
+      const rect = triggerRef.current.getBoundingClientRect()
+      setMenuPos({ top: rect.bottom + 4, left: rect.left })
+    }
+    setOpen(o => !o)
+  }
+
+  function select(val) {
+    setOpen(false)
+    if (val !== value) onChange(val)
+  }
+
+  return (
+    <div className={`sd-wrap sd-${value} ${disabled ? 'sd-disabled' : ''}`} ref={triggerRef}>
+      <button className="sd-trigger" onClick={toggle} disabled={disabled} type="button">
+        <span className="sd-label">{STATE_LABEL[value] ?? value}</span>
+        <span className="sd-arrow">{open ? '▴' : '▾'}</span>
+      </button>
+
+      {open && (
+        <div
+          className="sd-menu"
+          style={{ position: 'fixed', top: menuPos.top, left: menuPos.left, zIndex: 9999 }}
+        >
+          {STATUS_OPTIONS.map(opt => (
+            <button
+              key={opt.value}
+              className={`sd-option sd-option-${opt.value} ${opt.value === value ? 'sd-option-active' : ''}`}
+              onClick={() => select(opt.value)}
+              type="button"
+            >
+              {opt.label}
+              {opt.value === value && <span className="sd-check">✓</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function EscalationRow({ item, onRemove, users }) {
   const { user }              = useAuth()
@@ -18,8 +88,7 @@ export default function EscalationRow({ item, onRemove, users }) {
   const isAssigned = item.assignedTo?.userId === user.id
   const canEdit    = isAssigned
 
-  async function changeState(e) {
-    const state = e.target.value
+  async function changeState(state) {
     setBusy(true)
     await apiFetch(`/api/escalations/${item.id}/state`, { method: 'PUT', body: { state } })
     notify('success', `Status → ${STATE_LABEL[state]}`)
@@ -91,13 +160,7 @@ export default function EscalationRow({ item, onRemove, users }) {
 
         <td>
           {canEdit && item.status !== 'pending'
-            ? <select value={item.status} onChange={changeState} disabled={busy} className={`state-select state-select-${item.status}`}>
-                <option value="acknowledged">Acknowledged</option>
-                <option value="in_progress">Working on it</option>
-                <option value="not_fixed">Not Fixed</option>
-                <option value="need_help">Need Help</option>
-                <option value="fixed">Fixed ✓</option>
-              </select>
+            ? <StatusDropdown value={item.status} onChange={changeState} disabled={busy} />
             : <span className={`state-badge state-${item.status}`}>{STATE_LABEL[item.status] ?? item.status}</span>
           }
         </td>

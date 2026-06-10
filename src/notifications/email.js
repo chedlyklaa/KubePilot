@@ -52,6 +52,13 @@ async function sendOtp(toEmail, name, otp) {
           This code expires in <strong>10 minutes</strong>.<br>
           If you did not request this, ignore this email — your password will not change.
         </p>
+        <div style="text-align:center;margin-top:28px">
+          <a href="${process.env.DASHBOARD_URL || 'http://localhost:5173'}" target="_blank"
+             style="display:inline-block;padding:11px 28px;background:#6366f1;color:#fff;
+                    font-size:14px;font-weight:600;text-decoration:none;border-radius:8px">
+            Open Dashboard →
+          </a>
+        </div>
       </div>`,
     text: `Hi ${name},\n\nYour KubePilot password change code is: ${otp}\n\nExpires in 10 minutes.`,
   });

@@ -1,7 +1,7 @@
 // Escalation store — in-memory active escalations + MongoDB persistence.
 // Lifecycle: pending → acknowledged → in_progress → fixed | not_fixed | need_help
 
-const teams = require('../notifications/Teams');
+const notifEngine = require('../services/notifications/engine');
 
 let seq = 0;
 const escalations = new Map();
@@ -38,9 +38,10 @@ async function escalate(issueKey, issue, history) {
     existing.attempts            = (existing.attempts ?? 0) + 1;
     existing.assignedTo          = null;
     existing.assignedAt          = null;
-    existing.acknowledgedBy      = null;   // C2: was left set, misleading on re-escalated items
+    existing.acknowledgedBy      = null;
     existing.acknowledgedAt      = null;
     existing.reassignRequested   = false;
+    existing.createdAt           = new Date().toISOString();
     existing.stateUpdatedAt      = new Date().toISOString();
     console.warn(`[EscalationStore] Re-escalated "${issueKey}" (id=${existing.id}) — reset to pending after ${existing.attempts} total attempt(s)`);
 
@@ -62,25 +63,24 @@ async function escalate(issueKey, issue, history) {
     } catch {}
     _notify({ type: 'updated', escalation: _safe(existing) });
 
-    // Rate-limit: skip if we notified Teams for this entry less than 30 min ago.
-    // _lastTeamsNotif is set AFTER the send succeeds so a failed webhook doesn't
-    // consume the rate-limit window.
+    // Rate-limit: skip if we notified channels for this entry less than 30 min ago.
     const now = Date.now();
     const lastNotif = existing._lastTeamsNotif ?? 0;
     if (now - lastNotif >= 30 * 60 * 1000) {
-      teams.sendEscalation({
-        issueKey:     issueKey,
-        cluster:      existing.issue?.clusterName ?? issue?.clusterName,
-        namespace:    existing.issue?.namespace   ?? issue?.namespace,
-        type:         existing.issue?.type        ?? issue?.type,
-        attempts:     existing.attempts,
-        dashboardUrl: process.env.DASHBOARD_URL,
-      }).then(async () => {
+      notifEngine.emit({
+        severity: 'CRITICAL',
+        category: 'Incidents',
+        title:    `Re-Escalated: ${issueKey}`,
+        message:  `Agent failed again after ${existing.attempts} total attempt(s). Manual intervention still required.`,
+        namespace: existing.issue?.namespace ?? issue?.namespace,
+        source:   `ClusterAgent/${existing.issue?.clusterName ?? issue?.clusterName ?? '—'}`,
+        metadata: { issueKey, attempts: existing.attempts, type: existing.issue?.type ?? issue?.type },
+      }).then(() => {
         existing._lastTeamsNotif = Date.now();
         try {
           const { EscalationHistory } = require('../db/models');
           if (existing.mongoId)
-            await EscalationHistory.findByIdAndUpdate(existing.mongoId, { lastTeamsNotif: new Date() });
+            EscalationHistory.findByIdAndUpdate(existing.mongoId, { lastTeamsNotif: new Date() }).catch(() => {});
         } catch {}
       }).catch(() => {});
     }
@@ -118,14 +118,16 @@ async function escalate(issueKey, issue, history) {
   escalations.set(id, entry);
   _notify({ type: 'added', escalation: _safe(entry) });
 
-  // Notify general Teams channel so the whole team sees it
-  teams.sendEscalation({
-    issueKey:     issueKey,
-    cluster:      issue?.clusterName,
-    namespace:    issue?.namespace,
-    type:         issue?.type,
-    attempts:     history.length,
-    dashboardUrl: process.env.DASHBOARD_URL,
+  notifEngine.emit({
+    severity: 'CRITICAL',
+    category: 'Incidents',
+    title:    `Escalation: ${issueKey}`,
+    message:  `Agent exhausted ${history.length} attempt(s) without resolving the issue. Manual intervention required.`,
+    namespace: issue?.namespace,
+    source:   `ClusterAgent/${issue?.clusterName ?? '—'}`,
+    metadata: { issueKey, attempts: history.length, type: issue?.type },
+  }).then(() => {
+    entry._lastTeamsNotif = Date.now();
   }).catch(() => {});
 
   return id;

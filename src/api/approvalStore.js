@@ -1,5 +1,5 @@
-const TIMEOUT_MS = 10 * 60 * 1000;
-const teams = require('../notifications/Teams');
+const TIMEOUT_MS    = 10 * 60 * 1000;
+const notifEngine   = require('../services/notifications/engine');
 
 let seq = 0;
 const pending   = new Map();
@@ -10,15 +10,14 @@ function notify(event) { listeners.forEach(fn => fn(event)); }
 function requestApproval(payload) {
   const id = String(++seq);
 
-  // Notify admin Teams channel
-  teams.sendApprovalRequest({
-    issueKey:     payload.issueKey,
-    action:       payload.diagnosis?.action,
-    risk:         payload.diagnosis?.risk,
-    cluster:      payload.issue?.clusterName,
-    namespace:    payload.issue?.namespace,
-    rootCause:    payload.diagnosis?.rootCause,
-    dashboardUrl: process.env.DASHBOARD_URL,
+  notifEngine.emit({
+    severity: 'CRITICAL',
+    category: 'Agent Actions',
+    title:    `Approval Required: ${payload.issueKey}`,
+    message:  `High-risk action "${payload.diagnosis?.action}" needs approval. Risk: ${payload.diagnosis?.risk}. Cause: ${payload.diagnosis?.rootCause ?? '—'}`,
+    namespace: payload.issue?.namespace,
+    source:   `ClusterAgent/${payload.issue?.clusterName ?? '—'}`,
+    metadata: { issueKey: payload.issueKey, action: payload.diagnosis?.action, risk: payload.diagnosis?.risk },
   }).catch(() => {});
 
   return new Promise(resolve => {

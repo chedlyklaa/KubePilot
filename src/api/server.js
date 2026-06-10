@@ -14,20 +14,13 @@ const authService         = require('./authService');
 const mongoose = require('mongoose');
 const { User, ApprovalHistory, EscalationHistory, ChatHistory, CommandHistory } = require('../db/models');
 
-const metricsCollector = require('../monitoring/metricsCollector');
-const emailService     = require('../notifications/email');
+const metricsCollector  = require('../monitoring/metricsCollector');
 
-// In-memory OTP store for password-change email verification
-// userId → { otp, expiresAt, issuedAt }
-const otpStore = new Map();
-
-// Sweep expired OTP entries every 15 minutes (mirrors authService token cleanup)
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, entry] of otpStore) {
-    if (now > entry.expiresAt) otpStore.delete(id);
-  }
-}, 15 * 60 * 1000).unref();
+// ── Service layer ─────────────────────────────────────────────────────────────
+const userService     = require('../services/userService');
+const profileService  = require('../services/profileService');
+const clusterService  = require('../services/clusterService');
+const provisionService = require('../services/provisionService');
 
 const CONFIG_PATH = path.join(__dirname, '../../config/clusters.yaml');
 
@@ -163,7 +156,7 @@ async function buildClusterContext() {
 function createServer(port = 3001) {
   const app = express();
   app.use(cors());
-  app.use(express.json());
+  app.use(express.json({ limit: '5mb' }));
 
   // ── Auth ──────────────────────────────────────────────────────────────────
   app.post('/api/auth/login', async (req, res) => {
@@ -288,221 +281,25 @@ function createServer(port = 3001) {
 
   // ── User management (admin only) ──────────────────────────────────────────
   app.get('/api/users', requireAuth, requireAdmin, async (_req, res) => {
-    res.json(await User.find().select('-password').sort({ createdAt: 1 }));
+    res.json(await userService.list());
   });
   app.post('/api/users', requireAuth, requireAdmin, async (req, res) => {
-    const { email, password, name, role } = req.body;
-    if (!email || !password || !name) return res.status(400).json({ error: 'email, password and name required' });
-    if (await User.findOne({ email: email.toLowerCase() })) return res.status(409).json({ error: 'Email already in use' });
-    const u = await User.create({ email, password, name, role: role || 'developer' });
-    res.status(201).json({ id: u._id, email: u.email, name: u.name, role: u.role });
+    try { res.status(201).json(await userService.create(req.body)); }
+    catch (err) { res.status(err.status ?? 500).json({ error: err.message }); }
   });
   app.put('/api/users/:id', requireAuth, requireAdmin, async (req, res) => {
-    const { name, role, password, active } = req.body;
-    const upd = {};
-    if (name     !== undefined) { if (!name?.trim()) return res.status(400).json({ error: 'Name cannot be empty' }); upd.name = name.trim(); }
-    if (role     !== undefined) upd.role     = role;
-    if (password !== undefined) upd.password = password;
-    if (active   !== undefined) upd.active   = active;
-    const u = await User.findByIdAndUpdate(req.params.id, upd, { new: true, runValidators: true }).select('-password');
-    if (!u) return res.status(404).json({ error: 'User not found' });
-    res.json(u);
+    try { res.json(await userService.update(req.params.id, req.body)); }
+    catch (err) { res.status(err.status ?? 500).json({ error: err.message }); }
   });
   app.delete('/api/users/:id', requireAuth, requireAdmin, async (req, res) => {
-    if (req.params.id === req.user.id) return res.status(400).json({ error: 'Cannot delete your own account' });
-    await User.findByIdAndDelete(req.params.id);
-    res.json({ success: true });
+    try { res.json(await userService.delete(req.params.id, req.user.id)); }
+    catch (err) { res.status(err.status ?? 500).json({ error: err.message }); }
   });
 
   // ── Cluster pod health ────────────────────────────────────────────────────
   app.get('/api/cluster/pods', requireAuth, async (_req, res) => {
-    let clusters = [];
-    try { clusters = yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8')).clusters ?? []; } catch {}
-
-    const GPU_RESOURCES = ['nvidia.com/gpu', 'amd.com/gpu', 'intel.com/gpu', 'gpu.intel.com/i915'];
-
-    // Parse a Kubernetes memory/cpu string into a number (bytes for memory, millicores for cpu)
-    function parseK8sQuantity(str) {
-      if (!str) return null;
-      const n = parseFloat(str);
-      if (str.endsWith('Ki')) return n * 1024;
-      if (str.endsWith('Mi')) return n * 1024 ** 2;
-      if (str.endsWith('Gi')) return n * 1024 ** 3;
-      if (str.endsWith('Ti')) return n * 1024 ** 4;
-      if (str.endsWith('m'))  return n;           // millicores
-      if (str.endsWith('k'))  return n * 1000;
-      return n;
-    }
-
-    // Parse `kubectl top pods -n <ns> --no-headers` — 3 columns: NAME CPU MEM
-    function parseTopOutput(raw, namespace) {
-      const map = {};
-      for (const line of (raw ?? '').split('\n').filter(Boolean)) {
-        const parts = line.trim().split(/\s+/);
-        if (parts.length >= 3) {
-          const [name, cpu, memory] = parts;
-          map[`${namespace}/${name}`] = {
-            cpuRaw: cpu, memRaw: memory,
-            cpuMilli: parseK8sQuantity(cpu), memBytes: parseK8sQuantity(memory),
-          };
-        }
-      }
-      return map;
-    }
-
-    // Parse `kubectl top pods --all-namespaces --no-headers` — 4 columns: NS NAME CPU MEM
-    function parseTopOutputAllNs(raw) {
-      const map = {};
-      for (const line of (raw ?? '').split('\n').filter(Boolean)) {
-        const parts = line.trim().split(/\s+/);
-        if (parts.length >= 4) {
-          const [ns, name, cpu, memory] = parts;
-          map[`${ns}/${name}`] = {
-            cpuRaw: cpu, memRaw: memory,
-            cpuMilli: parseK8sQuantity(cpu), memBytes: parseK8sQuantity(memory),
-          };
-        }
-      }
-      return map;
-    }
-
-    // Fetch Prometheus batch metrics once for all clusters (cached 60 s)
-    let prometheusMap = {};
-    if (metricsCollector.isAvailable()) {
-      try { prometheusMap = await metricsCollector.collectAllPodsMetrics() ?? {}; } catch {}
-    }
-
-    const results = await Promise.allSettled(clusters.map(async cluster => {
-      const { name, context: ctx, tier = 'dev', namespaces: ns = ['default'] } = cluster;
-
-      const rawPods   = [];
-      const metricsMap = {};
-      const allNs     = ns.includes('*');
-
-      if (allNs) {
-        // Both calls are independent — run them in parallel
-        await Promise.allSettled([
-          (async () => {
-            try {
-              const json = await kubectl.getPods('*', ctx, true);
-              rawPods.push(...(json.items ?? []));
-            } catch (err) {
-              console.warn(`[HEALTH] ${name}/all-namespaces pods: ${err.message}`);
-            }
-          })(),
-          (async () => {
-            try {
-              const topOut = await kubectl.runCommand(
-                `kubectl --context=${ctx} top pods --all-namespaces --no-headers`
-              );
-              Object.assign(metricsMap, parseTopOutputAllNs(topOut));
-            } catch { /* metrics-server not available */ }
-          })(),
-        ]);
-      } else {
-        await Promise.allSettled(ns.map(async namespace => {
-          try {
-            const json = await kubectl.getPods(namespace, ctx, true);
-            rawPods.push(...(json.items ?? []));
-          } catch (err) {
-            console.warn(`[HEALTH] ${name}/${namespace} pods: ${err.message}`);
-          }
-          try {
-            const topOut = await kubectl.runCommand(
-              `kubectl --context=${ctx} top pods -n ${namespace} --no-headers`
-            );
-            Object.assign(metricsMap, parseTopOutput(topOut, namespace));
-          } catch { /* metrics-server not available */ }
-        }));
-      }
-
-      const pods = rawPods.map(pod => {
-        const meta      = pod.metadata  ?? {};
-        const spec      = pod.spec      ?? {};
-        const status    = pod.status    ?? {};
-        const csArr     = status.containerStatuses ?? [];
-        const icArr     = status.initContainerStatuses ?? [];
-        const allCS     = [...csArr, ...icArr];
-
-        const readyCount = csArr.filter(c => c.ready).length;
-        const totalCount = csArr.length;
-        const restarts   = allCS.reduce((s, c) => s + (c.restartCount ?? 0), 0);
-        const readyCond  = (status.conditions ?? []).find(c => c.type === 'Ready');
-
-        const containers = (spec.containers ?? []).map(c => {
-          const lim  = c.resources?.limits   ?? {};
-          const req  = c.resources?.requests ?? {};
-          const cs   = csArr.find(x => x.name === c.name) ?? {};
-          const gpu  = GPU_RESOURCES.reduce((v, k) => v ?? lim[k] ?? req[k] ?? null, null);
-          return {
-            name:          c.name,
-            image:         c.image,
-            ready:         cs.ready         ?? false,
-            state:         Object.keys(cs.state ?? { waiting: true })[0],
-            reason:        cs.state?.waiting?.reason ?? cs.state?.terminated?.reason ?? null,
-            restartCount:  cs.restartCount  ?? 0,
-            memLimitBytes: parseK8sQuantity(lim.memory   ?? null),
-            memReqBytes:   parseK8sQuantity(req.memory   ?? null),
-            cpuLimitMilli: parseK8sQuantity(lim.cpu      ?? null),
-            cpuReqMilli:   parseK8sQuantity(req.cpu      ?? null),
-            gpuRequested:  gpu ? parseInt(gpu, 10) : 0,
-          };
-        });
-
-        const metricKey   = `${meta.namespace}/${meta.name}`;
-        const topMetrics  = metricsMap[metricKey]    ?? null;  // kubectl top
-        const promMetrics = prometheusMap[metricKey] ?? null;  // Prometheus batch
-
-        // Prefer kubectl top (instantaneous); fall back to Prometheus (5-min average)
-        const cpuRaw   = topMetrics?.cpuRaw
-          ?? (promMetrics?.cpuCores != null ? `${(promMetrics.cpuCores * 100).toFixed(1)}%` : null);
-        const memRaw   = topMetrics?.memRaw
-          ?? (promMetrics?.memBytes != null ? fmtBytesServer(promMetrics.memBytes) : null);
-        const cpuMilli = topMetrics?.cpuMilli
-          ?? (promMetrics?.cpuCores != null ? promMetrics.cpuCores * 1000 : null);
-        const memBytes = topMetrics?.memBytes ?? promMetrics?.memBytes ?? null;
-
-        const metricsSource = topMetrics ? 'kubectl' : promMetrics ? 'prometheus' : null;
-
-        return {
-          name:       meta.name,
-          namespace:  meta.namespace ?? 'default',
-          phase:      status.phase   ?? 'Unknown',
-          ready:      `${readyCount}/${totalCount}`,
-          isReady:    readyCond?.status === 'True',
-          restarts,
-          node:       spec.nodeName  ?? '—',
-          startTime:  status.startTime ?? null,
-          containers,
-          // Live metrics (kubectl top preferred, Prometheus fallback)
-          cpuRaw,
-          cpuMilli,
-          memRaw,
-          memBytes,
-          hasMetrics:    !!(topMetrics || promMetrics),
-          metricsSource,
-          // Aggregate limits across containers
-          totalMemLimitBytes: containers.reduce((s, c) => s != null && c.memLimitBytes != null ? s + c.memLimitBytes : null, 0) || null,
-          totalGpu:           containers.reduce((s, c) => s + c.gpuRequested, 0),
-        };
-      });
-
-      return { name, context: ctx, tier, connected: true, podCount: pods.length, pods };
-    }));
-
-    const data = results.map((r, i) =>
-      r.status === 'fulfilled' ? r.value : {
-        name:      clusters[i].name,
-        context:   clusters[i].context,
-        tier:      clusters[i].tier ?? 'dev',
-        connected: false,
-        podCount:  0,
-        pods:      [],
-        error:     r.reason?.message ?? 'Failed to connect',
-      }
-    );
-
-    res.json({ clusters: data, timestamp: new Date().toISOString() });
+    try { res.json(await clusterService.getPodHealth(CONFIG_PATH)); }
+    catch (err) { res.status(500).json({ error: err.message }); }
   });
 
   // ── Chat config (returns LLM settings for the UI) ────────────────────────
@@ -650,6 +447,67 @@ RULES:
       res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
     }
     res.end();
+  });
+
+  // ── PDF report — LLM structures the content, client renders it ──────────────
+  app.post('/api/chat/pdf-report', requireAuth, async (req, res) => {
+    const { messages, reportContent } = req.body;
+    if (!Array.isArray(messages) || messages.length === 0)
+      return res.status(400).json({ error: 'messages required' });
+
+    // Use the exact assistant message the user is downloading, so the PDF
+    // matches what was shown in chat. Fall back to re-summarising the thread
+    // only when no specific message content was passed.
+    const sourceText = reportContent?.trim()
+      ? reportContent.replace(/\[LIVE CLUSTER DATA\][\s\S]*?\[MY QUESTION\]\n?/i, '').slice(0, 6000)
+      : messages.slice(-10)
+          .map(m => `[${m.role.toUpperCase()}]: ${m.content.replace(/\[LIVE CLUSTER DATA\][\s\S]*?\[MY QUESTION\]\n?/i, '').slice(0, 900)}`)
+          .join('\n\n');
+
+    const userInstruction = reportContent?.trim()
+      ? `Convert the following AI assistant response into the report schema. Do NOT add new findings, change conclusions, or invent information — only restructure and label what is already stated in the text.\n\n${sourceText}`
+      : `Generate a structured report for this conversation:\n\n${sourceText}`;
+
+    const REPORT_SYSTEM = `You are a professional Kubernetes SRE report generator inside KubePilot.
+Produce a single structured JSON report. Output ONLY valid JSON — no markdown, no extra text.
+
+Required schema:
+{
+  "title":    "concise descriptive report title",
+  "summary":  "2–3 sentence executive summary of key findings",
+  "severity": "ok | warn | critical",
+  "sections": [
+    { "heading": "...", "type": "text",         "content": "..." },
+    { "heading": "...", "type": "list",         "items":   ["..."] },
+    { "heading": "...", "type": "status_table", "rows": [
+        { "label": "resource", "value": "detail", "status": "ok|warn|error", "note": "" }
+      ]
+    },
+    { "heading": "...", "type": "findings",     "items": [
+        { "severity": "critical|high|medium|low", "title": "...", "detail": "...", "action": "..." }
+      ]
+    }
+  ],
+  "recommendations": ["actionable recommendation 1", "..."]
+}`;
+
+    try {
+      const completion = await llm.chat.completions.create({
+        model:       process.env.OPENAI_MODEL,
+        temperature: 0.1,
+        stream:      false,
+        messages: [
+          { role: 'system', content: REPORT_SYSTEM },
+          { role: 'user',   content: userInstruction },
+        ],
+      });
+      const raw   = completion.choices[0]?.message?.content ?? '';
+      const match = raw.match(/\{[\s\S]*\}/);
+      if (!match) return res.status(422).json({ error: 'LLM returned unparseable report structure' });
+      res.json(JSON.parse(match[0]));
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // ── Chat history (per-user, persisted in MongoDB) ────────────────────────────
@@ -887,68 +745,16 @@ Return ONLY valid JSON (no markdown, no extra text):
     }
   });
 
-  // ── Cluster provisioning — polling approach ──────────────────────────────
-  // SSE through the Vite dev proxy is unreliable for long-running processes.
-  // Instead: start a job → return jobId → client polls /status every 2 s.
-  const provisionJobs = new Map(); // jobId → job object
-
-  // Auto-cleanup jobs older than 1 hour
-  setInterval(() => {
-    const cutoff = Date.now() - 3_600_000;
-    for (const [id, job] of provisionJobs) {
-      if (job.createdAt < cutoff) provisionJobs.delete(id);
-    }
-  }, 900_000).unref();
-
+  // ── Cluster provisioning ──────────────────────────────────────────────────
   app.post('/api/cluster/provision/start', requireAuth, (req, res) => {
-    const { profile, tier } = req.body;
-    if (!profile || !/^[a-z0-9][a-z0-9\-]*$/.test(profile))
-      return res.status(400).json({ error: 'invalid profile name' });
-
-    const jobId = require('crypto').randomUUID();
-    const job   = { status: 'running', log: '', profile, tier: tier ?? 'dev', createdAt: Date.now() };
-    provisionJobs.set(jobId, job);
-
-    console.log(`[PROVISION] minikube start --profile ${profile}  (user: ${req.user.name}  job: ${jobId})`);
-
-    const { spawn } = require('child_process');
-    const proc = spawn('minikube', ['start', '--profile', profile], {
-      shell: true,
-      env: { ...process.env, MINIKUBE_IN_STYLE: '0' },
-    });
-
-    proc.on('error', spawnErr => {
-      job.status = 'failed';
-      job.error  = spawnErr.code === 'ENOENT'
-        ? 'minikube is not installed or not in PATH'
-        : spawnErr.message;
-    });
-
-    proc.stdout.on('data', chunk => { job.log += chunk.toString(); });
-    proc.stderr.on('data', chunk => { job.log += chunk.toString(); });
-
-    proc.on('close', async code => {
-      if (code === 0) {
-        try {
-          let clusters = [];
-          try { clusters = yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8')).clusters ?? []; } catch {}
-          if (!clusters.find(c => c.context === profile)) {
-            clusters.push({ name: profile, context: profile, tier: tier ?? 'dev', namespaces: ['*'] });
-            fs.writeFileSync(CONFIG_PATH, yaml.dump({ clusters }), 'utf8');
-          }
-        } catch { /* config write failure is non-fatal */ }
-        job.status = 'done';
-      } else {
-        job.status = 'failed';
-        job.error  = job.error ?? `minikube start exited with code ${code}`;
-      }
-    });
-
-    res.json({ jobId });
+    try {
+      const jobId = provisionService.startJob(req.body.profile, req.body.tier, req.user.name, CONFIG_PATH);
+      res.json({ jobId });
+    } catch (err) { res.status(err.status ?? 500).json({ error: err.message }); }
   });
 
   app.get('/api/cluster/provision/status', requireAuth, (req, res) => {
-    const job = provisionJobs.get(req.query.id);
+    const job = provisionService.getJob(req.query.id);
     if (!job) return res.status(404).json({ error: 'job not found' });
     res.json({ status: job.status, log: job.log, error: job.error ?? null, profile: job.profile });
   });
@@ -991,264 +797,384 @@ Return ONLY valid JSON (no markdown, no extra text):
     }
   });
 
+  // GET /api/metrics/pods — all-pods Prometheus metrics (CPU, memory, restarts, OOM)
+  app.get('/api/metrics/pods', requireAuth, async (_req, res) => {
+    try {
+      if (!metricsCollector.isAvailable())
+        return res.json({ available: false, pods: [] });
+
+      const [metricsMap, errors] = await Promise.all([
+        metricsCollector.collectAllPodsMetrics(),
+        metricsCollector.getErrors(),
+      ]);
+
+      // Build OOM + HighRestarts lookup from errors
+      const oomSet     = new Set(errors.filter(e => e.type === 'OOMKilled').map(e => `${e.namespace}/${e.pod}`));
+      const errTypeMap = {};
+      for (const e of errors) {
+        const k = `${e.namespace}/${e.pod}`;
+        if (!errTypeMap[k]) errTypeMap[k] = [];
+        errTypeMap[k].push(e.type);
+      }
+
+      // Union metricsMap keys (CPU/memory) with error keys (kube-state-metrics)
+      // so pods with errors always appear even before cAdvisor data is available.
+      const allKeys = new Set([
+        ...Object.keys(metricsMap ?? {}),
+        ...errors.filter(e => e.namespace && e.pod).map(e => `${e.namespace}/${e.pod}`),
+      ]);
+
+      const pods = [...allKeys].map(key => {
+        const [namespace, pod] = key.split('/');
+        const m = (metricsMap ?? {})[key] ?? {};
+        return {
+          key, namespace, pod,
+          cpuCores:   m.cpuCores  ?? null,
+          memBytes:   m.memBytes  ?? null,
+          restarts:   m.restarts  ?? 0,
+          oomKilled:  oomSet.has(key),
+          errorTypes: errTypeMap[key] ?? [],
+        };
+      });
+
+      // Sort: pods with errors first, then by restarts desc
+      pods.sort((a, b) => {
+        const aHasErr = a.errorTypes.length > 0 ? 1 : 0;
+        const bHasErr = b.errorTypes.length > 0 ? 1 : 0;
+        if (bHasErr !== aHasErr) return bHasErr - aHasErr;
+        return (b.restarts ?? 0) - (a.restarts ?? 0);
+      });
+
+      res.json({ available: true, pods });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Node health endpoints ─────────────────────────────────────────────────
+  const kubectl_tool     = require('../tools/kubectl');
+  const NodeAnalyzer_srv = require('../agents/nodeAnalyzer');
+  const EventAnalyzer_srv = require('../agents/eventAnalyzer');
+
+  // GET /api/nodes — all nodes with status, conditions, Prometheus metrics
+  app.get('/api/nodes', requireAuth, async (req, res) => {
+    try {
+      const clusters = yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8')).clusters ?? [];
+      const allNodeMetrics = await metricsCollector.collectAllNodesMetrics().catch(() => null);
+
+      const result = await Promise.all(clusters.map(async cluster => {
+        try {
+          const nodesJson  = await kubectl_tool.getNodes(cluster.context);
+          const nodeMap    = NodeAnalyzer_srv.buildNodeMap(nodesJson);
+          const nodeIssues = NodeAnalyzer_srv.extractIssues(nodesJson, {}, allNodeMetrics ?? {});
+
+          const nodes = (nodesJson.items ?? []).map(node => {
+            const name       = node.metadata?.name;
+            const labels     = node.metadata?.labels ?? {};
+            const conds      = node.status?.conditions ?? [];
+            const ready      = conds.find(c => c.type === 'Ready');
+            const addrs      = node.status?.addresses ?? [];
+            const internalIp = addrs.find(a => a.type === 'InternalIP')?.address;
+            const hostname   = addrs.find(a => a.type === 'Hostname')?.address;
+            // Prometheus node_exporter uses instance=IP:port; after stripping port the key is the IP.
+            // Try exact node name first, then InternalIP, then Hostname as fallback.
+            const m = allNodeMetrics?.[name]
+                   ?? allNodeMetrics?.[internalIp]
+                   ?? allNodeMetrics?.[hostname]
+                   ?? null;
+            const issues = nodeIssues.filter(i => i.nodeName === name);
+            return {
+              name,
+              isReady:        ready?.status === 'True',
+              isControlPlane: !!(labels['node-role.kubernetes.io/control-plane'] || labels['node-role.kubernetes.io/master']),
+              conditions:     Object.fromEntries(conds.map(c => [c.type, c.status === 'True'])),
+              allocatable:    node.status?.allocatable ?? {},
+              cpuUsagePct:    m?.cpuUsagePct  ?? null,
+              memUsedPct:     m?.memUsedPct   ?? null,
+              diskUsedPct:    m?.diskUsedPct  ?? null,
+              netRxBytesPerSec: m?.netRxBytesPerSec ?? null,
+              netTxBytesPerSec: m?.netTxBytesPerSec ?? null,
+              issues:         issues.map(i => ({ type: i.type, reason: i.reason })),
+            };
+          });
+
+          return { clusterName: cluster.name, context: cluster.context, tier: cluster.tier ?? 'dev', nodes, connected: true };
+        } catch (err) {
+          return { clusterName: cluster.name, context: cluster.context, tier: cluster.tier ?? 'dev', nodes: [], connected: false, error: err.message };
+        }
+      }));
+
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/events — recent warning events across all clusters
+  app.get('/api/events', requireAuth, async (_req, res) => {
+    try {
+      const clusters = yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8')).clusters ?? [];
+      const all = [];
+      await Promise.all(clusters.map(async cluster => {
+        try {
+          const eventsJson = await kubectl_tool.getEvents(cluster.context);
+          const events     = EventAnalyzer_srv.extractEvents(eventsJson);
+          all.push(...events.map(e => ({ ...e, clusterName: cluster.name })));
+        } catch { /* cluster unreachable */ }
+      }));
+      all.sort((a, b) => b.count - a.count);
+      res.json({ events: all.slice(0, 200) });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/metrics/nodes — batch Prometheus node metrics
+  app.get('/api/metrics/nodes', requireAuth, async (_req, res) => {
+    try {
+      if (!metricsCollector.isAvailable())
+        return res.json({ available: false, nodes: {} });
+      const nodeMetrics = await metricsCollector.collectAllNodesMetrics();
+      res.json({ available: true, nodes: nodeMetrics ?? {} });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── Profile ───────────────────────────────────────────────────────────────
 
   // Request OTP for password change via email
   app.post('/api/profile/request-otp', requireAuth, async (req, res) => {
-    try {
-      if (!emailService.isConfigured())
-        return res.status(503).json({ error: 'Email service is not configured on this server' });
-
-      // Rate-limit: block re-issue if a valid OTP was sent less than 2 minutes ago
-      const existing = otpStore.get(req.user.id);
-      if (existing && Date.now() - existing.issuedAt < 2 * 60 * 1000)
-        return res.status(429).json({ error: 'Please wait before requesting another code' });
-
-      const otp = String(Math.floor(100000 + Math.random() * 900000));
-
-      // Send FIRST — only store if delivery succeeds (Fix: was stored before send)
-      await emailService.sendOtp(req.user.email, req.user.name, otp);
-      otpStore.set(req.user.id, { otp, expiresAt: Date.now() + 10 * 60 * 1000, issuedAt: Date.now() });
-
-      res.json({ sent: true });
-    } catch (err) {
-      console.error('[OTP] Failed to send email:', err.message);
-      res.status(500).json({ error: 'Failed to send verification email: ' + err.message });
-    }
+    try { res.json(await profileService.requestOtp(req.user)); }
+    catch (err) { res.status(err.status ?? 500).json({ error: err.message }); }
   });
 
-  // Check if email service is available
   app.get('/api/profile/email-available', requireAuth, (_req, res) => {
-    res.json({ available: emailService.isConfigured() });
+    res.json({ available: profileService.isEmailConfigured() });
   });
 
   app.get('/api/profile/stats', requireAuth, async (req, res) => {
-    try {
-      const userId    = req.user.id;
-      const userEmail = req.user.email;
-
-      const since = new Date();
-      since.setDate(since.getDate() - 30);
-
-      // All 7 queries are independent — run in one Promise.all.
-      // Use aggregation for chat/command counts to avoid loading full arrays into memory.
-      const [
-        escalationsHandled,
-        escalationsFixed,
-        approvalsDecided,
-        [chatRes],
-        [cmdRes],
-        escsByDay,
-        approvalsByDay,
-      ] = await Promise.all([
-        EscalationHistory.countDocuments({ 'acknowledgedBy.userId': userId }),
-        EscalationHistory.countDocuments({ 'stateUpdatedBy.email': userEmail, status: 'fixed' }),
-        ApprovalHistory.countDocuments({ 'decidedBy.email': userEmail }),
-        ChatHistory.aggregate([
-          { $match: { userId } },
-          { $project: { count: { $size: { $filter: { input: { $ifNull: ['$messages', []] }, cond: { $eq: ['$$this.role', 'user'] } } } } } },
-        ]),
-        CommandHistory.aggregate([
-          { $match: { userId } },
-          { $project: { count: { $size: { $ifNull: ['$turns', []] } } } },
-        ]),
-        EscalationHistory.aggregate([
-          { $match: { 'acknowledgedBy.userId': userId, acknowledgedAt: { $gte: since } } },
-          { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$acknowledgedAt' } }, count: { $sum: 1 } } },
-        ]),
-        ApprovalHistory.aggregate([
-          { $match: { 'decidedBy.email': userEmail, createdAt: { $gte: since } } },
-          { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, count: { $sum: 1 } } },
-        ]),
-      ]);
-
-      const chatMessages = chatRes?.count ?? 0;
-      const commandsRun  = cmdRes?.count  ?? 0;
-
-      const daily = {};
-      for (const d of escsByDay)      daily[d._id] = (daily[d._id] ?? 0) + d.count;
-      for (const d of approvalsByDay) daily[d._id] = (daily[d._id] ?? 0) + d.count;
-
-      res.json({ escalationsHandled, escalationsFixed, approvalsDecided, chatMessages, commandsRun, daily });
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
+    try { res.json(await profileService.getStats(req.user.id, req.user.email)); }
+    catch (err) { res.status(500).json({ error: err.message }); }
   });
 
   app.put('/api/profile', requireAuth, async (req, res) => {
-    try {
-      const { name, password, currentPassword, otp } = req.body;
-      const upd = {};
-      if (name?.trim()) upd.name = name.trim();
-
-      if (password?.trim()) {
-        // Password change requires verification via current password OR email OTP
-        if (!currentPassword && !otp)
-          return res.status(400).json({ error: 'Provide your current password or an email verification code to change your password' });
-
-        if (currentPassword) {
-          const dbUser = await User.findById(req.user.id);
-          if (!dbUser || dbUser.password !== currentPassword)
-            return res.status(400).json({ error: 'Current password is incorrect' });
-        } else {
-          const stored = otpStore.get(req.user.id);
-          if (!stored || Date.now() > stored.expiresAt || stored.otp !== String(otp))
-            return res.status(400).json({ error: 'Invalid or expired verification code' });
-          otpStore.delete(req.user.id);
-        }
-        upd.password = password;
-      }
-
-      if (!Object.keys(upd).length) return res.status(400).json({ error: 'Nothing to update' });
-      const u = await User.findByIdAndUpdate(req.user.id, upd, { new: true, runValidators: true }).select('-password');
-      if (!u) return res.status(404).json({ error: 'User not found' });
-      // Keep in-memory auth token in sync so req.user.name is current on subsequent requests
-      if (upd.name) authService.updateUserPayload(req.user.id, { name: u.name });
-      res.json({ id: u._id, email: u.email, name: u.name, role: u.role });
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
+    try { res.json(await profileService.updateProfile(req.user.id, req.body)); }
+    catch (err) { res.status(err.status ?? 500).json({ error: err.message }); }
   });
 
-  // Full activity list for the current user (escalations handled + approvals decided)
   app.get('/api/profile/activity', requireAuth, async (req, res) => {
-    try {
-      const userId    = req.user.id;
-      const userEmail = req.user.email;
-      const [escalations, approvals] = await Promise.all([
-        EscalationHistory.find({
-          $or: [{ 'acknowledgedBy.userId': userId }, { 'assignedTo.userId': userId }],
-        }).sort({ escalatedAt: -1 }).limit(50).lean(),
-        ApprovalHistory.find({ 'decidedBy.email': userEmail })
-          .sort({ createdAt: -1 }).limit(50).lean(),
-      ]);
-      res.json({ escalations, approvals });
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
+    try { res.json(await profileService.getActivity(req.user.id, req.user.email)); }
+    catch (err) { res.status(500).json({ error: err.message }); }
   });
 
-  // Admin: view any user's full profile + stats + activity
   app.get('/api/users/:id/profile', requireAuth, requireAdmin, async (req, res) => {
-    try {
-      if (!mongoose.Types.ObjectId.isValid(req.params.id))
-        return res.status(400).json({ error: 'Invalid user id' });
-      const targetUser = await User.findById(req.params.id).select('-password').lean();
-      if (!targetUser) return res.status(404).json({ error: 'User not found' });
-
-      const userId    = targetUser._id.toString();
-      const userEmail = targetUser.email;
-      const since     = new Date(); since.setDate(since.getDate() - 30);
-
-      const [
-        escalationsHandled,
-        escalationsFixed,
-        approvalsDecided,
-        [chatRes],
-        [cmdRes],
-        escalations,
-        approvals,
-        escsByDay,
-        approvalsByDay,
-      ] = await Promise.all([
-        EscalationHistory.countDocuments({ 'acknowledgedBy.userId': userId }),
-        EscalationHistory.countDocuments({ 'stateUpdatedBy.email': userEmail, status: 'fixed' }),
-        ApprovalHistory.countDocuments({ 'decidedBy.email': userEmail }),
-        ChatHistory.aggregate([
-          { $match: { userId } },
-          { $project: { count: { $size: { $filter: { input: { $ifNull: ['$messages', []] }, cond: { $eq: ['$$this.role', 'user'] } } } } } },
-        ]),
-        CommandHistory.aggregate([
-          { $match: { userId } },
-          { $project: { count: { $size: { $ifNull: ['$turns', []] } } } },
-        ]),
-        EscalationHistory.find({
-          $or: [{ 'acknowledgedBy.userId': userId }, { 'assignedTo.userId': userId }],
-        }).sort({ escalatedAt: -1 }).limit(50).lean(),
-        ApprovalHistory.find({ 'decidedBy.email': userEmail })
-          .sort({ createdAt: -1 }).limit(50).lean(),
-        EscalationHistory.aggregate([
-          { $match: { 'acknowledgedBy.userId': userId, acknowledgedAt: { $gte: since } } },
-          { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$acknowledgedAt' } }, count: { $sum: 1 } } },
-        ]),
-        ApprovalHistory.aggregate([
-          { $match: { 'decidedBy.email': userEmail, createdAt: { $gte: since } } },
-          { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, count: { $sum: 1 } } },
-        ]),
-      ]);
-
-      const chatMessages = chatRes?.count ?? 0;
-      const commandsRun  = cmdRes?.count  ?? 0;
-
-      const daily = {};
-      for (const d of escsByDay)      daily[d._id] = (daily[d._id] ?? 0) + d.count;
-      for (const d of approvalsByDay) daily[d._id] = (daily[d._id] ?? 0) + d.count;
-
-      res.json({
-        user: targetUser,
-        stats: { escalationsHandled, escalationsFixed, approvalsDecided, chatMessages, commandsRun, daily },
-        activity: { escalations, approvals },
-      });
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
+    try { res.json(await profileService.getAdminView(req.params.id)); }
+    catch (err) { res.status(err.status ?? 500).json({ error: err.message }); }
   });
 
   // ── Kubernetes context discovery ────────────────────────────────────────────
   app.get('/api/kube/contexts', requireAuth, async (_req, res) => {
-    try {
-      const namesRaw  = await kubectl.runCommand('kubectl config get-contexts -o name');
-      const names     = namesRaw.split('\n').map(s => s.trim()).filter(Boolean);
-
-      let currentCtx = '';
-      try { currentCtx = (await kubectl.runCommand('kubectl config current-context')).trim(); } catch {}
-
-      let monitored = [];
-      try { monitored = yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8')).clusters ?? []; } catch {}
-      const monitoredMap = Object.fromEntries(monitored.map(c => [c.context, c]));
-
-      res.json({
-        contexts: names.map(n => ({
-          name:        n,
-          isCurrent:   n === currentCtx,
-          isMonitored: !!monitoredMap[n],
-          config:      monitoredMap[n] ?? null,
-        })),
-      });
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
+    try { res.json({ contexts: await clusterService.getContexts(CONFIG_PATH) }); }
+    catch (err) { res.status(500).json({ error: err.message }); }
   });
 
   // ── Update monitored clusters config (admin only) ────────────────────────
-  app.put('/api/kube/clusters', requireAuth, requireAdmin, async (req, res) => {
-    const { clusters } = req.body;
-    if (!Array.isArray(clusters))
-      return res.status(400).json({ error: 'clusters must be an array' });
+  app.put('/api/kube/clusters', requireAuth, requireAdmin, (req, res) => {
+    try { clusterService.validateAndSaveConfig(CONFIG_PATH, req.body.clusters); res.json({ ok: true }); }
+    catch (err) { res.status(err.status ?? 500).json({ error: err.message }); }
+  });
 
-    const TIERS = new Set(['dev', 'staging', 'production']);
-    for (const c of clusters) {
-      if (!c.name?.trim() || !c.context?.trim())
-        return res.status(400).json({ error: 'each cluster requires name and context' });
-      if (!TIERS.has(c.tier ?? 'dev'))
-        return res.status(400).json({ error: `invalid tier: ${c.tier}` });
-    }
+  // ── Notification Settings ─────────────────────────────────────────────────────
+  const {
+    NotificationChannelConfig, NotificationRoutingConfig,
+    NotificationDeliveryLog, UserNotificationPreferences,
+  } = require('../db/models');
+  const notifCrypto  = require('../services/notifications/crypto');
+  const notifEngine  = require('../services/notifications/engine');
 
-    const content = yaml.dump({
-      clusters: clusters.map(c => ({
-        name:       c.name.trim(),
-        context:    c.context.trim(),
-        tier:       c.tier ?? 'dev',
-        namespaces: ['*'],
-      })),
-    });
+  const CATEGORIES = ['Cluster Health','Resource Usage','Security','Deployments',
+                      'Cost Optimization','Autoscaling','Incidents','Agent Actions',
+                      'Recommendations','Reports'];
 
+  // ── Per-user preferences (all authenticated users) ────────────────────────
+
+  // GET /api/notifications/preferences — own prefs
+  app.get('/api/notifications/preferences', requireAuth, async (req, res) => {
     try {
-      fs.writeFileSync(CONFIG_PATH, content, 'utf8');
+      const doc = await UserNotificationPreferences.findOne({ userId: req.user.id }).lean();
+      res.json(doc ?? { userId: req.user.id, channels: ['inApp'], categories: [], notifyEmail: req.user.email ?? '' });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // PUT /api/notifications/preferences — save own prefs
+  app.put('/api/notifications/preferences', requireAuth, async (req, res) => {
+    try {
+      const { channels, categories, notifyEmail } = req.body;
+      await UserNotificationPreferences.findOneAndUpdate(
+        { userId: req.user.id },
+        { channels: channels ?? ['inApp'], categories: categories ?? [], notifyEmail: notifyEmail ?? '' },
+        { upsert: true }
+      );
       res.json({ ok: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // POST /api/notifications/preferences/test-email — send a test email to own notification email
+  app.post('/api/notifications/preferences/test-email', requireAuth, async (req, res) => {
+    try {
+      // Resolve destination: saved notifyEmail → account email → error
+      const pref    = await UserNotificationPreferences.findOne({ userId: req.user.id }).lean();
+      const toEmail = pref?.notifyEmail || req.user.email;
+      if (!toEmail) return res.json({ ok: false, message: 'No email address configured' });
+
+      // Load SMTP config from system channel settings
+      const channelDoc = await NotificationChannelConfig.findOne({ type: 'email' }).lean();
+      if (!channelDoc?.enabled) return res.json({ ok: false, message: 'Email channel is not enabled. Ask your admin to configure it first.' });
+
+      const emailProvider = require('../services/notifications/providers/email');
+      const cfg = notifCrypto.decrypt(channelDoc.config ?? '');
+
+      await emailProvider.send({
+        severity: 'INFO',
+        category: 'Recommendations',
+        title:    'KubePilot — Test Notification',
+        message:  `This is a test notification sent to ${toEmail}. Your email notifications are working correctly.`,
+        source:   'KubePilot Notification Center',
+      }, { ...cfg, recipients: toEmail });
+
+      res.json({ ok: true, message: `Test email sent to ${toEmail}` });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.json({ ok: false, message: err.message });
     }
+  });
+
+  // GET /api/notifications/admin/users-preferences — admin: all users + their prefs
+  app.get('/api/notifications/admin/users-preferences', requireAuth, requireAdmin, async (_req, res) => {
+    try {
+      const [users, prefs] = await Promise.all([
+        User.find({ active: true }).select('_id name email role').lean(),
+        UserNotificationPreferences.find().lean(),
+      ]);
+      const prefsById = Object.fromEntries(prefs.map(p => [p.userId, p]));
+      res.json(users.map(u => ({
+        userId:      u._id.toString(),
+        name:        u.name,
+        email:       u.email,
+        role:        u.role,
+        prefs:       prefsById[u._id.toString()] ?? { channels: ['inApp'], categories: [], notifyEmail: u.email },
+      })));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  const CHANNEL_TYPES = ['teams', 'email', 'slack', 'inApp', 'telegram', 'discord', 'webhook'];
+
+  // GET /api/notifications/channels — list all channels with masked config
+  app.get('/api/notifications/channels', requireAuth, requireAdmin, async (_req, res) => {
+    try {
+      const docs = await NotificationChannelConfig.find().lean();
+      const byType = Object.fromEntries(docs.map(d => [d.type, d]));
+      const result = CHANNEL_TYPES.map(type => {
+        const doc = byType[type];
+        const cfg = doc ? notifCrypto.decrypt(doc.config ?? '') : {};
+        return { type, enabled: doc?.enabled ?? false, config: notifCrypto.mask(cfg), updatedAt: doc?.updatedAt };
+      });
+      res.json(result);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // PUT /api/notifications/channels/:type — save channel config
+  app.put('/api/notifications/channels/:type', requireAuth, requireAdmin, async (req, res) => {
+    const { type } = req.params;
+    if (!CHANNEL_TYPES.includes(type)) return res.status(400).json({ error: 'Unknown channel type' });
+    try {
+      const { enabled, config } = req.body;
+      const existing = await NotificationChannelConfig.findOne({ type }).lean();
+      // Merge: keep stored secrets for masked ('••••••••') fields sent back from frontend
+      const stored  = existing ? notifCrypto.decrypt(existing.config ?? '') : {};
+      const merged  = { ...stored };
+      for (const [k, v] of Object.entries(config ?? {})) {
+        if (v !== '••••••••') merged[k] = v;
+      }
+      await NotificationChannelConfig.findOneAndUpdate(
+        { type },
+        { type, enabled: enabled ?? false, config: notifCrypto.encrypt(merged), updatedBy: req.user.name },
+        { upsert: true }
+      );
+      notifEngine.invalidateRoutingCache();
+      res.json({ ok: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // POST /api/notifications/channels/:type/test — test channel connectivity
+  app.post('/api/notifications/channels/:type/test', requireAuth, requireAdmin, async (req, res) => {
+    const { type } = req.params;
+    if (!CHANNEL_TYPES.includes(type)) return res.status(400).json({ error: 'Unknown channel type' });
+    try {
+      const provider = notifEngine.PROVIDERS[type];
+      if (!provider) return res.status(400).json({ error: 'Provider not available' });
+
+      // Resolve config: merge stored + any overrides sent in body (unmasked)
+      const existing = await NotificationChannelConfig.findOne({ type }).lean();
+      const stored   = existing ? notifCrypto.decrypt(existing.config ?? '') : {};
+      const override = req.body.config ?? {};
+      const merged   = { ...stored };
+      for (const [k, v] of Object.entries(override)) {
+        if (v !== '••••••••') merged[k] = v;
+      }
+
+      await provider.testConnection(merged);
+      res.json({ ok: true, message: 'Connection successful' });
+    } catch (err) { res.status(200).json({ ok: false, message: err.message }); }
+  });
+
+  // GET /api/notifications/routing — get routing rules
+  app.get('/api/notifications/routing', requireAuth, requireAdmin, async (_req, res) => {
+    try {
+      const doc = await NotificationRoutingConfig.findOne().lean();
+      res.json(doc?.routing ?? { INFO: ['inApp'], WARNING: ['inApp','teams'], ERROR: ['inApp','teams','email'], CRITICAL: ['inApp','teams','email','slack'] });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // PUT /api/notifications/routing — save routing rules
+  app.put('/api/notifications/routing', requireAuth, requireAdmin, async (req, res) => {
+    try {
+      await NotificationRoutingConfig.findOneAndUpdate({}, { routing: req.body }, { upsert: true });
+      notifEngine.invalidateRoutingCache();
+      res.json({ ok: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // GET /api/notifications/subscriptions — event category subscriptions per channel
+  app.get('/api/notifications/subscriptions', requireAuth, requireAdmin, async (_req, res) => {
+    try {
+      const doc = await NotificationRoutingConfig.findOne().lean();
+      res.json(doc?.subscriptions ?? {});
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // PUT /api/notifications/subscriptions
+  app.put('/api/notifications/subscriptions', requireAuth, requireAdmin, async (req, res) => {
+    try {
+      await NotificationRoutingConfig.findOneAndUpdate({}, { subscriptions: req.body }, { upsert: true });
+      res.json({ ok: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // GET /api/notifications/delivery-log?page=1&limit=50&channel=&status=
+  app.get('/api/notifications/delivery-log', requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const page    = Math.max(1, parseInt(req.query.page  ?? '1',  10));
+      const limit   = Math.min(100, parseInt(req.query.limit ?? '50', 10));
+      const filter  = {};
+      if (req.query.channel) filter.channel = req.query.channel;
+      if (req.query.status)  filter.status  = req.query.status;
+      const [docs, total] = await Promise.all([
+        NotificationDeliveryLog.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+        NotificationDeliveryLog.countDocuments(filter),
+      ]);
+      res.json({ docs, total, page, pages: Math.ceil(total / limit) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
   app.listen(port, () => console.log(`[API] Dashboard server on http://localhost:${port}`));

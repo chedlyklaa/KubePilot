@@ -35,44 +35,64 @@ const QUERIES = {
 
 // ── PrometheusClient ──────────────────────────────────────────────────────────
 
+// How long to wait before retrying a failed Prometheus connection (ms)
+const RECONNECT_COOLDOWN_MS = 30_000;
+
 class PrometheusClient {
   /**
    * @param {string} [baseUrl]  Prometheus base URL (default: PROMETHEUS_URL env or localhost:9090)
    */
   constructor(baseUrl = process.env.PROMETHEUS_URL || 'http://localhost:9090') {
-    this.baseUrl   = baseUrl.replace(/\/$/, '');
-    this.available = false;
+    this.baseUrl      = baseUrl.replace(/\/$/, '');
+    this.available    = false;
+    this._lastFailAt  = 0;       // timestamp of last failed probe
+    this._probing     = false;   // prevent concurrent re-probes
   }
 
   // ── Connectivity probe ──────────────────────────────────────────────────────
   async initialize() {
     try {
       await axios.get(`${this.baseUrl}/-/healthy`, { timeout: 3000 });
-      this.available = true;
+      this.available   = true;
+      this._lastFailAt = 0;
       console.log(`[PrometheusClient] Connected at ${this.baseUrl}`);
     } catch {
-      this.available = false;
-      console.warn(`[PrometheusClient] Unreachable at ${this.baseUrl} — metrics disabled`);
+      this.available   = false;
+      this._lastFailAt = Date.now();
+      console.warn(`[PrometheusClient] Unreachable at ${this.baseUrl} — will retry automatically`);
     }
     return this.available;
   }
 
+  // Re-probe in the background if the cooldown has elapsed. Non-blocking.
+  _maybeReconnect() {
+    if (this.available || this._probing) return;
+    if (Date.now() - this._lastFailAt < RECONNECT_COOLDOWN_MS) return;
+    this._probing = true;
+    this.initialize().finally(() => { this._probing = false; });
+  }
+
   // ── Instant query  GET /api/v1/query ────────────────────────────────────────
   async query(promql) {
+    this._maybeReconnect();
     if (!this.available) return null;
     try {
       const res = await axios.get(`${this.baseUrl}/api/v1/query`, {
         params:  { query: promql },
         timeout: 5000,
       });
-      return res.data?.status === 'success' ? res.data.data.result : null;
+      if (res.data?.status === 'success') return res.data.data.result;
+      return null;
     } catch {
+      this.available   = false;
+      this._lastFailAt = Date.now();
       return null;
     }
   }
 
   // ── Range query   GET /api/v1/query_range ───────────────────────────────────
   async queryRange(promql, start, end, step = '60s') {
+    this._maybeReconnect();
     if (!this.available) return null;
     try {
       const res = await axios.get(`${this.baseUrl}/api/v1/query_range`, {

@@ -6,7 +6,10 @@ const audit = require('../audit/logger');
 
 const ALLOWED_ACTIONS = new Set([
   'restart', 'rollback', 'scale_down', 'increase_memory', 'delete_pod', 'noop',
+  'cordon_node', 'drain_node', 'uncordon_node',
 ]);
+
+const NODE_ACTIONS = new Set(['cordon_node', 'drain_node', 'uncordon_node']);
 
 // Characters that enable shell injection or command chaining.
 // Includes \n and \r because exec() passes strings to /bin/sh -c which splits on newlines,
@@ -361,6 +364,74 @@ class PolicyEngine {
         },
       });
     }
+  }
+  // ─────────────────────────────────────────────────────────────────────────────
+  // NODE ACTION GATE
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Validate a node-level action (cordon / drain / uncordon).
+   *
+   * @param {object} plan    { action, target: { nodeName }, reason, risk }
+   * @param {object} context { cluster, tier, isControlPlane, drainAttempts, affectedPods }
+   * @returns {{ status, action, reason, blockedRules, warnings }}
+   */
+  validateNodeAction(plan, context) {
+    const blockedRules = [];
+    const warnings     = [];
+    let action = plan.action;
+    let status = 'approved';
+
+    const {
+      cluster        = 'unknown',
+      tier           = 'dev',
+      isControlPlane = false,
+      drainAttempts  = 0,
+      affectedPods   = 0,
+    } = context;
+
+    // ── Rule N1: Only node actions allowed here ────────────────────────────
+    if (!NODE_ACTIONS.has(action)) {
+      blockedRules.push(`NODE_POLICY_INVALID: "${action}" is not a node action`);
+      return this._build('rejected', 'noop', blockedRules[0], blockedRules, warnings, plan, context);
+    }
+
+    // ── Rule N2: Control-plane protection ─────────────────────────────────
+    // Never drain a control-plane node automatically. Cordon is allowed with approval.
+    if (isControlPlane) {
+      if (action === 'drain_node') {
+        blockedRules.push('NODE_POLICY_CONTROL_PLANE: drain_node on a control-plane node is forbidden — requires explicit human action');
+        action = 'noop';
+        status = 'rejected';
+      } else if (action === 'cordon_node') {
+        warnings.push('NODE_POLICY_CONTROL_PLANE: cordoning a control-plane node — human approval required');
+      }
+    }
+
+    // ── Rule N3: Production tier requires human approval for drain ─────────
+    if (status !== 'rejected' && tier === 'production' && action === 'drain_node') {
+      warnings.push('NODE_POLICY_PROD_DRAIN: draining a production node requires human approval');
+    }
+
+    // ── Rule N4: Drain retry protection ────────────────────────────────────
+    if (action === 'drain_node' && drainAttempts >= 2) {
+      blockedRules.push(`NODE_POLICY_DRAIN_RETRY: drain_node attempted ${drainAttempts} times — blocking; escalate manually`);
+      action = 'noop';
+      if (status !== 'rejected') status = 'modified';
+    }
+
+    // ── Rule N5: Large blast radius warning ───────────────────────────────
+    if (action === 'drain_node' && affectedPods > 20) {
+      warnings.push(`NODE_POLICY_BLAST_RADIUS: drain will evict ~${affectedPods} pods — verify cluster has capacity`);
+    }
+
+    if (status === 'approved' && action !== plan.action) status = 'modified';
+
+    const reason = blockedRules.length
+      ? blockedRules.join(' | ')
+      : `Node action "${action}" passed all policy checks`;
+
+    return this._build(status, action, reason, blockedRules, warnings, plan, context);
   }
 }
 

@@ -13,6 +13,20 @@ grafana:
   adminPassword: kubepilot
   defaultDashboardsEnabled: true
 
+  # Required: tells Grafana to load ConfigMap-backed dashboards from the sidecar path
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: default
+          orgId: 1
+          folder: KubePilot
+          type: file
+          disableDeletion: false
+          editable: true
+          options:
+            path: /var/lib/grafana/dashboards/default
+
   dashboards:
     default:
       kubepilot-pod-health:
@@ -28,7 +42,9 @@ grafana:
                 "title": "CPU Usage by Pod",
                 "type":  "timeseries",
                 "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+                "datasource": { "type": "prometheus", "uid": "prometheus" },
                 "targets": [{
+                  "datasource": { "type": "prometheus", "uid": "prometheus" },
                   "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{container!=\"\"}[5m]))",
                   "legendFormat": "{{pod}}"
                 }]
@@ -38,7 +54,9 @@ grafana:
                 "title": "Memory Working Set by Pod",
                 "type":  "timeseries",
                 "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+                "datasource": { "type": "prometheus", "uid": "prometheus" },
                 "targets": [{
+                  "datasource": { "type": "prometheus", "uid": "prometheus" },
                   "expr": "sum by (pod) (container_memory_working_set_bytes{container!=\"\"})",
                   "legendFormat": "{{pod}}"
                 }]
@@ -48,7 +66,9 @@ grafana:
                 "title": "Container Restart Count",
                 "type":  "timeseries",
                 "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+                "datasource": { "type": "prometheus", "uid": "prometheus" },
                 "targets": [{
+                  "datasource": { "type": "prometheus", "uid": "prometheus" },
                   "expr": "sum by (pod) (kube_pod_container_status_restarts_total)",
                   "legendFormat": "{{pod}}"
                 }]
@@ -58,7 +78,9 @@ grafana:
                 "title": "OOMKilled Events",
                 "type":  "timeseries",
                 "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+                "datasource": { "type": "prometheus", "uid": "prometheus" },
                 "targets": [{
+                  "datasource": { "type": "prometheus", "uid": "prometheus" },
                   "expr": "sum by (pod) (kube_pod_container_status_last_terminated_reason{reason=\"OOMKilled\"})",
                   "legendFormat": "{{pod}}"
                 }]
@@ -79,7 +101,9 @@ grafana:
                 "title": "Node Pressure Conditions",
                 "type":  "timeseries",
                 "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+                "datasource": { "type": "prometheus", "uid": "prometheus" },
                 "targets": [{
+                  "datasource": { "type": "prometheus", "uid": "prometheus" },
                   "expr": "kube_node_status_condition{condition=~\"MemoryPressure|DiskPressure|PIDPressure\",status=\"true\"}",
                   "legendFormat": "{{node}} / {{condition}}"
                 }]
@@ -89,7 +113,9 @@ grafana:
                 "title": "Node CPU Utilisation",
                 "type":  "timeseries",
                 "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+                "datasource": { "type": "prometheus", "uid": "prometheus" },
                 "targets": [{
+                  "datasource": { "type": "prometheus", "uid": "prometheus" },
                   "expr": "sum by (instance) (rate(node_cpu_seconds_total{mode!=\"idle\"}[5m]))",
                   "legendFormat": "{{instance}}"
                 }]
@@ -99,7 +125,9 @@ grafana:
                 "title": "Node Memory Consumed",
                 "type":  "timeseries",
                 "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+                "datasource": { "type": "prometheus", "uid": "prometheus" },
                 "targets": [{
+                  "datasource": { "type": "prometheus", "uid": "prometheus" },
                   "expr": "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes",
                   "legendFormat": "{{instance}}"
                 }]
@@ -120,7 +148,9 @@ grafana:
                 "title": "High-Restart Pods (>3 restarts)",
                 "type":  "table",
                 "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+                "datasource": { "type": "prometheus", "uid": "prometheus" },
                 "targets": [{
+                  "datasource": { "type": "prometheus", "uid": "prometheus" },
                   "expr":    "sum by (namespace, pod) (kube_pod_container_status_restarts_total) > 3",
                   "instant": true,
                   "legendFormat": "{{namespace}}/{{pod}}"
@@ -131,7 +161,9 @@ grafana:
                 "title": "Memory Pressure Trend (namespace avg)",
                 "type":  "timeseries",
                 "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
+                "datasource": { "type": "prometheus", "uid": "prometheus" },
                 "targets": [{
+                  "datasource": { "type": "prometheus", "uid": "prometheus" },
                   "expr": "avg by (namespace) (container_memory_working_set_bytes{container!=\"\"})",
                   "legendFormat": "{{namespace}}"
                 }]

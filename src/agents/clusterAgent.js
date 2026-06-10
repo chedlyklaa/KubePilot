@@ -1,21 +1,25 @@
 'use strict';
 require('dotenv').config({ override: true });
 
-const kubectl          = require('../tools/kubectl');
-const PodAnalyzer      = require('./podAnalyzer');
-const GuardianAgent    = require('./guardianAgent');
-const PlannerAgent     = require('./plannerAgent');
-const ReflectionAgent  = require('./reflectionAgent');
-const approvalStore    = require('../api/approvalStore');
-const escalationStore  = require('../api/escalationStore');
-const episodicMemory   = require('../memory/episodicMemory');
-const vectorStore      = require('../memory/vectorStore');
-const ruleEngine       = require('../memory/ruleEngine');
-const temporal         = require('../memory/temporal');
-const audit            = require('../audit/logger');
-const RiskEngine       = require('../risk/engine');
-const PolicyEngine     = require('../policy/policyEngine');
-const metricsCollector = require('../monitoring/metricsCollector');
+const kubectl             = require('../tools/kubectl');
+const PodAnalyzer         = require('./podAnalyzer');
+const NodeAnalyzer        = require('./nodeAnalyzer');
+const EventAnalyzer       = require('./eventAnalyzer');
+const CorrelationEngine   = require('./correlationEngine');
+const ClusterAnalyzer     = require('./clusterAnalyzer');
+const GuardianAgent       = require('./guardianAgent');
+const PlannerAgent        = require('./plannerAgent');
+const ReflectionAgent     = require('./reflectionAgent');
+const approvalStore       = require('../api/approvalStore');
+const escalationStore     = require('../api/escalationStore');
+const episodicMemory      = require('../memory/episodicMemory');
+const vectorStore         = require('../memory/vectorStore');
+const ruleEngine          = require('../memory/ruleEngine');
+const temporal            = require('../memory/temporal');
+const audit               = require('../audit/logger');
+const RiskEngine          = require('../risk/engine');
+const PolicyEngine        = require('../policy/policyEngine');
+const metricsCollector    = require('../monitoring/metricsCollector');
 
 const riskEngine = new RiskEngine();
 
@@ -32,7 +36,7 @@ function _parseMiB(str) {
   return Math.round(num / (1024 * 1024)); // assume raw bytes
 }
 
-const HIGH_RISK_ACTIONS = new Set(['increase_memory']);
+const HIGH_RISK_ACTIONS = new Set(['increase_memory', 'drain_node']);
 
 const ACTION_RISK_PARAMS = {
   restart:         { engineAction: 'restart_deployment', blastRadius: 2, reversibility: 0.9, costImpact: 0   },
@@ -40,6 +44,9 @@ const ACTION_RISK_PARAMS = {
   delete_pod:      { engineAction: 'delete_pod',         blastRadius: 1, reversibility: 0.7, costImpact: 0   },
   scale_down:      { engineAction: 'scale_small',        blastRadius: 4, reversibility: 0.6, costImpact: 50  },
   increase_memory: { engineAction: 'scale_large',        blastRadius: 2, reversibility: 0.5, costImpact: 100 },
+  cordon_node:     { engineAction: 'scale_small',        blastRadius: 5, reversibility: 0.9, costImpact: 0   },
+  drain_node:      { engineAction: 'scale_large',        blastRadius: 9, reversibility: 0.7, costImpact: 0   },
+  uncordon_node:   { engineAction: 'scale_small',        blastRadius: 1, reversibility: 1.0, costImpact: 0   },
 };
 
 class ClusterAgent {
@@ -56,6 +63,10 @@ class ClusterAgent {
     this.attemptCounts    = new Map();  // issueKey → number of failed attempts
     this.episodeTimelines = new Map();  // issueKey → { fingerprint, context, timeline[] }
 
+    // ── Node-level tracking ────────────────────────────────────────────────
+    this.nodeHistory      = {};         // nodeName → { transitions[] } for flapping detection
+    this.nodeDrainAttempts = new Map(); // nodeName → drain attempt count
+
     this.COOLDOWN_MS      = 45_000;
     this.VALIDATE_WAIT_MS = 30_000;
     this.MAX_FIX_ATTEMPTS = 3;
@@ -67,52 +78,122 @@ class ClusterAgent {
     console.log(`[${this.name}] Cycle started`);
     console.log(`${'='.repeat(50)}`);
 
-    const allIssues = [];
+    // ── Fetch pods, nodes, events, and node metrics in parallel ───────────
+    let podsJson   = null;
+    let nodesJson  = null;
+    let eventsJson = null;
+    let allNodeMetrics = null;
 
-    if (this.namespaces.includes('*')) {
-      // Single call — discovers every namespace automatically
-      try {
-        const pods   = await kubectl.getPods('*', this.context, true);
-        const issues = PodAnalyzer.extractIssues(pods).map(i => ({
-          ...i,
-          clusterName: this.name,
-        }));
-        allIssues.push(...issues);
-      } catch (err) {
-        console.error(`[${this.name}] kubectl failed (all-namespaces): ${err.message}`);
-      }
-    } else {
-      for (const ns of this.namespaces) {
-        let pods;
-        try {
-          pods = await kubectl.getPods(ns, this.context, true);
-        } catch (err) {
-          console.error(`[${this.name}] kubectl failed (${ns}): ${err.message}`);
-          continue;
-        }
-        const issues = PodAnalyzer.extractIssues(pods).map(i => ({
-          ...i,
-          namespace:   i.namespace ?? ns,
-          clusterName: this.name,
-        }));
-        allIssues.push(...issues);
+    const [podsResult, nodesResult, eventsResult, nodeMetricsResult] = await Promise.allSettled([
+      kubectl.getPods('*', this.context, true),
+      kubectl.getNodes(this.context),
+      kubectl.getEvents(this.context),
+      metricsCollector.collectAllNodesMetrics(),
+    ]);
+
+    if (podsResult.status  === 'fulfilled') podsJson       = podsResult.value;
+    else console.error(`[${this.name}] kubectl get pods failed: ${podsResult.reason?.message}`);
+
+    if (nodesResult.status === 'fulfilled') nodesJson      = nodesResult.value;
+    else console.warn(`[${this.name}] kubectl get nodes failed: ${nodesResult.reason?.message}`);
+
+    if (eventsResult.status === 'fulfilled') eventsJson    = eventsResult.value;
+    else console.warn(`[${this.name}] kubectl get events failed: ${eventsResult.reason?.message}`);
+
+    if (nodeMetricsResult.status === 'fulfilled') allNodeMetrics = nodeMetricsResult.value;
+
+    // ── Pod issue extraction (unchanged) ──────────────────────────────────
+    const allPodIssues = [];
+    if (podsJson) {
+      if (this.namespaces.includes('*')) {
+        const issues = PodAnalyzer.extractIssues(podsJson).map(i => ({ ...i, clusterName: this.name }));
+        allPodIssues.push(...issues);
+      } else {
+        // filter to monitored namespaces
+        const filtered = { ...podsJson, items: (podsJson.items ?? []).filter(p => this.namespaces.includes(p.metadata?.namespace)) };
+        const issues   = PodAnalyzer.extractIssues(filtered).map(i => ({ ...i, clusterName: this.name }));
+        allPodIssues.push(...issues);
       }
     }
 
-    if (allIssues.length === 0) {
+    // ── Node issue extraction ─────────────────────────────────────────────
+    const allNodeIssues = [];
+    if (nodesJson) {
+      const nodeIssues = NodeAnalyzer.extractIssues(nodesJson, this.nodeHistory, allNodeMetrics ?? {});
+      allNodeIssues.push(...nodeIssues.map(n => ({ ...n, clusterName: this.name })));
+      if (allNodeIssues.length) console.log(`[${this.name}] ${allNodeIssues.length} node issue(s) detected`);
+    }
+
+    // ── Event extraction ─────────────────────────────────────────────────
+    const events = eventsJson ? EventAnalyzer.extractEvents(eventsJson) : [];
+    if (events.length) console.log(`[${this.name}] ${events.length} warning event(s)`);
+
+    // ── Correlation: pod failures → node root causes ───────────────────────
+    const correlation = CorrelationEngine.correlate(allPodIssues, allNodeIssues, podsJson ?? { items: [] }, events);
+    if (correlation.hotNodes.length) {
+      console.log(`[${this.name}] [CORRELATION] ${correlation.hotNodes.length} hot node(s): ${correlation.hotNodes.map(h => h.nodeName).join(', ')}`);
+    }
+
+    // ── Annotate pod issues with their node name ──────────────────────────
+    const annotatedPodIssues = podsJson
+      ? CorrelationEngine.annotatePodIssues(allPodIssues, podsJson)
+      : allPodIssues;
+
+    // ── Cluster-level analysis ─────────────────────────────────────────────
+    const { clusterIssues, summary } = ClusterAnalyzer.analyze({
+      podIssues:   annotatedPodIssues,
+      nodeIssues:  allNodeIssues,
+      correlation,
+      events,
+      clusterName: this.name,
+    });
+    if (clusterIssues.length) {
+      console.log(`[${this.name}] [CLUSTER] ${summary}`);
+    }
+
+    // ── Build node map for correlation context lookup ─────────────────────
+    const nodeMap = nodesJson ? NodeAnalyzer.buildNodeMap(nodesJson) : {};
+
+    // ── Handle node issues first (higher priority when node causes pod failures)
+    for (const nodeIssue of allNodeIssues) {
+      await this._handleNodeIssue(nodeIssue, {
+        allNodeMetrics, correlation, events, nodeMap,
+        affectedPods: correlation.issuesByNode[nodeIssue.nodeName] ?? [],
+      });
+    }
+
+    // ── Handle pod issues ─────────────────────────────────────────────────
+    if (annotatedPodIssues.length === 0) {
       console.log(`[${this.name}] All pods healthy`);
     } else {
-      console.log(`[${this.name}] ${allIssues.length} issue(s) detected`);
-      for (const issue of allIssues) {
-        await this._handle(issue);
+      console.log(`[${this.name}] ${annotatedPodIssues.length} pod issue(s) detected`);
+      for (const issue of annotatedPodIssues) {
+        // Determine node-level context relevant to this pod's node
+        const podNodeIssues  = issue.nodeName
+          ? allNodeIssues.filter(n => n.nodeName === issue.nodeName)
+          : [];
+        const podNodeMetrics = issue.nodeName && allNodeMetrics
+          ? allNodeMetrics[issue.nodeName] ?? null
+          : null;
+        const corrFindings   = correlation.findings.filter(f =>
+          f.nodeName === issue.nodeName || f.level === 'cluster'
+        );
+
+        await this._handle(issue, {
+          nodeIssues:          podNodeIssues,
+          nodeMetrics:         podNodeMetrics,
+          events,
+          correlationFindings: corrFindings,
+          clusterFindings:     clusterIssues,
+        });
       }
     }
 
     console.log(`[${this.name}] Cycle complete\n`);
   }
 
-  // ── 12-step self-improving pipeline ───────────────────────────────────────
-  async _handle(issue) {
+  // ── 12-step self-improving pipeline (pod issues) ──────────────────────────
+  async _handle(issue, nodeCtx = {}) {
     const target = issue.deployment ?? issue.podName;
     const key    = `${issue.type}:${target}:${issue.namespace}`;
 
@@ -246,7 +327,12 @@ class ClusterAgent {
         semanticMatches,
         learnedRules,
         attempt,
-        metrics: podMetrics,
+        metrics:             podMetrics,
+        nodeMetrics:         nodeCtx.nodeMetrics         ?? null,
+        nodeIssues:          nodeCtx.nodeIssues          ?? [],
+        events:              nodeCtx.events              ?? [],
+        correlationFindings: nodeCtx.correlationFindings ?? [],
+        clusterFindings:     nodeCtx.clusterFindings     ?? [],
       });
     } catch (err) {
       console.error(`[${this.name}] [PLANNER] Error: ${err.message}`);
@@ -591,7 +677,7 @@ class ClusterAgent {
     }
   }
 
-  // ── Re-check if issue is gone after fix ────────────────────────────────────
+  // ── Re-check if pod issue is gone after fix ──────────────────────────────
   async _validateFix(issue) {
     try {
       const pods   = await kubectl.getPods(issue.namespace, this.context, true);
@@ -603,6 +689,130 @@ class ClusterAgent {
     } catch (err) {
       console.warn(`[${this.name}] [VALIDATE] Could not re-check: ${err.message}`);
       return false;
+    }
+  }
+
+  // ── Node issue pipeline ────────────────────────────────────────────────────
+  async _handleNodeIssue(nodeIssue, { allNodeMetrics, correlation, events, nodeMap, affectedPods }) {
+    const key  = `node:${nodeIssue.type}:${nodeIssue.nodeName}`;
+
+    const last = this.cooldowns.get(key);
+    if (last && Date.now() - last < this.COOLDOWN_MS) {
+      const wait = Math.round((this.COOLDOWN_MS - (Date.now() - last)) / 1000);
+      console.log(`[${this.name}] [SKIP-NODE] ${key} — cooldown ${wait}s`);
+      return;
+    }
+
+    const attempt = (this.attemptCounts.get(key) ?? 0) + 1;
+    this.attemptCounts.set(key, attempt);
+
+    if (attempt > this.MAX_FIX_ATTEMPTS) {
+      console.warn(`[${this.name}] [ESCALATE-NODE] ${key} — max attempts`);
+      const history = [];
+      await escalationStore.escalate(key, { ...nodeIssue, isNodeIssue: true }, history);
+      this.attemptCounts.delete(key);
+      return;
+    }
+
+    console.log(`\n[${this.name}] ── NODE ${key} (attempt ${attempt}) ──`);
+
+    const nodeMetrics  = allNodeMetrics?.[nodeIssue.nodeName] ?? null;
+    const drainAttempts = this.nodeDrainAttempts.get(nodeIssue.nodeName) ?? 0;
+
+    // Plan
+    let diagnosis;
+    try {
+      diagnosis = await PlannerAgent.planNodeAction({
+        nodeIssue, nodeMetrics, affectedPods, events, attempt, pastEpisodes: [], learnedRules: [],
+      });
+    } catch (err) {
+      console.error(`[${this.name}] [NODE-PLANNER] Error: ${err.message}`);
+      this.cooldowns.set(key, Date.now());
+      return;
+    }
+    if (diagnosis.risk) diagnosis.risk = diagnosis.risk.toUpperCase();
+    console.log(`[${this.name}] [NODE-PLANNER] action=${diagnosis.action}  risk=${diagnosis.risk}  cause=${diagnosis.rootCause}`);
+
+    // Policy gate
+    const policyResult = this.policyEngine.validateNodeAction(
+      { action: diagnosis.action, target: { nodeName: nodeIssue.nodeName }, risk: diagnosis.risk },
+      { cluster: this.name, tier: this.tier, isControlPlane: nodeIssue.isControlPlane, drainAttempts, affectedPods: affectedPods.length }
+    );
+    console.log(`[${this.name}] [NODE-POLICY] status=${policyResult.status}  action=${policyResult.action}`);
+    policyResult.warnings.forEach(w => console.warn(`[${this.name}] [NODE-POLICY] ⚠ ${w}`));
+
+    if (policyResult.status === 'rejected') {
+      console.error(`[${this.name}] [NODE-POLICY] BLOCKED — ${policyResult.reason}`);
+      this.cooldowns.set(key, Date.now());
+      return;
+    }
+    if (policyResult.status === 'modified') diagnosis.action = policyResult.action;
+    if (diagnosis.action === 'noop') { this.cooldowns.set(key, Date.now()); return; }
+
+    // Guardian review
+    const guardian = await this.guardian.review({
+      issue:    { ...nodeIssue, podName: `node:${nodeIssue.nodeName}`, namespace: 'kube-system', deployment: null },
+      diagnosis,
+      podLogs:  '',
+      attempt,
+    });
+    console.log(`[${this.name}] [NODE-GUARDIAN] verdict=${guardian.verdict}  class=${guardian.classification}`);
+
+    if (guardian.verdict === 'REJECT') {
+      console.warn(`[${this.name}] [NODE-GUARDIAN] REJECTED — ${guardian.reason}`);
+      this.cooldowns.set(key, Date.now());
+      return;
+    }
+    if (guardian.verdict === 'MODIFY') diagnosis.action = guardian.suggestedAction;
+
+    // Approval gate for high-risk actions (drain) or production tier
+    if (HIGH_RISK_ACTIONS.has(diagnosis.action) || diagnosis.risk === 'HIGH') {
+      console.log(`[${this.name}] [NODE-APPROVAL] High-risk node action — waiting for human decision…`);
+      const approved = await approvalStore.requestApproval({
+        issue: nodeIssue, diagnosis, issueKey: key, guardianNote: guardian.reason,
+      });
+      if (!approved) {
+        console.log(`[${this.name}] [NODE-APPROVAL] Denied`);
+        this.cooldowns.set(key, Date.now());
+        return;
+      }
+    }
+
+    // Execute
+    try {
+      await this._applyNodeFix(nodeIssue.nodeName, diagnosis.action);
+      console.log(`[${this.name}] [NODE-FIX] Applied: ${diagnosis.action} on ${nodeIssue.nodeName}`);
+      if (diagnosis.action === 'drain_node') {
+        this.nodeDrainAttempts.set(nodeIssue.nodeName, drainAttempts + 1);
+      }
+    } catch (err) {
+      console.error(`[${this.name}] [NODE-FIX] Failed: ${err.message}`);
+      this.cooldowns.set(key, Date.now());
+      return;
+    }
+
+    temporal.add({ cluster: this.name, action: diagnosis.action, status: 'success', issue: nodeIssue.type, riskScore: 0.5 });
+    this.cooldowns.set(key, Date.now());
+  }
+
+  // ── Apply a node-level fix ────────────────────────────────────────────────
+  async _applyNodeFix(nodeName, action) {
+    if (this.policyEngine.dryRunMode) {
+      console.log(`[${this.name}] [DRY-RUN] Simulating "${action}" on node ${nodeName}`);
+      return;
+    }
+    switch (action) {
+      case 'cordon_node':
+        await kubectl.cordonNode(nodeName, this.context);
+        break;
+      case 'uncordon_node':
+        await kubectl.uncordonNode(nodeName, this.context);
+        break;
+      case 'drain_node':
+        await kubectl.drainNode(nodeName, this.context, { deleteEmptyDir: false, gracePeriod: 60 });
+        break;
+      default:
+        console.warn(`[${this.name}] Unknown node action: ${action}`);
     }
   }
 }
