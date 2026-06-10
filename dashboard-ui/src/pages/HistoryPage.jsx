@@ -35,17 +35,17 @@ export default function HistoryPage() {
 
   useEffect(() => {
     setLoading(true)
-    const reqs = [
+    Promise.all([
       apiFetch('/api/history/approvals').then(r => r.json()),
       apiFetch('/api/history/escalations').then(r => r.json()),
-    ]
-    if (user.role === 'admin') reqs.push(apiFetch('/api/users').then(r => r.json()))
-    Promise.all(reqs).then(([a, e, u]) => {
-      setApprovals(a); setEscalations(e)
-      if (u) setUsers(u.filter(x => x.active))
+      apiFetch('/api/users/members').then(r => r.json()),
+    ]).then(([a, e, u]) => {
+      setApprovals(a)
+      setEscalations(e)
+      setUsers(Array.isArray(u) ? u : [])
       setLoading(false)
     })
-  }, [user.role])
+  }, [])
 
   function updateAssigned(recordId, assignedTo) {
     setEscalations(p => p.map(e => e._id === recordId ? { ...e, assignedTo } : e))
@@ -103,7 +103,9 @@ export default function HistoryPage() {
     let r = approvals
     if (apprFilters.decisions.length > 0) r = r.filter(a => apprFilters.decisions.includes(a.decision))
     if (apprFilters.risks.length     > 0) r = r.filter(a => apprFilters.risks.includes(a.diagnosis?.risk))
-    if (apprFilters.userIds.length   > 0) r = r.filter(a => apprFilters.userIds.includes(a.decidedBy?.userId ?? '__unassigned__'))
+    if (apprFilters.userIds.length   > 0) r = r.filter(a =>
+      apprFilters.userIds.includes(a.decidedBy?.email ?? '__unassigned__')
+    )
     if (apprFilters.dateFrom) r = r.filter(a => new Date(a.createdAt).toISOString().slice(0, 10) >= apprFilters.dateFrom)
     if (apprFilters.dateTo)   r = r.filter(a => new Date(a.createdAt).toISOString().slice(0, 10) <= apprFilters.dateTo)
     return r
@@ -112,7 +114,9 @@ export default function HistoryPage() {
   const visibleEscalations = useMemo(() => {
     let r = escalations
     if (escFilters.statuses.length > 0) r = r.filter(e => escFilters.statuses.includes(e.status))
-    if (escFilters.userIds.length  > 0) r = r.filter(e => escFilters.userIds.includes(e.assignedTo?.userId ?? '__unassigned__'))
+    if (escFilters.userIds.length  > 0) r = r.filter(e =>
+      escFilters.userIds.includes(e.assignedTo?.email ?? '__unassigned__')
+    )
     if (escFilters.dateFrom) r = r.filter(e => new Date(e.escalatedAt).toISOString().slice(0, 10) >= escFilters.dateFrom)
     if (escFilters.dateTo)   r = r.filter(e => new Date(e.escalatedAt).toISOString().slice(0, 10) <= escFilters.dateTo)
     return r
@@ -150,16 +154,14 @@ export default function HistoryPage() {
             <FilterSection label="Risk">
               <FilterChips options={RISK_OPTS} selected={apprFilters.risks} onToggle={toggleAppr('risks')} colorClass />
             </FilterSection>
-            {user.role === 'admin' && (
-              <FilterSection label="Decided By">
-                <FilterUserList
-                  users={users}
-                  selectedIds={apprFilters.userIds}
-                  onToggle={toggleAppr('userIds')}
-                  onClearAll={() => setApprFilters(f => ({ ...f, userIds: [] }))}
-                />
-              </FilterSection>
-            )}
+            <FilterSection label="Decided By">
+              <FilterUserList
+                users={users}
+                selectedIds={apprFilters.userIds}
+                onToggle={toggleAppr('userIds')}
+                onClearAll={() => setApprFilters(f => ({ ...f, userIds: [] }))}
+              />
+            </FilterSection>
             <FilterSection label="Period">
               <FilterDateRange
                 preset={apprDatePreset} onPreset={applyApprPreset}
@@ -173,16 +175,14 @@ export default function HistoryPage() {
             <FilterSection label="Status">
               <FilterChips options={STATUS_OPTS} selected={escFilters.statuses} onToggle={toggleEsc('statuses')} colorClass />
             </FilterSection>
-            {user.role === 'admin' && (
-              <FilterSection label="Handled By">
-                <FilterUserList
-                  users={users}
-                  selectedIds={escFilters.userIds}
-                  onToggle={toggleEsc('userIds')}
-                  onClearAll={() => setEscFilters(f => ({ ...f, userIds: [] }))}
-                />
-              </FilterSection>
-            )}
+            <FilterSection label="Handled By">
+              <FilterUserList
+                users={users}
+                selectedIds={escFilters.userIds}
+                onToggle={toggleEsc('userIds')}
+                onClearAll={() => setEscFilters(f => ({ ...f, userIds: [] }))}
+              />
+            </FilterSection>
             <FilterSection label="Period">
               <FilterDateRange
                 preset={escDatePreset} onPreset={applyEscPreset}

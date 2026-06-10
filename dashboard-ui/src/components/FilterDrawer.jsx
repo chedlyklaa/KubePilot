@@ -60,8 +60,9 @@ export function FilterChips({ options, selected, onToggle, colorClass }) {
   )
 }
 
-/** Checkbox list for user selection */
-export function FilterUserList({ users, selectedIds, onToggle, onClearAll }) {
+/** Checkbox list for user selection.
+ *  getKey — optional fn(user) → string used as toggle value; defaults to u.email */
+export function FilterUserList({ users, selectedIds, onToggle, onClearAll, getKey = u => u.email }) {
   return (
     <div className="filter-check-list">
       <label className="filter-check-item">
@@ -75,14 +76,17 @@ export function FilterUserList({ users, selectedIds, onToggle, onClearAll }) {
         Unassigned
       </label>
       {users.length > 0 && <div className="filter-check-divider" />}
-      {users.map(u => (
-        <label key={u._id} className="filter-check-item">
-          <input type="checkbox" checked={selectedIds.includes(u._id)}
-            onChange={() => onToggle(u._id)} />
-          {u.name}
-          <span className={`role-badge role-${u.role}`} style={{ marginLeft: 6 }}>{u.role}</span>
-        </label>
-      ))}
+      {users.map(u => {
+        const key = getKey(u)
+        return (
+          <label key={u._id} className="filter-check-item">
+            <input type="checkbox" checked={selectedIds.includes(key)}
+              onChange={() => onToggle(key)} />
+            {u.name}
+            <span className={`role-badge role-${u.role}`} style={{ marginLeft: 6 }}>{u.role}</span>
+          </label>
+        )
+      })}
     </div>
   )
 }

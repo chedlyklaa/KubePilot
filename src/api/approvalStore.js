@@ -11,13 +11,14 @@ function requestApproval(payload) {
   const id = String(++seq);
 
   notifEngine.emit({
-    severity: 'CRITICAL',
-    category: 'Agent Actions',
-    title:    `Approval Required: ${payload.issueKey}`,
-    message:  `High-risk action "${payload.diagnosis?.action}" needs approval. Risk: ${payload.diagnosis?.risk}. Cause: ${payload.diagnosis?.rootCause ?? '—'}`,
-    namespace: payload.issue?.namespace,
-    source:   `ClusterAgent/${payload.issue?.clusterName ?? '—'}`,
-    metadata: { issueKey: payload.issueKey, action: payload.diagnosis?.action, risk: payload.diagnosis?.risk },
+    severity:   'CRITICAL',
+    category:   'Agent Actions',
+    title:      `Approval Required: ${payload.issueKey}`,
+    message:    `High-risk action "${payload.diagnosis?.action}" needs approval. Risk: ${payload.diagnosis?.risk}. Cause: ${payload.diagnosis?.rootCause ?? '—'}`,
+    namespace:  payload.issue?.namespace,
+    source:     `ClusterAgent/${payload.issue?.clusterName ?? '—'}`,
+    metadata:   { issueKey: payload.issueKey, action: payload.diagnosis?.action, risk: payload.diagnosis?.risk },
+    targetRole: 'admin', // email only goes to users with role=admin
   }).catch(() => {});
 
   return new Promise(resolve => {
@@ -55,7 +56,7 @@ async function _saveHistory(entry, decision, user) {
       issue:       entry.payload.issue,
       diagnosis:   entry.payload.diagnosis,
       decision,
-      decidedBy:   user ? { name: user.name, email: user.email, role: user.role } : null,
+      decidedBy:   user ? { userId: user.id, name: user.name, email: user.email, role: user.role } : null,
       requestedAt: new Date(entry.createdAt),
     });
   } catch (err) {

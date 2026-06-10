@@ -1048,7 +1048,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
 /* Wrapper for assistant bubble + optional PDF button (column layout) */
 .chat-assistant-wrap {
   display: flex; flex-direction: column; align-items: flex-start;
-  gap: 6px; max-width: 78%;
+  gap: 6px; max-width: 92%;
 }
 
 /* ── Per-message PDF download button ─────────────────────────────────── */
@@ -1090,7 +1090,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
 [data-theme="light"] .msg-pdf-btn { box-shadow: 0 2px 14px rgba(99,102,241,.35), inset 0 1px 0 rgba(255,255,255,.25); }
 [data-theme="light"] .msg-pdf-btn:hover { box-shadow: 0 4px 24px rgba(99,102,241,.5); }
 
-.chat-page        { display: flex; flex-direction: column; height: calc(100vh - 56px); max-width: 860px; margin: 0 auto; padding: 0 24px; width: 100%; }
+.chat-page        { display: flex; flex-direction: column; height: calc(100vh - 56px); width: 100%; max-width: 60%; margin: 0 auto; padding: 0 24px; }
 .chat-page-header { display: flex; align-items: center; justify-content: space-between; padding: 18px 0 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; gap: 12px; }
 .chat-page-header h2 { margin: 0 0 3px; font-size: 18px; color: var(--text-head); font-weight: 600; }
 .elapsed-badge    { font-size: 12px; font-weight: 600; color: var(--success); background: var(--success-dim); padding: 3px 10px; border-radius: 10px; white-space: nowrap; }
@@ -1109,7 +1109,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
 .chat-msg-assistant  { justify-content: flex-start; }
 .chat-bubble-page    { max-width: 78%; padding: 10px 14px; border-radius: 14px; font-size: 13px; line-height: 1.65; word-break: break-word; }
 .chat-msg-user .chat-bubble-page      { background: var(--primary); color: #fff; border-radius: 14px 14px 3px 14px; white-space: pre-wrap; }
-.chat-msg-assistant .chat-bubble-page { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 14px 14px 14px 3px; }
+.chat-msg-assistant .chat-bubble-page { max-width: 100%; padding: 14px 18px; font-size: 14px; line-height: 1.7; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 14px 14px 14px 3px; }
 
 /* ── Markdown inside assistant bubbles ── */
 .chat-msg-assistant .chat-bubble-page p  { margin: 0 0 8px; }

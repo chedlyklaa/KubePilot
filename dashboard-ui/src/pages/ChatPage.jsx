@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback, memo } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { apiFetch, getToken } from '../lib/api'
 import ReactMarkdown from 'react-markdown'
@@ -24,12 +24,9 @@ const CLUSTER_CHIPS = [
 ]
 
 // ── Intent classifier ──────────────────────────────────────────────────────
-// Returns { intent: 'chat' | 'cluster_debug' | 'export_pdf' | 'explain', confidence: 0–1 }
 function detectIntent(text) {
   const lower = text.toLowerCase()
 
-  // export_pdf uses regex patterns so "generate me a report", "create a status report",
-  // "give me a full pdf", etc. all match regardless of filler words between the verbs.
   const PDF_PATTERNS = [
     { re: /\b(generate|create|make|build|give\s+me)\s+(\w+\s+){0,3}report\b/, score: 6 },
     { re: /\b(download|export|save)\s+(\w+\s+){0,2}report\b/,                  score: 6 },
@@ -120,7 +117,6 @@ function detectIntent(text) {
       if (lower.includes(phrase.text)) score += phrase.score
     }
     for (const kw of def.keywords) {
-      // word-boundary match; longer keywords get a small bonus
       const re = new RegExp(`\\b${kw.text}\\b`)
       if (re.test(lower)) score += kw.score + Math.floor(kw.text.length / 4)
     }
@@ -138,8 +134,6 @@ function detectIntent(text) {
   return { intent: bestIntent, confidence: Math.min(maxScore / 15, 1.0), scores }
 }
 
-
-
 // ── Severity detection from markdown text ─────────────────────────────────
 function detectSeverity(text) {
   const t = text.toLowerCase()
@@ -148,7 +142,6 @@ function detectSeverity(text) {
   return 'ok'
 }
 
-// ── Extract title from first markdown heading, else first sentence ──────────
 function extractTitle(text) {
   const h = text.match(/^#{1,3}\s+(.+)/m)
   if (h) return h[1].replace(/[*_`]/g, '').trim().slice(0, 100)
@@ -156,7 +149,6 @@ function extractTitle(text) {
   return s ? s[0].trim().slice(0, 100) : 'Cluster Status Report'
 }
 
-// ── PDF renderer — markdown content, KubePilot header/footer ──────────────
 function renderStructuredPdf(markdown) {
   const win = window.open('', '_blank', 'width=980,height=800')
   if (!win) return
@@ -190,7 +182,6 @@ function renderStructuredPdf(markdown) {
 
   .body{padding:28px 48px}
 
-  /* ── Markdown content styles ── */
   .md h1{font-size:18px;font-weight:700;color:#1e293b;border-bottom:2px solid #6366f1;padding-bottom:5px;margin:22px 0 10px}
   .md h2{font-size:15px;font-weight:700;color:#1e293b;border-bottom:1px solid #e2e8f0;padding-bottom:4px;margin:18px 0 8px}
   .md h3{font-size:13.5px;font-weight:700;color:#334155;margin:14px 0 6px}
@@ -248,6 +239,87 @@ function renderStructuredPdf(markdown) {
   setTimeout(() => win.print(), 500)
 }
 
+// ── Memoized markdown renderer — only re-parses when content changes ──────
+const MarkdownBubble = memo(function MarkdownBubble({ content }) {
+  return <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+})
+
+// ── Memoized message bubble — skips re-render for unchanged messages ───────
+const MessageBubble = memo(function MessageBubble({ msg, i, isLast, busy, pdfGenerating, onPdf, onEnableLive }) {
+  if (msg.role === 'assistant') {
+    return (
+      <div className="chat-assistant-wrap">
+        {msg.isClusterPrompt ? (
+          <div className="chat-bubble-page cluster-prompt-bubble">
+            <span>⎈ This question is about your live cluster. Connect first, then ask again.</span>
+            <button className="cluster-prompt-btn" onClick={onEnableLive}>Enable Live Mode</button>
+          </div>
+        ) : (
+          <div className={`chat-bubble-page ${msg.error ? 'bubble-error' : ''}`}>
+            {!msg.content && busy && isLast
+              ? <span className="thinking-dots"><span /><span /><span /></span>
+              : <MarkdownBubble content={msg.content} />
+            }
+          </div>
+        )}
+        {msg.isPdfRequest && msg.content && !(busy && isLast) && (
+          <button
+            className="msg-pdf-btn"
+            onClick={() => onPdf(i)}
+            disabled={pdfGenerating === i}
+            title="Download this report as PDF"
+          >
+            {pdfGenerating === i
+              ? <><span className="thinking-dots"><span /><span /><span /></span> Preparing report…</>
+              : <><span className="pdf-btn-icon">⬇</span> Download Report</>
+            }
+          </button>
+        )}
+      </div>
+    )
+  }
+  return (
+    <div className={`chat-bubble-page ${msg.error ? 'bubble-error' : ''}`}>
+      {msg.content}
+    </div>
+  )
+})
+
+// ── Input box lives in its own component — its state changes are isolated ──
+// This prevents every keystroke from re-rendering the message list above.
+const ChatInput = memo(function ChatInput({ onSend, busy, withClusterContext }) {
+  const [input, setInput] = useState('')
+
+  const handleSend = useCallback(() => {
+    const text = input.trim()
+    if (!text || busy) return
+    onSend(text)
+    setInput('')
+  }, [input, busy, onSend])
+
+  const onKeyDown = useCallback(e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() }
+  }, [handleSend])
+
+  return (
+    <div className="chat-page-input-row">
+      <textarea
+        value={input}
+        onChange={e => setInput(e.target.value)}
+        onKeyDown={onKeyDown}
+        placeholder={withClusterContext
+          ? 'Ask about your live cluster… (Enter to send)'
+          : 'Ask about Kubernetes… (Enter to send, Shift+Enter for new line)'}
+        rows={3}
+        disabled={busy}
+      />
+      <button className="btn-primary chat-send-btn" onClick={handleSend} disabled={busy || !input.trim()}>
+        {busy ? '◌' : '↑'}
+      </button>
+    </div>
+  )
+})
+
 export default function ChatPage() {
   const { user }   = useAuth()
   const chatKey    = `kubepilot_chat_${user.id}`
@@ -255,7 +327,6 @@ export default function ChatPage() {
   const [messages,           setMessages]           = useState(() => {
     try { return JSON.parse(localStorage.getItem(chatKey)) || [] } catch { return [] }
   })
-  const [input,              setInput]              = useState('')
   const [busy,               setBusy]               = useState(false)
   const [elapsed,            setElapsed]            = useState(null)
   const [withClusterContext, setWithClusterContext]  = useState(false)
@@ -278,27 +349,19 @@ export default function ChatPage() {
     apiFetch('/api/chat/history', { method: 'PUT', body: { messages: msgs } }).catch(() => {})
   }
 
-  function generatePdf(msgIndex) {
+  const generatePdf = useCallback((msgIndex) => {
     const content = messages[msgIndex]?.content
     if (!content) return
     setPdfGenerating(msgIndex)
-    try {
-      renderStructuredPdf(content)
-    } finally {
-      setPdfGenerating(null)
-    }
-  }
+    try { renderStructuredPdf(content) }
+    finally { setPdfGenerating(null) }
+  }, [messages])
 
-  async function send() {
-    const text = input.trim()
-    if (!text || busy) return
-
+  const send = useCallback(async (text) => {
     const { intent, confidence, scores } = detectIntent(text)
     const userMsg      = { role: 'user', content: text }
     const nextMessages = [...messages, userMsg]
 
-    // ── Require live cluster context when needed ───────────────────────────
-    // export_pdf that also scores on cluster_debug needs live data for the report
     const needsCluster = intent === 'cluster_debug' ||
       (intent === 'export_pdf' && (scores.cluster_debug ?? 0) > 2)
 
@@ -310,16 +373,14 @@ export default function ChatPage() {
       }
       const next = [...nextMessages, prompt]
       setMessages(next)
-      setInput('')
       localStorage.setItem(chatKey, JSON.stringify(next))
       saveToDb(next)
       return
     }
 
-    // ── Stream LLM response; mark for PDF button if export_pdf intent ──────
     const wantsPdf = intent === 'export_pdf' && confidence > 0.2
     setMessages([...nextMessages, { role: 'assistant', content: '' }])
-    setInput(''); setBusy(true); setElapsed(null)
+    setBusy(true); setElapsed(null)
 
     const patch = fn => setMessages(prev => {
       const upd = [...prev]
@@ -377,12 +438,11 @@ export default function ChatPage() {
 
     const assistantMsg  = { role: 'assistant', content: assistantContent, ...(wantsPdf && { isPdfRequest: true }) }
     const finalMessages = [...nextMessages, assistantMsg]
-    // keep the isPdfRequest flag visible in the last bubble
     setMessages(finalMessages)
     localStorage.setItem(chatKey, JSON.stringify(finalMessages))
     saveToDb(finalMessages)
     setBusy(false)
-  }
+  }, [messages, withClusterContext, chatKey])
 
   async function clearHistory() {
     setMessages([]); setElapsed(null)
@@ -390,7 +450,7 @@ export default function ChatPage() {
     apiFetch('/api/chat/history', { method: 'DELETE' }).catch(() => {})
   }
 
-  async function toggleClusterMode() {
+  const toggleClusterMode = useCallback(async () => {
     const next = !withClusterContext
     setWithClusterContext(next)
     if (next) {
@@ -404,10 +464,9 @@ export default function ChatPage() {
         setClusterLoading(false)
       }
     }
-  }
+  }, [withClusterContext])
 
-  const onKeyDown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }
-  const chips     = withClusterContext ? CLUSTER_CHIPS : GENERAL_CHIPS
+  const chips = withClusterContext ? CLUSTER_CHIPS : GENERAL_CHIPS
 
   return (
     <div className="chat-page">
@@ -446,7 +505,7 @@ export default function ChatPage() {
             </p>
             <div className="chat-suggestions">
               {chips.map(s => (
-                <button key={s} className="suggestion-chip" onClick={() => setInput(s)}>{s}</button>
+                <button key={s} className="suggestion-chip" onClick={() => send(s)}>{s}</button>
               ))}
             </div>
           </div>
@@ -454,60 +513,21 @@ export default function ChatPage() {
 
         {messages.map((msg, i) => (
           <div key={i} className={`chat-msg-row chat-msg-${msg.role}`}>
-            {msg.role === 'assistant' ? (
-              <div className="chat-assistant-wrap">
-                {msg.isClusterPrompt ? (
-                  <div className="chat-bubble-page cluster-prompt-bubble">
-                    <span>⎈ This question is about your live cluster. Connect first, then ask again.</span>
-                    <button className="cluster-prompt-btn" onClick={toggleClusterMode}>Enable Live Mode</button>
-                  </div>
-                ) : (
-                  <div className={`chat-bubble-page ${msg.error ? 'bubble-error' : ''}`}>
-                    {!msg.content && busy && i === messages.length - 1
-                      ? <span className="thinking-dots"><span /><span /><span /></span>
-                      : <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                    }
-                  </div>
-                )}
-                {msg.isPdfRequest && msg.content && !(busy && i === messages.length - 1) && (
-                  <button
-                    className="msg-pdf-btn"
-                    onClick={() => generatePdf(i)}
-                    disabled={pdfGenerating === i}
-                    title="Download this report as PDF"
-                  >
-                    {pdfGenerating === i
-                      ? <><span className="thinking-dots"><span /><span /><span /></span> Preparing report…</>
-                      : <><span className="pdf-btn-icon">⬇</span> Download Report</>
-                    }
-                  </button>
-                )}
-              </div>
-            ) : (
-              <div className={`chat-bubble-page ${msg.error ? 'bubble-error' : ''}`}>
-                {msg.content}
-              </div>
-            )}
+            <MessageBubble
+              msg={msg}
+              i={i}
+              isLast={i === messages.length - 1}
+              busy={busy}
+              pdfGenerating={pdfGenerating}
+              onPdf={generatePdf}
+              onEnableLive={toggleClusterMode}
+            />
           </div>
         ))}
         <div ref={bottomRef} />
       </div>
 
-      <div className="chat-page-input-row">
-        <textarea
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder={withClusterContext
-            ? 'Ask about your live cluster… (Enter to send)'
-            : 'Ask about Kubernetes… (Enter to send, Shift+Enter for new line)'}
-          rows={3}
-          disabled={busy}
-        />
-        <button className="btn-primary chat-send-btn" onClick={send} disabled={busy || !input.trim()}>
-          {busy || pdfGenerating ? '◌' : '↑'}
-        </button>
-      </div>
+      <ChatInput onSend={send} busy={busy} withClusterContext={withClusterContext} />
     </div>
   )
 }

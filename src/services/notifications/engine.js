@@ -53,28 +53,26 @@ function invalidateRoutingCache() {
 }
 
 // ── Collect personal email recipients from user preferences ──────────────────
-// Returns array of email addresses for users who have email enabled in their preferences.
-async function _getPersonalEmailRecipients(category) {
+// Returns array of email addresses for users who have email enabled.
+// Pass targetRole to restrict delivery to a specific role (e.g. 'admin').
+async function _getPersonalEmailRecipients(category, targetRole = null) {
   try {
     const { UserNotificationPreferences, User } = require('../../db/models');
-    const prefs = await UserNotificationPreferences.find({
-      channels: 'email',
-    }).lean();
+    const prefs = await UserNotificationPreferences.find({ channels: 'email' }).lean();
 
     const emails = [];
     for (const pref of prefs) {
       // Skip if user has category filtering and this category is not in their list
       if (pref.categories?.length > 0 && category && !pref.categories.includes(category)) continue;
 
-      if (pref.notifyEmail?.trim()) {
-        emails.push(pref.notifyEmail.trim());
-      } else {
-        // Fall back to their account email
-        const user = await User.findById(pref.userId).select('email active').lean();
-        if (user?.active && user.email) emails.push(user.email);
-      }
+      // Always fetch user — needed for active check, role gate, and email fallback
+      const user = await User.findById(pref.userId).select('email active role').lean();
+      if (!user?.active) continue;
+      if (targetRole && user.role !== targetRole) continue;
+
+      emails.push(pref.notifyEmail?.trim() || user.email);
     }
-    return [...new Set(emails)]; // deduplicate
+    return [...new Set(emails.filter(Boolean))]; // deduplicate and drop empty
   } catch {
     return [];
   }
@@ -168,6 +166,7 @@ async function emit(event) {
     source:    event.source    ?? null,
     metadata:  event.metadata  ?? {},
     targetUserIds: event.targetUserIds ?? [],
+    targetRole:    event.targetRole    ?? null,
   };
 
   const [routing, channels] = await Promise.all([_getRouting(), _getEnabledChannels()]);
@@ -179,9 +178,10 @@ async function emit(event) {
   const channelsToUse = new Set(targets);
   channelsToUse.add('inApp');
 
-  // Pre-fetch personal email recipients once (only if email channel is active)
+  // Pre-fetch personal email recipients once (only if email channel is active).
+  // targetRole restricts delivery to a specific role (e.g. 'admin' for approvals).
   const personalEmails = channelsToUse.has('email') && enabledByType['email']
-    ? await _getPersonalEmailRecipients(notification.category)
+    ? await _getPersonalEmailRecipients(notification.category, notification.targetRole)
     : [];
 
   await Promise.all([...channelsToUse].map(async type => {

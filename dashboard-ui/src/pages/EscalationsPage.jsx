@@ -32,7 +32,7 @@ export default function EscalationsPage() {
       if (Array.isArray(d) && !escSseReady.current) setEscalations(d)
     })
     if (user.role === 'admin') {
-      apiFetch('/api/users').then(r => r.json()).then(d => { if (Array.isArray(d)) setUsers(d.filter(u => u.active)) })
+      apiFetch('/api/users').then(r => r.json()).then(d => { if (Array.isArray(d)) setUsers(d.filter(u => u.active !== false)) })
     }
   }, [user.role])
 

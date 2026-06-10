@@ -279,6 +279,15 @@ function createServer(port = 3001) {
     res.json(await EscalationHistory.find().sort({ escalatedAt: -1 }).limit(100));
   });
 
+  // ── Lightweight member list — any authenticated user can fetch names for filters
+  app.get('/api/users/members', requireAuth, async (_req, res) => {
+    try {
+      const members = await User.find({ active: { $ne: false } })
+        .select('_id name role email').sort({ name: 1 }).lean();
+      res.json(members);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
   // ── User management (admin only) ──────────────────────────────────────────
   app.get('/api/users', requireAuth, requireAdmin, async (_req, res) => {
     res.json(await userService.list());

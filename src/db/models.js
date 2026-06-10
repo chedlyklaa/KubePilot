@@ -16,7 +16,7 @@ const ApprovalHistorySchema = new Schema({
   issue:       Schema.Types.Mixed,
   diagnosis:   Schema.Types.Mixed,
   decision:    { type: String, enum: ['approved', 'denied', 'timeout'], required: true },
-  decidedBy:   { name: String, email: String, role: String },
+  decidedBy:   { userId: String, name: String, email: String, role: String },
   requestedAt: Date,
 }, { timestamps: true });
 
