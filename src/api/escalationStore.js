@@ -230,14 +230,14 @@ async function assign(id, assignedTo, assignedBy) {
 
   const notif = require('./notificationStore');
 
-  // Notify new assignee
+  // Notify new assignee (in-app)
   await notif.send([assignedTo.userId], {
     type:    'warn',
     message: `📌 You have been assigned to handle: ${entry.issueKey}`,
     data:    { escalationId: id, issueKey: entry.issueKey, assignedBy: { name: assignedBy.name } },
   });
 
-  // Notify old assignee if different
+  // Notify old assignee if different (in-app)
   if (oldAssignee?.userId && oldAssignee.userId !== assignedTo.userId) {
     await notif.send([oldAssignee.userId], {
       type:    'info',
@@ -246,8 +246,41 @@ async function assign(id, assignedTo, assignedBy) {
     });
   }
 
+  // Email the new assignee if they have email notifications enabled — non-blocking
+  _sendAssignmentEmail(assignedTo, entry.issueKey, assignedBy.name).catch(() => {});
+
   _notify({ type: 'updated', escalation: _safe(entry) });
   return true;
+}
+
+// ── Send assignment email (best-effort, never throws) ─────────────────────────
+async function _sendAssignmentEmail(assignedTo, issueKey, assignedByName) {
+  try {
+    const { UserNotificationPreferences, NotificationChannelConfig } = require('../db/models');
+
+    // Respect the user's channel preference — only send if they enabled email
+    const prefs = await UserNotificationPreferences.findOne({ userId: assignedTo.userId }).lean();
+    if (!prefs || !prefs.channels.includes('email')) return;
+
+    // Use personal notification email override if set, otherwise fall back to account email
+    const toEmail = prefs.notifyEmail?.trim() || assignedTo.email;
+    if (!toEmail) return;
+
+    // Load SMTP config from system channel settings (admin configures these in the dashboard UI,
+    // stored in NotificationChannelConfig — NOT in environment variables)
+    const channelDoc = await NotificationChannelConfig.findOne({ type: 'email' }).lean();
+    if (!channelDoc?.enabled) return;
+
+    const notifCrypto = require('../services/notifications/crypto');
+    const smtpConfig  = notifCrypto.decrypt(channelDoc.config ?? '');
+    if (!smtpConfig?.smtpHost || !smtpConfig?.smtpUser || !smtpConfig?.smtpPass) return;
+
+    const email = require('../notifications/email');
+    await email.sendAssignment(toEmail, assignedTo.name, { issueKey, assignedBy: assignedByName }, smtpConfig);
+    console.log(`[EscalationStore] Assignment email sent → ${toEmail}  (${issueKey})`);
+  } catch (err) {
+    console.error(`[EscalationStore] Assignment email failed: ${err.message}`);
+  }
 }
 
 // ── Developer requests reassignment ──────────────────────────────────────────

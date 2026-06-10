@@ -284,6 +284,29 @@ class ClusterAgent {
       } catch { /* metrics unavailable */ }
     }
 
+    // ── Step 1b: Investigation Gate ────────────────────────────────────────────
+    // Deterministic check: is the current evidence bundle sufficient for confident
+    // LLM planning?  If not, enrich it in-place before calling the planner.
+    // This runs in the same cycle — no retry delay, no new action types.
+    const evidenceAssessment = this._assessEvidenceSufficiency(
+      issue, podLogs, podMetrics, nodeCtx.events ?? [], attempt
+    );
+    let investigationArtifacts = null;
+    if (evidenceAssessment.needsInvestigation) {
+      const t0inv = Date.now();
+      console.log(
+        `[${this.name}] [INVESTIGATE] mode=${evidenceAssessment.mode}` +
+        `  reasons=[${evidenceAssessment.reasons.join(',')}]` +
+        `  confidence=${evidenceAssessment.confidence}`
+      );
+      investigationArtifacts = await this._enrichEvidence(issue, podLogs);
+      const inv = investigationArtifacts;
+      if (inv.previousLogs)   console.log(`[${this.name}] [INVESTIGATE] previous-logs:    ${inv.previousLogs.length}c`);
+      if (inv.describeEvents) console.log(`[${this.name}] [INVESTIGATE] describe-events:  ${inv.describeEvents.length}c`);
+      if (inv.rolloutHistory) console.log(`[${this.name}] [INVESTIGATE] rollout-history:  ${inv.rolloutHistory.length}c`);
+      console.log(`[${this.name}] [INVESTIGATE] enrichment complete  ${Date.now() - t0inv}ms`);
+    }
+
     // Pre-initialize the episode draft so metricsSnapshot is attached before the
     // first _recordTimelineEntry call (which may fire as early as policy rejection).
     if (!this.episodeTimelines.has(key)) {
@@ -297,6 +320,11 @@ class ClusterAgent {
     } else {
       // Refresh the snapshot every cycle so the stored episode has the latest reading.
       this.episodeTimelines.get(key).metricsSnapshot = podMetrics;
+    }
+    // Attach investigation artifacts to the episode context so escalation tickets
+    // carry the enriched diagnostic data collected by the gate.
+    if (investigationArtifacts) {
+      this.episodeTimelines.get(key).context.investigationArtifacts = investigationArtifacts;
     }
 
     // ── Step 2: Retrieve similar past episodes from memory ────────────────────
@@ -333,6 +361,11 @@ class ClusterAgent {
         events:              nodeCtx.events              ?? [],
         correlationFindings: nodeCtx.correlationFindings ?? [],
         clusterFindings:     nodeCtx.clusterFindings     ?? [],
+        // Investigation gate output — null when evidence was already sufficient
+        investigationContext: evidenceAssessment.needsInvestigation
+          ? { mode: evidenceAssessment.mode, reasons: evidenceAssessment.reasons,
+              confidence: evidenceAssessment.confidence, ...investigationArtifacts }
+          : null,
       });
     } catch (err) {
       console.error(`[${this.name}] [PLANNER] Error: ${err.message}`);
@@ -553,6 +586,132 @@ class ClusterAgent {
     }
 
     this.cooldowns.set(key, Date.now());
+  }
+
+  // ── Investigation Gate ─────────────────────────────────────────────────────
+  // Deterministic evidence-sufficiency check — no LLM, no I/O.
+  // Returns { needsInvestigation, reasons, mode, confidence }.
+  _assessEvidenceSufficiency(issue, podLogs, metrics, events, attempt) {
+    // Self-evident failures: root cause is unambiguous, extra evidence adds nothing.
+    if (issue.oomKilled === true || issue.exitCode === 137 || issue.type === 'OOMKilled') {
+      return { needsInvestigation: false, reasons: [], mode: 'standard', confidence: 'high' };
+    }
+    if (issue.type === 'ImagePullBackOff') {
+      return { needsInvestigation: false, reasons: [], mode: 'standard', confidence: 'high' };
+    }
+
+    const reasons = [];
+    const logLen  = (podLogs ?? '').trim().length;
+
+    // R1: No exit code for a crash-type issue — can't determine cause without describe/prev-logs
+    if (issue.exitCode == null &&
+        (issue.type === 'CrashLoopBackOff' || issue.type === 'ContainerError')) {
+      reasons.push('MISSING_EXIT_CODE');
+    }
+
+    // R2: Logs are empty or too short to support a confident diagnosis
+    if (logLen < 80) {
+      reasons.push('INSUFFICIENT_LOGS');
+    }
+
+    // R3: CrashLoopBackOff is always ambiguous without previous-container logs
+    if (issue.type === 'CrashLoopBackOff') {
+      reasons.push('CRASH_LOOP_DETECTED');
+    }
+
+    // R4: High restart count — persistent failure pattern, needs deeper context
+    if ((issue.restartCount ?? 0) > 3) {
+      reasons.push('HIGH_RESTART_COUNT');
+    }
+
+    // R5: This is a retry — the previous action did not resolve the issue
+    if (attempt > 1) {
+      reasons.push('REPEATED_ATTEMPT');
+    }
+
+    // R6: Ambiguous exit codes that require deeper inspection
+    const AMBIGUOUS_CODES = new Set([1, 2, 126, 127]);
+    if (issue.exitCode != null && AMBIGUOUS_CODES.has(issue.exitCode)) {
+      reasons.push('AMBIGUOUS_EXIT_CODE');
+    }
+
+    // R7: Backoff / kill events detected for this pod or namespace
+    const BACKOFF_SIGNALS = new Set(['BackOff', 'CrashLoopBackOff', 'OOMKilling', 'Killing', 'Unhealthy']);
+    const hasBackoffEvent = (events ?? []).some(e =>
+      BACKOFF_SIGNALS.has(e.reason) &&
+      (e.name === issue.podName || e.namespace === issue.namespace)
+    );
+    if (hasBackoffEvent) {
+      reasons.push('BACKOFF_EVENTS_DETECTED');
+    }
+
+    const needsInvestigation = reasons.length > 0;
+    const confidence =
+      !needsInvestigation   ? 'high'   :
+      reasons.length <= 2   ? 'medium' : 'low';
+
+    return {
+      needsInvestigation,
+      reasons,
+      mode: needsInvestigation ? 'investigation_required' : 'standard',
+      confidence,
+    };
+  }
+
+  // ── Evidence Enrichment ────────────────────────────────────────────────────
+  // Fetches additional kubectl data in parallel when evidence is insufficient.
+  // All fetches fail silently — enrichment is best-effort, never blocking.
+  // Returns { previousLogs, describeEvents, rolloutHistory }.
+  async _enrichEvidence(issue, existingLogs) {
+    const ns     = issue.namespace ?? 'default';
+    const pod    = issue.podName;
+    const dep    = issue.deployment;
+    const result = { previousLogs: null, describeEvents: null, rolloutHistory: null };
+    const tasks  = [];
+
+    // T1: Previous container logs — the crash output before the current restart.
+    //     This is the single most valuable signal for CrashLoopBackOff diagnosis.
+    if (pod) {
+      tasks.push(
+        kubectl.runCommand(
+          `kubectl --context=${this.context} logs --previous ${pod} -n ${ns} --tail=80`
+        )
+        .then(out => { result.previousLogs = out.trim() || null; })
+        .catch(() => {}) // no previous state on first crash — not an error
+      );
+    }
+
+    // T2: kubectl describe pod Events section — only when current logs are sparse.
+    //     Extracted section avoids dumping the full (verbose) describe output.
+    const logLen = (existingLogs ?? '').trim().length;
+    if (pod && logLen < 80) {
+      tasks.push(
+        kubectl.describePod(pod, ns, this.context)
+          .then(raw => {
+            const idx = raw.indexOf('\nEvents:');
+            result.describeEvents = idx !== -1
+              ? raw.slice(idx, idx + 1500).trim()
+              : null;
+          })
+          .catch(() => {})
+      );
+    }
+
+    // T3: Rollout history — assess rollback eligibility.
+    //     Only useful for deployment-managed pods with image/command failure exit codes.
+    const ROLLBACK_CODES = new Set([126, 127]);
+    if (dep && (issue.exitCode == null || ROLLBACK_CODES.has(issue.exitCode))) {
+      tasks.push(
+        kubectl.runCommand(
+          `kubectl --context=${this.context} rollout history deployment/${dep} -n ${ns}`
+        )
+        .then(out => { result.rolloutHistory = out.trim() || null; })
+        .catch(() => {})
+      );
+    }
+
+    await Promise.allSettled(tasks);
+    return result;
   }
 
   // ── Accumulate timeline entries across attempts ────────────────────────────

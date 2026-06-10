@@ -36,17 +36,20 @@ class PlannerAgent {
    */
   async plan({
     issue, podLogs, structuralMatches, semanticMatches, learnedRules, attempt, metrics,
-    // NEW — optional node-level context
+    // Node/event/correlation context
     nodeMetrics = null, nodeIssues = [], events = [], correlationFindings = [], clusterFindings = [],
+    // Investigation gate output (null = evidence was already sufficient)
+    investigationContext = null,
   }) {
     const hasDeployment = !!issue.deployment;
 
-    const pastCtx       = this._formatPastEpisodes(structuralMatches, semanticMatches);
-    const rulesCtx      = this._formatRules(learnedRules);
-    const metricsCtx    = this._formatMetrics(metrics);
-    const nodeCtx       = this._formatNodeContext(nodeMetrics, nodeIssues);
-    const eventCtx      = this._formatEvents(events, issue);
-    const corrCtx       = this._formatCorrelation(correlationFindings, clusterFindings);
+    const pastCtx          = this._formatPastEpisodes(structuralMatches, semanticMatches);
+    const rulesCtx         = this._formatRules(learnedRules);
+    const metricsCtx       = this._formatMetrics(metrics);
+    const nodeCtx          = this._formatNodeContext(nodeMetrics, nodeIssues);
+    const eventCtx         = this._formatEvents(events, issue);
+    const corrCtx          = this._formatCorrelation(correlationFindings, clusterFindings);
+    const investigationCtx = this._formatInvestigationContext(investigationContext);
 
     const prompt = `CURRENT ISSUE
 issueType:    ${issue.type}
@@ -65,6 +68,7 @@ ${eventCtx}
 ${corrCtx}
 ${pastCtx}
 ${rulesCtx}
+${investigationCtx}
 ACTION RULES (mandatory)
 Pod actions:
 - increase_memory : oomKilled=true OR exitCode=137. Requires human approval.
@@ -77,6 +81,17 @@ Node actions (only when node is the root cause):
 - drain_node      : node needs maintenance or is critically degraded. High blast radius — use sparingly.
 - uncordon_node   : node has recovered and should be re-enabled for scheduling.
 - noop            : no safe automated fix available.
+
+Exit code guidance (use with logs and rollout history to decide):
+- exitCode=127 : binary not found in image — likely a bad image push or wrong entrypoint.
+                 If deployment exists AND rollout history shows a recent revision change → rollback.
+                 If bare pod → delete_pod (force re-pull with correct image).
+- exitCode=126 : permission denied — likely an init script or entrypoint misconfiguration.
+                 If deployment exists → rollback. If bare pod → delete_pod.
+- exitCode=137 : OOM kill — always increase_memory (covered by oomKilled rule above).
+- exitCode=1/2 : generic error — restart if logs show transient failure; rollback if logs show
+                 config or image error introduced by a recent change.
+- exitCode=null: insufficient signal — rely on previous logs and describe events if available.
 
 deployment present: ${hasDeployment}
 oomKilled: ${issue.oomKilled ?? false}
@@ -92,7 +107,13 @@ Return ONLY valid JSON:
 }`;
 
     const t0 = Date.now();
-    console.log(`[PLANNER] issue=${issue.type}  attempt=${attempt}  pastCtx=${(structuralMatches?.length ?? 0) + (semanticMatches?.length ?? 0)}  rules=${learnedRules?.length ?? 0}  metrics=${metrics ? 'yes' : 'unavailable'}  nodeCtx=${nodeIssues.length > 0}  events=${events.length}`);
+    console.log(
+      `[PLANNER] issue=${issue.type}  attempt=${attempt}` +
+      `  pastCtx=${(structuralMatches?.length ?? 0) + (semanticMatches?.length ?? 0)}` +
+      `  rules=${learnedRules?.length ?? 0}  metrics=${metrics ? 'yes' : 'unavailable'}` +
+      `  nodeCtx=${nodeIssues.length > 0}  events=${events.length}` +
+      `  mode=${investigationContext?.mode ?? 'standard'}`
+    );
 
     const stream = await client.chat.completions.create({
       model:          MODEL,
@@ -207,6 +228,40 @@ Return ONLY valid JSON:
     } catch {
       return { rootCause: 'parse error', action: 'noop', targetNode: nodeIssue.nodeName, risk: 'LOW', rationale: 'fallback' };
     }
+  }
+
+  // ── Investigation Gate context ────────────────────────────────────────────
+  _formatInvestigationContext(ctx) {
+    if (!ctx) return '';
+
+    const lines = [
+      '\n━━━ INVESTIGATION CONTEXT ━━━',
+      `decision_mode: ${ctx.mode}`,
+      `reasons:       ${ctx.reasons.join(', ')}`,
+      `confidence:    ${ctx.confidence}`,
+      '',
+      'Evidence was automatically enriched because initial data was ambiguous.',
+      'Weight the additional evidence below carefully before forming a diagnosis.',
+      'Prefer a specific targeted action (rollback, restart, increase_memory) over noop.',
+      'Only choose noop if you are certain no automated action is safe after reviewing all evidence.',
+    ];
+
+    if (ctx.previousLogs) {
+      lines.push('\nPREVIOUS CONTAINER LOGS (output from the container run before the current restart)');
+      lines.push(ctx.previousLogs.slice(-1500));
+    }
+
+    if (ctx.describeEvents) {
+      lines.push('\nKUBECTL DESCRIBE — EVENTS SECTION');
+      lines.push(ctx.describeEvents.slice(0, 1200));
+    }
+
+    if (ctx.rolloutHistory) {
+      lines.push('\nROLLOUT HISTORY (use to determine if rollback is a safe option)');
+      lines.push(ctx.rolloutHistory.slice(0, 400));
+    }
+
+    return lines.join('\n');
   }
 
   // ── Format pod Prometheus metrics ─────────────────────────────────────────
