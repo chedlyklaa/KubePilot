@@ -5,13 +5,14 @@ const { connect }        = require('./src/db/connection');
 const { seedUsers }      = require('./src/api/authService');
 const { createServer }   = require('./src/api/server');
 const escalationStore    = require('./src/api/escalationStore');
+const silenceStore       = require('./src/api/silenceStore');
 
 // ─── Auto port-forward: Prometheus ──────────────────────────────────────────
 // Spawns kubectl port-forward in the background so PROMETHEUS_URL=http://localhost:9090
 // works without manual setup. Restarts automatically if the process dies.
 // Only runs when PROMETHEUS_URL points to localhost (skip for remote clusters).
 ;(function startPrometheusForward() {
-  const url = process.env.PROMETHEUS_URL || '';
+  const url = process.env.PROMETHEUS_URL || 'http://localhost:9090';
   if (!url.includes('localhost') && !url.includes('127.0.0.1')) return;
 
   const { spawn } = require('child_process');
@@ -61,6 +62,7 @@ const escalationStore    = require('./src/api/escalationStore');
 connect()
   .then(() => seedUsers())
   .then(() => escalationStore.init())
+  .then(() => silenceStore.init())
   .then(() => createServer(process.env.API_PORT || 3001))
   .catch(err => { console.error('[DB] Connection failed:', err.message); process.exit(1); });
 
@@ -89,7 +91,7 @@ async function main() {
   if (mode === 'autonomous') {
     // Start the full fleet autonomous loop
     const orchestrator = new Orchestrator(CONFIG_PATH);
-    const intervalMs = parseInt(process.env.CYCLE_INTERVAL_MS || '300000', 10); // default 5 min
+    const intervalMs = parseInt(process.env.CYCLE_INTERVAL_MS || '30000', 10); // default 5 min
     await orchestrator.start(intervalMs);
 
   } else if (mode === 'task') {

@@ -10,6 +10,9 @@ const ClusterAnalyzer     = require('./clusterAnalyzer');
 const GuardianAgent       = require('./guardianAgent');
 const PlannerAgent        = require('./plannerAgent');
 const ReflectionAgent     = require('./reflectionAgent');
+const InvestigatorAgent          = require('./investigatorAgent');
+const ChangeCorrelationEngine    = require('./changeCorrelationEngine');
+const CapacityForecastEngine     = require('./capacityForecastEngine');
 const approvalStore       = require('../api/approvalStore');
 const escalationStore     = require('../api/escalationStore');
 const episodicMemory      = require('../memory/episodicMemory');
@@ -20,6 +23,7 @@ const audit               = require('../audit/logger');
 const RiskEngine          = require('../risk/engine');
 const PolicyEngine        = require('../policy/policyEngine');
 const metricsCollector    = require('../monitoring/metricsCollector');
+const silenceStore        = require('../api/silenceStore');
 
 const riskEngine = new RiskEngine();
 
@@ -51,10 +55,11 @@ const ACTION_RISK_PARAMS = {
 
 class ClusterAgent {
   constructor(clusterConfig) {
-    this.name       = clusterConfig.name;
-    this.context    = clusterConfig.context;
-    this.tier       = clusterConfig.tier ?? 'dev';
-    this.namespaces = clusterConfig.namespaces ?? ['default'];
+    this.name        = clusterConfig.name;
+    this.context     = clusterConfig.context;
+    this.tier        = clusterConfig.tier ?? 'dev';
+    this.namespaces  = clusterConfig.namespaces ?? ['default'];
+    this.criticality = clusterConfig.criticality ?? null;
 
     this.guardian     = new GuardianAgent(this.name, this.tier);
     this.policyEngine = new PolicyEngine();
@@ -68,27 +73,29 @@ class ClusterAgent {
     this.nodeDrainAttempts = new Map(); // nodeName → drain attempt count
 
     this.COOLDOWN_MS      = 45_000;
-    this.VALIDATE_WAIT_MS = 30_000;
     this.MAX_FIX_ATTEMPTS = 3;
   }
 
   // ── Called once per cycle by orchestrator ─────────────────────────────────
   async run() {
+    const cycleStartedAt = new Date(); // upper-bound timestamp for change correlation window
     console.log(`\n${'='.repeat(50)}`);
     console.log(`[${this.name}] Cycle started`);
     console.log(`${'='.repeat(50)}`);
 
     // ── Fetch pods, nodes, events, and node metrics in parallel ───────────
-    let podsJson   = null;
-    let nodesJson  = null;
-    let eventsJson = null;
+    let podsJson       = null;
+    let nodesJson      = null;
+    let eventsJson     = null;
     let allNodeMetrics = null;
+    let allPodMetrics  = null;
 
-    const [podsResult, nodesResult, eventsResult, nodeMetricsResult] = await Promise.allSettled([
+    const [podsResult, nodesResult, eventsResult, nodeMetricsResult, podMetricsResult] = await Promise.allSettled([
       kubectl.getPods('*', this.context, true),
       kubectl.getNodes(this.context),
       kubectl.getEvents(this.context),
       metricsCollector.collectAllNodesMetrics(),
+      metricsCollector.collectAllPodsMetrics(),
     ]);
 
     if (podsResult.status  === 'fulfilled') podsJson       = podsResult.value;
@@ -101,6 +108,7 @@ class ClusterAgent {
     else console.warn(`[${this.name}] kubectl get events failed: ${eventsResult.reason?.message}`);
 
     if (nodeMetricsResult.status === 'fulfilled') allNodeMetrics = nodeMetricsResult.value;
+    if (podMetricsResult.status  === 'fulfilled') allPodMetrics  = podMetricsResult.value;
 
     // ── Pod issue extraction (unchanged) ──────────────────────────────────
     const allPodIssues = [];
@@ -154,6 +162,13 @@ class ClusterAgent {
     // ── Build node map for correlation context lookup ─────────────────────
     const nodeMap = nodesJson ? NodeAnalyzer.buildNodeMap(nodesJson) : {};
 
+    // ── Temporal risk pattern detection ──────────────────────────────────────
+    await temporal.initialize();
+    const riskPattern = temporal.detectRiskPattern();
+    if (riskPattern.requiresHumanAttention) {
+      console.warn(`[${this.name}] [TEMPORAL] ${riskPattern.highRiskCount} high-risk events in session — human attention recommended`);
+    }
+
     // ── Handle node issues first (higher priority when node causes pod failures)
     for (const nodeIssue of allNodeIssues) {
       await this._handleNodeIssue(nodeIssue, {
@@ -185,8 +200,19 @@ class ClusterAgent {
           events,
           correlationFindings: corrFindings,
           clusterFindings:     clusterIssues,
+          eventsJson:          eventsJson ?? { items: [] }, // raw EventList for ChangeCorrelationEngine
+          cycleStartedAt,                                   // incident detection upper-bound timestamp
         });
       }
+    }
+
+    // ── Capacity Forecasting (fire-and-forget — never delays remediation) ─────
+    if (process.env.CAPACITY_FORECAST_ENABLED === 'true') {
+      CapacityForecastEngine.snapshotAndForecast({
+        cluster:        this.name,
+        allNodeMetrics: allNodeMetrics ?? {},
+        allPodMetrics:  allPodMetrics  ?? {},
+      }).catch(err => console.warn(`[${this.name}] [CAPACITY] Non-blocking error: ${err.message}`));
     }
 
     console.log(`[${this.name}] Cycle complete\n`);
@@ -201,6 +227,13 @@ class ClusterAgent {
     if (last && Date.now() - last < this.COOLDOWN_MS) {
       const wait = Math.round((this.COOLDOWN_MS - (Date.now() - last)) / 1000);
       console.log(`[${this.name}] [SKIP] ${key} — cooldown ${wait}s`);
+      return;
+    }
+
+    if (silenceStore.isSilenced(key)) {
+      const active  = silenceStore.getAll().find(s => s.key === key);
+      const remaining = active ? Math.ceil((active.until - Date.now()) / 60000) : '?';
+      console.log(`[${this.name}] [SILENCED] ${key} — suppressed for ~${remaining}m more`);
       return;
     }
 
@@ -237,16 +270,19 @@ class ClusterAgent {
           timeline:           epDraft.timeline,
           resolved:           false,
           podLogs:            escalationLogs,
+          rca:                epDraft.rca ?? null,
         });
         await episodicMemory.store({
           fingerprint,
-          context:         epDraft.context,
-          timeline:        epDraft.timeline,
+          context:               epDraft.context,
+          timeline:              epDraft.timeline,
           reflection,
-          resolved:        false,
-          resolvedAction:  null,
-          totalAttempts:   attempt - 1,
-          metricsSnapshot: epDraft.metricsSnapshot ?? null,
+          resolved:              false,
+          resolvedAction:        null,
+          totalAttempts:         attempt - 1,
+          metricsSnapshot:       epDraft.metricsSnapshot ?? null,
+          rca:                   epDraft.rca ?? undefined,
+          guardianClassification: epDraft.guardianClassification ?? null,
         });
         await ruleEngine.analyze(issue.type);
         this.episodeTimelines.delete(key);
@@ -256,7 +292,7 @@ class ClusterAgent {
         .filter(e => e.issue === issue.type)
         .slice(-this.MAX_FIX_ATTEMPTS);
 
-      await escalationStore.escalate(key, issue, history);
+      await escalationStore.escalate(key, issue, history, epDraft?.rca ?? null);
       // Reset attempt counter so the agent keeps retrying next cycle.
       // Duplicate escalation records are suppressed by escalationStore.escalate().
       this.attemptCounts.delete(key);
@@ -264,6 +300,11 @@ class ClusterAgent {
     }
 
     console.log(`\n[${this.name}] ── ${key}  (attempt ${attempt}/${this.MAX_FIX_ATTEMPTS}) ──`);
+
+    // Check temporal repeated-failure pattern for this issue type
+    if (temporal.detectRepeatedFailures(issue.type)) {
+      console.warn(`[${this.name}] [TEMPORAL] Repeated failures for ${issue.type} detected in session — exercising extra caution`);
+    }
 
     // ── Step 1: Fetch pod logs once — reused by planner, guardian, reflection ──
     let podLogs = '';
@@ -345,6 +386,25 @@ class ClusterAgent {
       console.log(`[${this.name}] [RULES] ${learnedRules.length} active rule(s) for ${issue.type}`);
     }
 
+    // ── Step 3b: InvestigatorAgent + ChangeCorrelationEngine run in parallel ──
+    // ChangeCorrelationEngine is zero-cost when disabled (returns null immediately).
+    const [rca, changeCorrelation] = await Promise.all([
+      InvestigatorAgent.investigate(issue, this.name, this.context),
+      ChangeCorrelationEngine.correlate({
+        issue,
+        detectedAt:     nodeCtx.cycleStartedAt ?? new Date(),
+        eventsJson:     nodeCtx.eventsJson     ?? { items: [] },
+        podMetrics,
+        semanticMatches,
+        nodeIssues:     nodeCtx.nodeIssues     ?? [],
+        rolloutHistory: investigationArtifacts?.rolloutHistory ?? null,
+      }),
+    ]);
+    if (rca) this.episodeTimelines.get(key).rca = rca;
+    if (changeCorrelation) {
+      console.log(`[${this.name}] [CHANGE] ${changeCorrelation.triggerType} "${changeCorrelation.triggerResource}" conf=${changeCorrelation.confidence.toFixed(2)}`);
+    }
+
     // ── Step 4: Planner Agent generates an informed execution plan ────────────
     let diagnosis;
     try {
@@ -366,6 +426,9 @@ class ClusterAgent {
           ? { mode: evidenceAssessment.mode, reasons: evidenceAssessment.reasons,
               confidence: evidenceAssessment.confidence, ...investigationArtifacts }
           : null,
+        rca,
+        changeCorrelation,   // null when feature is disabled or no signal found
+        capacityForecast:    await CapacityForecastEngine.getPodForecast(this.name, issue.podName).catch(() => null),
       });
     } catch (err) {
       console.error(`[${this.name}] [PLANNER] Error: ${err.message}`);
@@ -404,6 +467,7 @@ class ClusterAgent {
       cluster:          this.name,
       issueType:        issue.type,
       tier:             this.tier,
+      criticality:      this.criticality ?? null,
       deploymentExists: !!issue.deployment,
       exitCode:         issue.exitCode   ?? null,
       oomKilled:        issue.oomKilled  ?? false,
@@ -451,7 +515,7 @@ class ClusterAgent {
     }
 
     // ── Step 6: Guardian Agent reviews the plan ───────────────────────────────
-    const guardian = await this.guardian.review({ issue, diagnosis, podLogs, attempt });
+    const guardian = await this.guardian.review({ issue, diagnosis, podLogs, attempt, rca });
 
     console.log(`[${this.name}] [GUARDIAN] verdict=${guardian.verdict}  class=${guardian.classification}  confidence=${guardian.confidence?.toFixed(2)}`);
     console.log(`[${this.name}] [GUARDIAN] reason: ${guardian.reason}`);
@@ -481,6 +545,23 @@ class ClusterAgent {
       diagnosis.risk = 'HIGH';
     }
 
+    // Store guardian classification in the episode draft for Qdrant payload enrichment
+    if (this.episodeTimelines.has(key)) {
+      this.episodeTimelines.get(key).guardianClassification = guardian.classification;
+    }
+
+    // ── UNCERTAIN detection (Rec 10) ─────────────────────────────────────────
+    // Low evidence confidence + RISKY guardian + not already HIGH → mark UNCERTAIN
+    // so operators can distinguish "ambiguous situation" from "confirmed dangerous action"
+    if (
+      evidenceAssessment.confidence === 'low' &&
+      guardian.classification === 'RISKY' &&
+      diagnosis.risk !== 'HIGH'
+    ) {
+      console.warn(`[${this.name}] [UNCERTAIN] Evidence confidence is low and guardian is RISKY — marking UNCERTAIN`);
+      diagnosis.risk = 'UNCERTAIN';
+    }
+
     // ── Step 7: Risk engine — tier-aware score ────────────────────────────────
     const riskParams = ACTION_RISK_PARAMS[diagnosis.action];
     if (riskParams) {
@@ -489,21 +570,24 @@ class ClusterAgent {
         clusterTier:   this.tier,
         blastRadius:   riskParams.blastRadius,
         reversibility: riskParams.reversibility,
-        llmConfidence: diagnosis.risk === 'LOW' ? 0.9 : diagnosis.risk === 'MEDIUM' ? 0.7 : 0.5,
+        llmConfidence: diagnosis.confidence ?? (diagnosis.risk === 'LOW' ? 0.9 : diagnosis.risk === 'MEDIUM' ? 0.7 : 0.5),
         costImpact:    riskParams.costImpact,
       });
       console.log(`[${this.name}] [RISK] score=${engineResult.score}  engine=${engineResult.decision}  tier=${this.tier}`);
 
-      if (engineResult.decision === 'BLOCK' && diagnosis.risk !== 'HIGH') {
+      if (engineResult.decision === 'BLOCK' && diagnosis.risk !== 'HIGH' && diagnosis.risk !== 'UNCERTAIN') {
         console.warn(`[${this.name}] [RISK] Engine overrides to HIGH`);
         diagnosis.risk = 'HIGH';
       }
     }
 
-    // ── Step 8: Approval gate for high-risk actions ───────────────────────────
-    if (HIGH_RISK_ACTIONS.has(diagnosis.action) || diagnosis.risk === 'HIGH') {
-      console.log(`[${this.name}] [APPROVAL] High-risk — waiting for human decision…`);
-      const approved = await approvalStore.requestApproval({ issue, diagnosis, issueKey: key, guardianNote: guardian.reason });
+    // ── Step 8: Approval gate for high-risk and uncertain actions ────────────
+    if (HIGH_RISK_ACTIONS.has(diagnosis.action) || diagnosis.risk === 'HIGH' || diagnosis.risk === 'UNCERTAIN') {
+      const gateReason = diagnosis.risk === 'UNCERTAIN'
+        ? 'Uncertain — evidence insufficient for confident automated decision'
+        : 'High-risk action';
+      console.log(`[${this.name}] [APPROVAL] ${gateReason} — waiting for human decision…`);
+      const approved = await approvalStore.requestApproval({ issue, diagnosis, issueKey: key, guardianNote: guardian.reason, rca });
       if (!approved) {
         console.log(`[${this.name}] [APPROVAL] Denied — skipping`);
         audit.blocked({ cluster: this.name, agent: this.name, action: diagnosis.action, reason: 'approval denied or timed out', metadata: { issueKey: key } });
@@ -529,8 +613,12 @@ class ClusterAgent {
     }
 
     // ── Step 10: Validate — did the fix work? ─────────────────────────────────
-    console.log(`[${this.name}] [VALIDATE] Waiting ${this.VALIDATE_WAIT_MS / 1000}s…`);
-    await new Promise(r => setTimeout(r, this.VALIDATE_WAIT_MS));
+    console.log(`[${this.name}] [VALIDATE] Waiting for fix to settle…`);
+    try {
+      await kubectl.waitForFix(issue, diagnosis.action, this.context);
+    } catch {
+      console.warn(`[${this.name}] [VALIDATE] kubectl wait timed out or errored — validating anyway`);
+    }
 
     const resolved = await this._validateFix(issue);
 
@@ -562,18 +650,21 @@ class ClusterAgent {
         timeline:           epDraft?.timeline ?? [],
         resolved:           true,
         podLogs,
+        rca:                epDraft?.rca ?? null,
       });
 
       // ── Step 12: Store episode in MongoDB + Qdrant + extract rules ───────
       await episodicMemory.store({
         fingerprint,
-        context:         epDraft?.context         ?? this._buildContext(issue, podLogs),
-        timeline:        epDraft?.timeline         ?? [],
+        context:               epDraft?.context         ?? this._buildContext(issue, podLogs),
+        timeline:              epDraft?.timeline         ?? [],
         reflection,
-        resolved:        true,
-        resolvedAction:  diagnosis.action,
-        totalAttempts:   attempt,
-        metricsSnapshot: epDraft?.metricsSnapshot  ?? null,
+        resolved:              true,
+        resolvedAction:        diagnosis.action,
+        totalAttempts:         attempt,
+        metricsSnapshot:       epDraft?.metricsSnapshot  ?? null,
+        rca:                   epDraft?.rca ?? undefined,
+        guardianClassification: epDraft?.guardianClassification ?? null,
       });
 
       await ruleEngine.analyze(issue.type);
@@ -639,7 +730,7 @@ class ClusterAgent {
     const BACKOFF_SIGNALS = new Set(['BackOff', 'CrashLoopBackOff', 'OOMKilling', 'Killing', 'Unhealthy']);
     const hasBackoffEvent = (events ?? []).some(e =>
       BACKOFF_SIGNALS.has(e.reason) &&
-      (e.name === issue.podName || e.namespace === issue.namespace)
+      e.name === issue.podName && e.namespace === issue.namespace
     );
     if (hasBackoffEvent) {
       reasons.push('BACKOFF_EVENTS_DETECTED');
@@ -923,6 +1014,27 @@ class ClusterAgent {
       return;
     }
     if (guardian.verdict === 'MODIFY') diagnosis.action = guardian.suggestedAction;
+
+    // Risk engine with dynamic blast radius from actual affected pod count (Rec 5)
+    const nodeRiskParams = ACTION_RISK_PARAMS[diagnosis.action];
+    if (nodeRiskParams) {
+      const dynamicBlastRadius = (diagnosis.action === 'drain_node' || diagnosis.action === 'cordon_node')
+        ? Math.min(affectedPods.length, 10)
+        : nodeRiskParams.blastRadius;
+      const nodeEngineResult = riskEngine.calculateRisk({
+        action:        nodeRiskParams.engineAction,
+        clusterTier:   this.tier,
+        blastRadius:   dynamicBlastRadius,
+        reversibility: nodeRiskParams.reversibility,
+        llmConfidence: diagnosis.confidence ?? (diagnosis.risk === 'LOW' ? 0.9 : diagnosis.risk === 'MEDIUM' ? 0.7 : 0.5),
+        costImpact:    nodeRiskParams.costImpact,
+      });
+      console.log(`[${this.name}] [NODE-RISK] score=${nodeEngineResult.score.toFixed(3)}  engine=${nodeEngineResult.decision}  affectedPods=${affectedPods.length}  tier=${this.tier}`);
+      if (nodeEngineResult.decision === 'BLOCK' && diagnosis.risk !== 'HIGH') {
+        console.warn(`[${this.name}] [NODE-RISK] Engine overrides to HIGH`);
+        diagnosis.risk = 'HIGH';
+      }
+    }
 
     // Approval gate for high-risk actions (drain) or production tier
     if (HIGH_RISK_ACTIONS.has(diagnosis.action) || diagnosis.risk === 'HIGH') {

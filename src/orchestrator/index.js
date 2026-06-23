@@ -144,7 +144,7 @@ class FleetOrchestrator {
     // ── First cycle immediately ───────────────────────────────────────────
     await this.runFleetCycle();
 
-    const intervalMs = intervalMsOverride ?? parseInt(process.env.CYCLE_INTERVAL_MS || '300000', 10);
+    const intervalMs = intervalMsOverride ?? parseInt(process.env.CYCLE_INTERVAL_MS || '30000', 10);
     console.log(`\nNext cycle in ${intervalMs / 1000}s`);
 
     const loop = async () => {

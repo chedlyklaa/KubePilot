@@ -20,7 +20,7 @@ async function _getAdminIds() {
 }
 
 // ── Escalate (called by agent) ────────────────────────────────────────────────
-async function escalate(issueKey, issue, history) {
+async function escalate(issueKey, issue, history, rca = null) {
   // Deduplication: if an active escalation already exists for this issueKey,
   // don't create a new record. Instead:
   //   - still pending  → leave it, nothing to do
@@ -45,9 +45,10 @@ async function escalate(issueKey, issue, history) {
     existing.stateUpdatedAt      = new Date().toISOString();
     console.warn(`[EscalationStore] Re-escalated "${issueKey}" (id=${existing.id}) — reset to pending after ${existing.attempts} total attempt(s)`);
 
-    // C3: update failedHistory so operators see the new failure context
+    // C3: update failedHistory and rca so operators see the latest failure context
     const updatedHistory = [...(existing.history ?? []), ...history];
     existing.history = updatedHistory;
+    if (rca) existing.rca = rca;
 
     try {
       const { EscalationHistory } = require('../db/models');
@@ -55,6 +56,7 @@ async function escalate(issueKey, issue, history) {
         status:        'pending',
         attempts:      existing.attempts,
         failedHistory: updatedHistory,
+        rca:           existing.rca ?? null,
         assignedTo:    null,
         acknowledgedBy: null,
         acknowledgedAt: null,
@@ -67,14 +69,15 @@ async function escalate(issueKey, issue, history) {
     const now = Date.now();
     const lastNotif = existing._lastTeamsNotif ?? 0;
     if (now - lastNotif >= 30 * 60 * 1000) {
+      const reRcaSummary = existing.rca?.suspected_cause ? `\n\nRoot Cause: ${existing.rca.suspected_cause} (confidence: ${existing.rca.confidence ?? '?'})` : '';
       notifEngine.emit({
         severity: 'CRITICAL',
         category: 'Incidents',
         title:    `Re-Escalated: ${issueKey}`,
-        message:  `Agent failed again after ${existing.attempts} total attempt(s). Manual intervention still required.`,
+        message:  `Agent failed again after ${existing.attempts} total attempt(s). Manual intervention still required.${reRcaSummary}`,
         namespace: existing.issue?.namespace ?? issue?.namespace,
         source:   `ClusterAgent/${existing.issue?.clusterName ?? issue?.clusterName ?? '—'}`,
-        metadata: { issueKey, attempts: existing.attempts, type: existing.issue?.type ?? issue?.type },
+        metadata: { issueKey, attempts: existing.attempts, type: existing.issue?.type ?? issue?.type, rca: existing.rca ?? null },
       }).then(() => {
         existing._lastTeamsNotif = Date.now();
         try {
@@ -89,10 +92,15 @@ async function escalate(issueKey, issue, history) {
   }
 
   const id    = String(++seq);
+  const cluster = issue?.clusterName ?? '';
+  const node    = issue?.node ?? issue?.nodeName ?? '';
   const entry = {
     id, issueKey,
     issue:              _sanitize(issue),
+    cluster,
+    node,
     history,
+    rca:                rca ?? null,
     attempts:           history.length,
     status:             'pending',
     createdAt:          new Date().toISOString(),
@@ -106,8 +114,11 @@ async function escalate(issueKey, issue, history) {
     const doc = await EscalationHistory.create({
       issueKey,
       issue:         entry.issue,
+      cluster,
+      node,
       attempts:      history.length,
       failedHistory: history,
+      rca:           rca ?? null,
       status:        'pending',
     });
     entry.mongoId = doc._id.toString();
@@ -118,14 +129,15 @@ async function escalate(issueKey, issue, history) {
   escalations.set(id, entry);
   _notify({ type: 'added', escalation: _safe(entry) });
 
+  const rcaSummary = rca?.suspected_cause ? `\n\nRoot Cause Analysis:\n• Suspected cause: ${rca.suspected_cause}\n• Confidence: ${rca.confidence ?? '?'}\n• Risk: ${rca.risk_level ?? '?'}\n• Focus: ${rca.recommended_focus ?? '—'}` : '';
   notifEngine.emit({
     severity: 'CRITICAL',
     category: 'Incidents',
     title:    `Escalation: ${issueKey}`,
-    message:  `Agent exhausted ${history.length} attempt(s) without resolving the issue. Manual intervention required.`,
+    message:  `Agent exhausted ${history.length} attempt(s) without resolving the issue. Manual intervention required.${rcaSummary}`,
     namespace: issue?.namespace,
     source:   `ClusterAgent/${issue?.clusterName ?? '—'}`,
-    metadata: { issueKey, attempts: history.length, type: issue?.type },
+    metadata: { issueKey, attempts: history.length, type: issue?.type, rca: rca ?? null },
   }).then(() => {
     entry._lastTeamsNotif = Date.now();
   }).catch(() => {});
@@ -246,41 +258,20 @@ async function assign(id, assignedTo, assignedBy) {
     });
   }
 
-  // Email the new assignee if they have email notifications enabled — non-blocking
-  _sendAssignmentEmail(assignedTo, entry.issueKey, assignedBy.name).catch(() => {});
+  // Notify assignee via the notification engine (handles email delivery, retries, logging)
+  notifEngine.emit({
+    severity:      'WARNING',
+    category:      'Incidents',
+    title:         `Escalation assigned to you: ${entry.issueKey}`,
+    message:       `You have been assigned to handle: ${entry.issueKey}` +
+                   (assignedBy?.name ? ` (assigned by ${assignedBy.name})` : ''),
+    source:        `EscalationStore`,
+    metadata:      { escalationId: id, issueKey: entry.issueKey, assignedBy: { name: assignedBy.name } },
+    targetUserIds: [assignedTo.userId],
+  }).catch(() => {});
 
   _notify({ type: 'updated', escalation: _safe(entry) });
   return true;
-}
-
-// ── Send assignment email (best-effort, never throws) ─────────────────────────
-async function _sendAssignmentEmail(assignedTo, issueKey, assignedByName) {
-  try {
-    const { UserNotificationPreferences, NotificationChannelConfig } = require('../db/models');
-
-    // Respect the user's channel preference — only send if they enabled email
-    const prefs = await UserNotificationPreferences.findOne({ userId: assignedTo.userId }).lean();
-    if (!prefs || !prefs.channels.includes('email')) return;
-
-    // Use personal notification email override if set, otherwise fall back to account email
-    const toEmail = prefs.notifyEmail?.trim() || assignedTo.email;
-    if (!toEmail) return;
-
-    // Load SMTP config from system channel settings (admin configures these in the dashboard UI,
-    // stored in NotificationChannelConfig — NOT in environment variables)
-    const channelDoc = await NotificationChannelConfig.findOne({ type: 'email' }).lean();
-    if (!channelDoc?.enabled) return;
-
-    const notifCrypto = require('../services/notifications/crypto');
-    const smtpConfig  = notifCrypto.decrypt(channelDoc.config ?? '');
-    if (!smtpConfig?.smtpHost || !smtpConfig?.smtpUser || !smtpConfig?.smtpPass) return;
-
-    const email = require('../notifications/email');
-    await email.sendAssignment(toEmail, assignedTo.name, { issueKey, assignedBy: assignedByName }, smtpConfig);
-    console.log(`[EscalationStore] Assignment email sent → ${toEmail}  (${issueKey})`);
-  } catch (err) {
-    console.error(`[EscalationStore] Assignment email failed: ${err.message}`);
-  }
 }
 
 // ── Developer requests reassignment ──────────────────────────────────────────
@@ -347,7 +338,10 @@ async function init() {
         id,
         issueKey:            doc.issueKey,
         issue:               doc.issue ?? {},
+        cluster:             doc.cluster ?? doc.issue?.clusterName ?? '',
+        node:                doc.node ?? doc.issue?.node ?? doc.issue?.nodeName ?? '',
         history:             doc.failedHistory ?? [],
+        rca:                 doc.rca ?? null,
         attempts:            doc.attempts ?? 0,
         status:              doc.status ?? 'pending',
         createdAt:           (doc.escalatedAt ?? doc.createdAt)?.toISOString(),

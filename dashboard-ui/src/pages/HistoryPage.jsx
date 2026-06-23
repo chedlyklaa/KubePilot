@@ -8,7 +8,7 @@ import FilterDrawer, { FilterSection, FilterChips, FilterUserList, FilterDateRan
 
 const ALL_STATUSES   = ['pending', 'need_help', 'not_fixed', 'in_progress', 'acknowledged', 'fixed']
 const STATUS_OPTS    = ALL_STATUSES.map(s => ({ value: s, label: STATE_LABEL[s] ?? s }))
-const DECISION_OPTS  = [{ value: 'approved', label: 'Approved' }, { value: 'denied', label: 'Denied' }, { value: 'timeout', label: 'Timeout' }]
+const DECISION_OPTS  = [{ value: 'approved', label: 'Approved' }, { value: 'denied', label: 'Denied' }, { value: 'silenced', label: 'Silenced' }, { value: 'timeout', label: 'Timeout' }]
 const RISK_OPTS      = [{ value: 'LOW', label: 'Low' }, { value: 'MEDIUM', label: 'Medium' }, { value: 'HIGH', label: 'High' }]
 
 const toDate  = () => new Date().toISOString().slice(0, 10)

@@ -14,3 +14,8 @@ clusters:
     tier: dev
     namespaces:
       - '*'
+  - name: cluster3
+    context: cluster3
+    tier: dev
+    namespaces:
+      - '*'

@@ -1,7 +1,9 @@
 'use strict';
 require('dotenv').config({ override: true });
 const OpenAI      = require('openai');
-const tokenStore  = require('../api/tokenStore');
+const tokenStore     = require('../api/tokenStore');
+const { runLLMCall } = require('../resilience/llmCircuitBreaker');
+const fallbackPlanner = require('../resilience/fallbackPlanner');
 
 const client = new OpenAI({
   apiKey:  process.env.OPENAI_API_KEY,
@@ -40,6 +42,12 @@ class PlannerAgent {
     nodeMetrics = null, nodeIssues = [], events = [], correlationFindings = [], clusterFindings = [],
     // Investigation gate output (null = evidence was already sufficient)
     investigationContext = null,
+    // InvestigatorAgent RCA — optional, injected into prompt when confidence > 0
+    rca = null,
+    // ChangeCorrelationEngine result — optional, null when feature is off or no signal
+    changeCorrelation = null,
+    // CapacityForecastEngine result — optional, null when feature is off or below HIGH threshold
+    capacityForecast = null,
   }) {
     const hasDeployment = !!issue.deployment;
 
@@ -49,7 +57,12 @@ class PlannerAgent {
     const nodeCtx          = this._formatNodeContext(nodeMetrics, nodeIssues);
     const eventCtx         = this._formatEvents(events, issue);
     const corrCtx          = this._formatCorrelation(correlationFindings, clusterFindings);
-    const investigationCtx = this._formatInvestigationContext(investigationContext);
+    const investigationCtx  = this._formatInvestigationContext(investigationContext);
+    const changeCtx         = this._formatChangeCorrelation(changeCorrelation);
+    const capacityCtx       = this._formatCapacityForecast(capacityForecast);
+    const rcaCtx = (rca && rca.confidence > 0)
+      ? `\nRoot cause analysis:\nSuspected cause: ${rca.suspected_cause}\nConfidence: ${rca.confidence}\nEvidence: ${(rca.evidence ?? []).join(', ')}\nRisk level: ${rca.risk_level}\nFocus: ${rca.recommended_focus}\nUse this analysis to inform your action decision.`
+      : '';
 
     const prompt = `CURRENT ISSUE
 issueType:    ${issue.type}
@@ -68,7 +81,7 @@ ${eventCtx}
 ${corrCtx}
 ${pastCtx}
 ${rulesCtx}
-${investigationCtx}
+${investigationCtx}${changeCtx}${capacityCtx}${rcaCtx}
 ACTION RULES (mandatory)
 Pod actions:
 - increase_memory : oomKilled=true OR exitCode=137. Requires human approval.
@@ -103,6 +116,7 @@ Return ONLY valid JSON:
   "action":        "increase_memory|restart|rollback|delete_pod|scale_down|cordon_node|drain_node|uncordon_node|noop",
   "targetNode":    "node name if action is a node action, else null",
   "risk":          "LOW|MEDIUM|HIGH",
+  "confidence":    0.0,
   "rationale":     "why this action — cite node/event/correlation context if it influenced the choice"
 }`;
 
@@ -115,21 +129,15 @@ Return ONLY valid JSON:
       `  mode=${investigationContext?.mode ?? 'standard'}`
     );
 
-    const stream = await client.chat.completions.create({
-      model:          MODEL,
-      temperature:    0.1,
-      stream:         true,
-      stream_options: { include_usage: true },
-      messages: [
-        { role: 'system', content: SYSTEM },
-        { role: 'user',   content: prompt },
-      ],
-    });
-
     let raw = '', usage = null;
-    for await (const chunk of stream) {
-      raw   += chunk.choices[0]?.delta?.content ?? '';
-      if (chunk.usage) usage = chunk.usage;
+    try {
+      ({ raw, usage } = await runLLMCall(
+        () => client.chat.completions.create({ model: MODEL, temperature: 0.1, stream: true, stream_options: { include_usage: true }, messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: prompt }] }),
+        { requiredFields: ['action', 'rootCause'] }
+      ));
+    } catch (err) {
+      if (err.name === 'CircuitOpenError') return fallbackPlanner.plan(issue, err.reason);
+      throw err;
     }
 
     const elapsed = Date.now() - t0;
@@ -199,22 +207,22 @@ Return ONLY valid JSON:
   "action":     "cordon_node|drain_node|uncordon_node|noop",
   "targetNode": "${nodeIssue.nodeName}",
   "risk":       "LOW|MEDIUM|HIGH",
+  "confidence": 0.0,
   "rationale":  "why this action"
 }`;
 
     const t0 = Date.now();
     console.log(`[PLANNER] node=${nodeIssue.nodeName}  type=${nodeIssue.type}  attempt=${attempt}  affectedPods=${affectedPods.length}`);
 
-    const stream = await client.chat.completions.create({
-      model: MODEL, temperature: 0.1, stream: true,
-      stream_options: { include_usage: true },
-      messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: prompt }],
-    });
-
     let raw = '', usage = null;
-    for await (const chunk of stream) {
-      raw += chunk.choices[0]?.delta?.content ?? '';
-      if (chunk.usage) usage = chunk.usage;
+    try {
+      ({ raw, usage } = await runLLMCall(
+        () => client.chat.completions.create({ model: MODEL, temperature: 0.1, stream: true, stream_options: { include_usage: true }, messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: prompt }] }),
+        { requiredFields: ['action', 'rootCause'] }
+      ));
+    } catch (err) {
+      if (err.name === 'CircuitOpenError') return fallbackPlanner.planNodeAction(nodeIssue, err.reason);
+      throw err;
     }
     tokenStore.record('planner', usage);
     console.log(`[PLANNER] node ${Date.now() - t0}ms  raw: ${raw}`);
@@ -228,6 +236,53 @@ Return ONLY valid JSON:
     } catch {
       return { rootCause: 'parse error', action: 'noop', targetNode: nodeIssue.nodeName, risk: 'LOW', rationale: 'fallback' };
     }
+  }
+
+  // ── Change Correlation context ────────────────────────────────────────────
+  _formatChangeCorrelation(cc) {
+    if (!cc || cc.confidence < 0.2) return '';
+    const level = cc.confidence >= 0.60 ? 'HIGH' : cc.confidence >= 0.35 ? 'MEDIUM' : 'LOW';
+    const hint  = cc.triggerType === 'Deployment' && cc.confidence >= 0.50
+      ? '\n  → Deployment change is a likely trigger. "rollback" is the preferred safe action if logs confirm a regression.'
+      : cc.triggerType !== 'Deployment'
+        ? `\n  → ${cc.triggerType} change detected. Verify whether the updated config is compatible with the running pods.`
+        : '';
+
+    const lines = [
+      '\n━━━ CHANGE CORRELATION ━━━',
+      `Trigger type:    ${cc.triggerType}`,
+      `Trigger:         ${cc.triggerResource}`,
+      `Changed at:      ${cc.triggerTimestamp}`,
+      `Confidence:      ${cc.confidence.toFixed(2)} (${level})`,
+      'Evidence:',
+      ...cc.evidence.map(e => `  • ${e}`),
+      hint,
+    ];
+    return lines.join('\n');
+  }
+
+  // ── Capacity Forecast context ─────────────────────────────────────────────
+  _formatCapacityForecast(fc) {
+    if (!fc || (fc.alertLevel !== 'HIGH' && fc.alertLevel !== 'CRITICAL')) return '';
+
+    const eta = fc.hoursToExhaustion != null
+      ? ` — predicted exhaustion in ${fc.hoursToExhaustion.toFixed(0)}h (${fc.exhaustionAt?.slice(0, 16).replace('T', ' ')} UTC)`
+      : '';
+    const hint = fc.resource === 'memory'
+      ? '\n  → Memory trending toward OOM independently of deployment changes.\n    Prefer "increase_memory" or "scale_down" over "rollback" unless change correlation also points to a recent deployment.'
+      : fc.resource === 'cpu'
+        ? '\n  → CPU saturation is trending. Consider "scale_down" to reduce load or investigate throttling root cause.'
+        : '\n  → Resource is trending toward saturation. Take capacity action before incident escalates.';
+
+    const lines = [
+      '\n━━━ CAPACITY FORECAST ━━━',
+      `Resource:    ${fc.resource} on ${fc.target}`,
+      `Current:     ${fc.currentPct}% (growing +${fc.slope}%/h)`,
+      `Alert level: ${fc.alertLevel}${eta}`,
+      `Confidence:  ${fc.confidence} (${fc.dataPointCount} data points over ${fc.lookbackHours}h)`,
+      hint,
+    ];
+    return lines.join('\n');
   }
 
   // ── Investigation Gate context ────────────────────────────────────────────

@@ -1,8 +1,11 @@
 'use strict';
 const mongoose = require('mongoose');
+const bcrypt   = require('bcrypt');
 const { User, ApprovalHistory, EscalationHistory, ChatHistory, CommandHistory } = require('../db/models');
 const authService  = require('../api/authService');
 const emailService = require('../notifications/email');
+
+const SALT_ROUNDS = 10;
 
 // OTP store: userId → { otp, expiresAt, issuedAt }
 // Centralised here instead of inlined in server.js
@@ -89,7 +92,7 @@ class ProfileService {
 
       if (currentPassword) {
         const dbUser = await User.findById(userId);
-        if (!dbUser || dbUser.password !== currentPassword)
+        if (!dbUser || !(await bcrypt.compare(currentPassword, dbUser.password)))
           throw Object.assign(new Error('Current password is incorrect'), { status: 400 });
       } else {
         const stored = otpStore.get(userId);
@@ -97,7 +100,7 @@ class ProfileService {
           throw Object.assign(new Error('Invalid or expired verification code'), { status: 400 });
         otpStore.delete(userId);
       }
-      upd.password = password;
+      upd.password = await bcrypt.hash(password, SALT_ROUNDS);
     }
 
     if (!Object.keys(upd).length)

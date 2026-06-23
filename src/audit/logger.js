@@ -1,7 +1,11 @@
 // src/audit/logger.js
+'use strict';
 
-const fs = require('fs');
+const fs   = require('fs');
 const path = require('path');
+
+let AuditEvent;
+try { ({ AuditEvent } = require('../db/models')); } catch {}
 
 /**
  * Audit Logger
@@ -58,21 +62,38 @@ class AuditLogger {
     };
 
     try {
-      // JSONL format
-      fs.appendFileSync(
-        this.logFile,
-        JSON.stringify(auditEntry) + '\n'
-      );
-
-      console.log(
-        `[AUDIT] Action logged: ${auditEntry.action}`
-      );
+      fs.appendFileSync(this.logFile, JSON.stringify(auditEntry) + '\n');
+      console.log(`[AUDIT] Action logged: ${auditEntry.action}`);
     } catch (error) {
-      console.error(
-        '[AUDIT] Failed to write audit log:',
-        error
+      console.error('[AUDIT] Failed to write audit log:', error);
+    }
+
+    // Async MongoDB write — non-blocking, JSONL is the primary fallback
+    if (AuditEvent) {
+      AuditEvent.create(auditEntry).catch(err =>
+        console.warn(`[AUDIT] MongoDB write failed: ${err.message}`)
       );
     }
+  }
+
+  async getLogsMongo({ limit = 200, cluster = null, status = null, agent = null } = {}) {
+    const filter = {};
+    if (cluster) filter.cluster = cluster;
+    if (status)  filter.status  = status;
+    if (agent)   filter.agent   = agent;
+    if (!AuditEvent) return this._filterLogs(this.getLogs(), { cluster, status, agent }).slice(0, limit);
+    try {
+      return await AuditEvent.find(filter).sort({ timestamp: -1 }).limit(limit).lean();
+    } catch {
+      return this._filterLogs(this.getLogs(), { cluster, status, agent }).slice(0, limit);
+    }
+  }
+
+  _filterLogs(docs, { cluster, status, agent }) {
+    if (cluster) docs = docs.filter(e => e.cluster === cluster);
+    if (status)  docs = docs.filter(e => e.status  === status);
+    if (agent)   docs = docs.filter(e => e.agent   === agent);
+    return docs;
   }
 
   /**

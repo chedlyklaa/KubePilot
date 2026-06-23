@@ -1,19 +1,30 @@
 // src/tools/kubectl.js
 
-const { exec } = require('child_process');
+const { execFile } = require('child_process');
 
-/**
- * Execute shell command safely
- */
-function runCommand(command) {
+// Split a command string into an argument array, respecting double-quoted segments.
+// Shell metacharacters (; | $ ` etc.) become harmless literal characters with execFile.
+function _parseArgs(command) {
+  const withoutBinary = command.replace(/^kubectl\s+/, '');
+  const tokens = withoutBinary.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
+  return tokens.map(t => t.replace(/^["']|["']$/g, ''));
+}
+
+function runCommand(command, { timeoutMs = 60_000 } = {}) {
   return new Promise((resolve, reject) => {
-    exec(command, (error, stdout, stderr) => {
-      if (error) {
-        return reject(new Error(stderr?.trim() || error.message || 'Unknown kubectl error'));
+    const args = _parseArgs(command);
+    const child = execFile(
+      'kubectl', args,
+      { maxBuffer: 10 * 1024 * 1024, timeout: timeoutMs },
+      (error, stdout, stderr) => {
+        if (error) {
+          const msg = stderr?.trim() || error.message || 'Unknown kubectl error';
+          return reject(new Error(msg));
+        }
+        resolve(stdout.trim());
       }
-
-      resolve(stdout.trim());
-    });
+    );
+    child.on('error', reject);
   });
 }
 
@@ -134,8 +145,161 @@ async function drainNode(nodeName, context, { deleteEmptyDir = false, gracePerio
   );
 }
 
+// ── RBAC reads ────────────────────────────────────────────────────────────────
+
+async function getRoles(namespace = 'default', context) {
+  const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
+  const out = await runCommand(`kubectl --context=${context} get roles ${nsFlag} -o json`);
+  return JSON.parse(out).items ?? [];
+}
+
+async function getClusterRoles(context) {
+  const out = await runCommand(`kubectl --context=${context} get clusterroles -o json`);
+  return JSON.parse(out).items ?? [];
+}
+
+async function getRoleBindings(namespace = 'default', context) {
+  const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
+  const out = await runCommand(`kubectl --context=${context} get rolebindings ${nsFlag} -o json`);
+  return JSON.parse(out).items ?? [];
+}
+
+async function getClusterRoleBindings(context) {
+  const out = await runCommand(`kubectl --context=${context} get clusterrolebindings -o json`);
+  return JSON.parse(out).items ?? [];
+}
+
+async function getServiceAccounts(namespace = 'default', context) {
+  const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
+  const out = await runCommand(`kubectl --context=${context} get serviceaccounts ${nsFlag} -o json`);
+  return JSON.parse(out).items ?? [];
+}
+
+async function getNamespaces(context) {
+  const out = await runCommand(`kubectl --context=${context} get namespaces -o json`);
+  return (JSON.parse(out).items ?? []).map(ns => ns.metadata.name);
+}
+
+// ── RBAC writes ───────────────────────────────────────────────────────────────
+
+async function applyManifest(yamlContent, context) {
+  const os   = require('os');
+  const path = require('path');
+  const fs   = require('fs');
+  const tmp  = path.join(os.tmpdir(), `kp-rbac-${Date.now()}.yaml`);
+  fs.writeFileSync(tmp, yamlContent, 'utf8');
+  try {
+    // Quote the path so spaces in os.tmpdir() don't split the argument on Windows/Linux
+    return await runCommand(`kubectl --context="${context}" apply -f "${tmp}"`);
+  } finally {
+    try { fs.unlinkSync(tmp); } catch {}
+  }
+}
+
+async function dryRunManifest(yamlContent, context) {
+  const os   = require('os');
+  const path = require('path');
+  const fs   = require('fs');
+  const tmp  = path.join(os.tmpdir(), `kp-rbac-dry-${Date.now()}.yaml`);
+  fs.writeFileSync(tmp, yamlContent, 'utf8');
+  try {
+    return await runCommand(`kubectl --context="${context}" apply --dry-run=server -f "${tmp}"`);
+  } finally {
+    try { fs.unlinkSync(tmp); } catch {}
+  }
+}
+
+const RBAC_KINDS   = new Set(['role', 'clusterrole', 'rolebinding', 'clusterrolebinding', 'serviceaccount']);
+const SAFE_NAME_RE = /^[a-z0-9][a-z0-9\-\.]*$/i;
+
+async function deleteRbacResource(kind, name, namespace, context) {
+  if (!RBAC_KINDS.has(kind?.toLowerCase()))
+    throw new Error(`Unsupported RBAC kind: ${kind}`);
+  if (!SAFE_NAME_RE.test(name))
+    throw new Error(`Invalid resource name: ${name}`);
+  if (namespace && !SAFE_NAME_RE.test(namespace))
+    throw new Error(`Invalid namespace: ${namespace}`);
+
+  const nsFlag = namespace ? `-n "${namespace}"` : '';
+  return await runCommand(`kubectl --context="${context}" delete ${kind} "${name}" ${nsFlag}`);
+}
+
+// ── Wait for a fix to settle (replaces blind sleep after _applyFix) ──────────
+// Dispatches the right kubectl wait/rollout-status variant based on action type.
+// Rejects on timeout — callers should catch and fall through to _validateFix.
+async function waitForFix(issue, action, context, timeoutSecs = parseInt(process.env.KUBECTL_WAIT_TIMEOUT ?? '120', 10)) {
+  const ns  = issue.namespace ?? 'default';
+  const dep = issue.deployment;
+  const pod = issue.podName;
+
+  switch (action) {
+    case 'restart':
+    case 'rollback':
+    case 'increase_memory':
+    case 'scale_down':
+      if (!dep) return;
+      await runCommand(
+        `kubectl --context=${context} rollout status deployment/${dep} -n ${ns} --timeout=${timeoutSecs}s`
+      );
+      return;
+
+    case 'delete_pod':
+      if (!pod) return;
+      await runCommand(
+        `kubectl --context=${context} wait pod/${pod} -n ${ns} --for=delete --timeout=${timeoutSecs}s`
+      );
+      return;
+
+    default:
+      // noop, cordon_node, etc. — no pod-level wait needed
+  }
+}
+
+// ── Network reads ─────────────────────────────────────────────────────────────
+
+async function getNetworkPolicies(namespace = 'default', context) {
+  const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
+  const out = await runCommand(`kubectl --context="${context}" get networkpolicies ${nsFlag} -o json`);
+  return JSON.parse(out).items ?? [];
+}
+
+async function getServices(namespace = 'default', context) {
+  const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
+  const out = await runCommand(`kubectl --context="${context}" get services ${nsFlag} -o json`);
+  return JSON.parse(out).items ?? [];
+}
+
+async function getIngresses(namespace = 'default', context) {
+  const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
+  const out = await runCommand(`kubectl --context="${context}" get ingresses ${nsFlag} -o json`);
+  return JSON.parse(out).items ?? [];
+}
+
+async function getEndpoints(namespace = 'default', context) {
+  const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
+  const out = await runCommand(`kubectl --context="${context}" get endpoints ${nsFlag} -o json`);
+  return JSON.parse(out).items ?? [];
+}
+
+// ── Network writes ────────────────────────────────────────────────────────────
+
+const NETWORK_KINDS = new Set(['networkpolicy', 'service', 'ingress']);
+
+async function deleteNetworkResource(kind, name, namespace, context) {
+  if (!NETWORK_KINDS.has(kind?.toLowerCase()))
+    throw new Error(`Unsupported network kind: ${kind}`);
+  if (!SAFE_NAME_RE.test(name))
+    throw new Error(`Invalid resource name: ${name}`);
+  if (namespace && !SAFE_NAME_RE.test(namespace))
+    throw new Error(`Invalid namespace: ${namespace}`);
+
+  const nsFlag = namespace ? `-n "${namespace}"` : '';
+  return await runCommand(`kubectl --context="${context}" delete ${kind} "${name}" ${nsFlag}`);
+}
+
 module.exports = {
   runCommand,
+  waitForFix,
   getPods,
   describePod,
   getLogs,
@@ -147,4 +311,30 @@ module.exports = {
   cordonNode,
   uncordonNode,
   drainNode,
+  getRoles,
+  getClusterRoles,
+  getRoleBindings,
+  getClusterRoleBindings,
+  getServiceAccounts,
+  getNamespaces,
+  applyManifest,
+  dryRunManifest,
+  deleteRbacResource,
+  getNetworkPolicies,
+  getServices,
+  getIngresses,
+  getEndpoints,
+  deleteNetworkResource,
+  getPersistentVolumes,
+  getPersistentVolumeClaims,
 };
+
+async function getPersistentVolumes(context) {
+  const out = await runCommand(`kubectl --context="${context}" get pv -o json`);
+  return JSON.parse(out).items ?? [];
+}
+
+async function getPersistentVolumeClaims(context) {
+  const out = await runCommand(`kubectl --context="${context}" get pvc -A -o json`);
+  return JSON.parse(out).items ?? [];
+}

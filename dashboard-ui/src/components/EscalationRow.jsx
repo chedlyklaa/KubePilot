@@ -4,6 +4,7 @@ import { useNotify } from '../contexts/NotifyContext'
 import { apiFetch } from '../lib/api'
 import { fmtDT } from '../utils/format'
 import { STATE_LABEL } from '../constants'
+import RcaCard from './RcaCard'
 
 const STATUS_OPTIONS = [
   { value: 'acknowledged', label: 'Acknowledged' },
@@ -147,10 +148,16 @@ export default function EscalationRow({ item, onRemove, users }) {
           <div className="mono-small text-dim" style={{ marginTop: 2 }}>{item.issueKey}</div>
         </td>
 
+        <td className="mono-small">{item.cluster || item.issue?.clusterName || '—'}</td>
+
+        <td className="mono-small text-dim">{item.node || item.issue?.node || item.issue?.nodeName || '—'}</td>
+
         <td className="text-dim">{item.issue?.namespace ?? 'default'}</td>
 
+        <td className="text-dim">{item.issue?.podName ?? '—'}</td>
+
         <td style={{ textAlign: 'center' }}>
-          {item.attempts > 0
+          {(item.attempts > 0 || item.rca)
             ? <button className="attempts-btn" onClick={() => setOpen(o => !o)} title="Show attempt history">
                 {item.attempts} {open ? '▲' : '▼'}
               </button>
@@ -208,17 +215,24 @@ export default function EscalationRow({ item, onRemove, users }) {
         </td>
       </tr>
 
-      {open && item.history?.length > 0 && (
+      {open && (item.history?.length > 0 || item.rca) && (
         <tr className="history-expand-row">
-          <td colSpan={user.role === 'admin' ? 8 : 7} style={{ padding: 0 }}>
+          <td colSpan={user.role === 'admin' ? 11 : 10} style={{ padding: 0 }}>
             <div className="history-expand">
-              {item.history.map((h, i) => (
+              {item.issue?.podName && (
+                <div className="history-item history-meta">
+                  <span className="history-label">Pod</span>
+                  <span className="mono-small">{item.issue.podName}</span>
+                </div>
+              )}
+              {item.history?.map((h, i) => (
                 <div key={i} className="history-item">
                   <span className="history-num">#{h.attempt}</span>
                   <span className="history-action">{h.action}</span>
                   <span className="history-outcome">{h.outcome}</span>
                 </div>
               ))}
+              {item.rca && <RcaCard rca={item.rca} />}
             </div>
           </td>
         </tr>

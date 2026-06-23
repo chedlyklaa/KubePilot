@@ -436,6 +436,21 @@ function ClusterManager({ onClose, onSaved }) {
   )
 }
 
+// ── CollapsibleSection ────────────────────────────────────────────────────────
+function CollapsibleSection({ title, badges, defaultOpen = true, children }) {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <div className={`col-section${open ? ' col-section-open' : ''}`}>
+      <div className="col-section-header" onClick={() => setOpen(o => !o)}>
+        <span className={`hc-chevron${open ? ' hc-chevron-open' : ''}`}>▶</span>
+        <span className="col-section-title">{title}</span>
+        <div className="col-section-badges">{badges}</div>
+      </div>
+      {open && <div className="col-section-body">{children}</div>}
+    </div>
+  )
+}
+
 // ── AlertRow ─────────────────────────────────────────────────────────────────
 function AlertRow({ alert: e }) {
   const icon     = e.severity === 'critical' ? '🔴' : '🟠'
@@ -717,11 +732,20 @@ function ErrorTypeBadges({ types }) {
   )
 }
 
+function ClusterBadge({ name }) {
+  if (!name || name === 'default') return <span className="hcell-dim">—</span>
+  return <span className="prom-cluster-badge">{name}</span>
+}
+
 function PrometheusPodsTable({ pods, loading }) {
   const [search, setSearch] = useState('')
   const q = search.trim().toLowerCase()
   const visible = q
-    ? pods.filter(p => p.pod.includes(q) || p.namespace.includes(q))
+    ? pods.filter(p =>
+        p.pod.includes(q) ||
+        p.namespace.includes(q) ||
+        (p.cluster ?? '').includes(q)
+      )
     : pods
 
   if (loading) return <div className="page-loading" style={{ marginTop: 16 }}>Loading Prometheus metrics…</div>
@@ -733,21 +757,12 @@ function PrometheusPodsTable({ pods, loading }) {
     </div>
   )
 
-  const errorCount   = pods.filter(p => p.errorTypes.length > 0).length
-  const oomCount     = pods.filter(p => p.oomKilled).length
-
   return (
     <div className="prom-pods-section">
-      <div className="prom-pods-header">
-        <div className="prom-pods-title">
-          All Pods — Prometheus Metrics
-          <span className="prom-pods-count">{pods.length} pods</span>
-          {errorCount > 0 && <span className="prom-pods-errbadge">{errorCount} with issues</span>}
-          {oomCount   > 0 && <span className="prom-pods-oombadge">{oomCount} OOM</span>}
-        </div>
+      <div className="prom-pods-search-row">
         <div className="prom-pods-search-wrap">
           <span className="health-search-icon">⌕</span>
-          <input className="health-search" placeholder="Filter by pod or namespace…"
+          <input className="health-search" placeholder="Filter by pod, namespace or cluster…"
             value={search} onChange={e => setSearch(e.target.value)} />
           {search && <button className="health-search-clear" onClick={() => setSearch('')}>✕</button>}
         </div>
@@ -757,6 +772,7 @@ function PrometheusPodsTable({ pods, loading }) {
         <table className="prom-pods-table">
           <thead>
             <tr>
+              <th>Cluster</th>
               <th>Namespace</th>
               <th>Pod</th>
               <th>CPU (cores)</th>
@@ -769,6 +785,7 @@ function PrometheusPodsTable({ pods, loading }) {
           <tbody>
             {visible.map(p => (
               <tr key={p.key} className={`prom-pod-row${p.errorTypes.length > 0 ? ' prom-pod-row-err' : ''}`}>
+                <td><ClusterBadge name={p.cluster} /></td>
                 <td><span className="ns-tag">{p.namespace}</span></td>
                 <td className="prom-pod-name mono-small" title={p.pod}>
                   {p.pod.length > 42 ? p.pod.slice(0, 40) + '…' : p.pod}
@@ -785,7 +802,7 @@ function PrometheusPodsTable({ pods, loading }) {
               </tr>
             ))}
             {visible.length === 0 && (
-              <tr><td colSpan={7} className="nc-history-empty">No pods match "{search}"</td></tr>
+              <tr><td colSpan={8} className="nc-history-empty">No pods match "{search}"</td></tr>
             )}
           </tbody>
         </table>
@@ -1204,12 +1221,43 @@ export default function ClusterHealthPage() {
             <PrometheusNotice onDismiss={() => setPromNoticeDismiss(true)} />
           )}
           {errors.length > 0 && (
-            <div className="prom-errors-block">
-              <div className="prom-section-label">⚠ Issues Detected ({errors.length})</div>
+            <CollapsibleSection
+              title="Issues Detected"
+              badges={<>
+                {errors.filter(e => e.severity === 'critical').length > 0 && (
+                  <span className="ep-badge ep-crit">
+                    🔴 {errors.filter(e => e.severity === 'critical').length} critical
+                  </span>
+                )}
+                {errors.filter(e => e.severity === 'high').length > 0 && (
+                  <span className="ep-badge ep-high">
+                    🟠 {errors.filter(e => e.severity === 'high').length} high
+                  </span>
+                )}
+                <span className="ep-badge ep-total">{errors.length} total</span>
+              </>}
+            >
               <AlertsTable errors={errors} />
-            </div>
+            </CollapsibleSection>
           )}
-          <PrometheusPodsTable pods={promPods} loading={promPodsLoading} />
+          <CollapsibleSection
+            title="All Pods — Prometheus Metrics"
+            badges={<>
+              <span className="prom-pods-count">{promPods.length} pods</span>
+              {promPods.filter(p => p.errorTypes.length > 0).length > 0 && (
+                <span className="prom-pods-errbadge">
+                  {promPods.filter(p => p.errorTypes.length > 0).length} with issues
+                </span>
+              )}
+              {promPods.filter(p => p.oomKilled).length > 0 && (
+                <span className="prom-pods-oombadge">
+                  {promPods.filter(p => p.oomKilled).length} OOM
+                </span>
+              )}
+            </>}
+          >
+            <PrometheusPodsTable pods={promPods} loading={promPodsLoading} />
+          </CollapsibleSection>
         </>
       )}
 

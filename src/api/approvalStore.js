@@ -36,36 +36,46 @@ function requestApproval(payload) {
   });
 }
 
-async function _settle(id, approved, user) {
+async function _settle(id, approved, user, overrideData = {}, decision = null) {
   const entry = pending.get(id);
   if (!entry) return false;
   clearTimeout(entry.timer);
   pending.delete(id);
-  const decision = approved ? 'approved' : 'denied';
-  notify({ type: 'resolved', id, decision });
+  const resolvedDecision = decision ?? (approved ? 'approved' : 'denied');
+  notify({ type: 'resolved', id, decision: resolvedDecision });
   entry.resolve(approved);
-  await _saveHistory(entry, decision, user);
+  await _saveHistory(entry, resolvedDecision, user, overrideData);
   return true;
 }
 
-async function _saveHistory(entry, decision, user) {
+async function _saveHistory(entry, decision, user, overrideData = {}) {
   try {
     const { ApprovalHistory } = require('../db/models');
-    await ApprovalHistory.create({
+    const doc = {
       issueKey:    entry.payload.issueKey,
       issue:       entry.payload.issue,
       diagnosis:   entry.payload.diagnosis,
       decision,
       decidedBy:   user ? { userId: user.id, name: user.name, email: user.email, role: user.role } : null,
       requestedAt: new Date(entry.createdAt),
-    });
+    };
+    if (overrideData.overrideReasons?.length) doc.overrideReasons = overrideData.overrideReasons;
+    if (overrideData.preferredAction)          doc.preferredAction  = overrideData.preferredAction;
+    if (overrideData.adminNote)                doc.adminNote        = overrideData.adminNote;
+    await ApprovalHistory.create(doc);
   } catch (err) {
     console.error('[ApprovalStore] DB save failed:', err.message);
   }
+  // Make override feedback available to ReflectionAgent when the episode is later stored
+  if (decision === 'denied' && (overrideData.overrideReasons?.length || overrideData.preferredAction)) {
+    const overrideStore = require('./overrideStore');
+    overrideStore.set(entry.payload.issueKey, overrideData);
+  }
 }
 
-const approve = (id, user) => _settle(id, true,  user);
-const deny    = (id, user) => _settle(id, false, user);
+const approve = (id, user)                      => _settle(id, true,  user, {});
+const deny    = (id, user, overrideData = {})   => _settle(id, false, user, overrideData);
+const silence = (id, user)                      => _settle(id, false, user, {}, 'silenced');
 
 function getPending() {
   return [...pending.values()].map(({ id, payload, createdAt }) => ({ id, payload, createdAt }));
@@ -73,4 +83,4 @@ function getPending() {
 
 function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
-module.exports = { requestApproval, approve, deny, getPending, subscribe };
+module.exports = { requestApproval, approve, deny, silence, getPending, subscribe };

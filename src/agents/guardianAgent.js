@@ -1,7 +1,8 @@
 'use strict';
 require('dotenv').config({ override: true });
 const OpenAI     = require('openai');
-const tokenStore = require('../api/tokenStore');
+const tokenStore     = require('../api/tokenStore');
+const { runLLMCall } = require('../resilience/llmCircuitBreaker');
 
 // ── Build an independent LLM client for the guardian ─────────────────────────
 // Uses GUARDIAN_* env vars when set, falls back to the main OPENAI_* credentials
@@ -97,11 +98,15 @@ class GuardianAgent {
    * @param {number} params.attempt    - Current attempt number (1-based)
    * @returns {Promise<{verdict, classification, reason, suggestedAction, confidence}>}
    */
-  async review({ issue, diagnosis, podLogs = '', attempt = 1 }) {
+  async review({ issue, diagnosis, podLogs = '', attempt = 1, rca = null }) {
     const { action, rootCause, risk } = diagnosis;
 
     const repeatWarning = attempt > 1
       ? `\n⚠ This is attempt #${attempt}. The same issue persisted through ${attempt - 1} previous fix attempt(s).`
+      : '';
+
+    const rcaBlock = (rca && rca.confidence > 0)
+      ? `\n━━━ SUPPORTING RCA ━━━\n${rca.suspected_cause} (confidence: ${rca.confidence}, risk: ${rca.risk_level}). Factor this into your safety assessment.`
       : '';
 
     const userPrompt = `CLUSTER: ${this.clusterName} (tier: ${this.tier})
@@ -123,7 +128,7 @@ Root cause: ${rootCause}
 Risk level: ${risk}
 
 ━━━ RECENT POD LOGS ━━━
-${podLogs ? podLogs.slice(-2000) : '(no logs available)'}
+${podLogs ? podLogs.slice(-2000) : '(no logs available)'}${rcaBlock}
 
 Review this proposal and return your JSON verdict.`;
 
@@ -131,22 +136,10 @@ Review this proposal and return your JSON verdict.`;
     console.log(`[${this.clusterName}] [GUARDIAN] Reviewing: action=${action}  issue=${issue.type}  attempt=${attempt}`);
 
     try {
-      const stream = await guardianLlm.chat.completions.create({
-        model:          GUARDIAN_MODEL,
-        temperature:    0.1,
-        stream:         true,
-        stream_options: { include_usage: true },
-        messages: [
-          { role: 'system', content: SYSTEM      },
-          { role: 'user',   content: userPrompt  },
-        ],
-      });
-
-      let raw = '', usage = null;
-      for await (const chunk of stream) {
-        raw += chunk.choices[0]?.delta?.content ?? '';
-        if (chunk.usage) usage = chunk.usage;
-      }
+      const { raw, usage } = await runLLMCall(
+        () => guardianLlm.chat.completions.create({ model: GUARDIAN_MODEL, temperature: 0.1, stream: true, stream_options: { include_usage: true }, messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: userPrompt }] }),
+        { requiredFields: ['verdict', 'classification'] }
+      );
 
       tokenStore.record('guardian', usage);
       console.log(`[${this.clusterName}] [GUARDIAN] Response time: ${Date.now() - t0}ms${usage ? `  tokens=${usage.total_tokens}` : ''}`);

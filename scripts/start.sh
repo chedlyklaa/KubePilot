@@ -283,6 +283,37 @@ if [[ "${INSTALL_MONITORING}" == "true" ]]; then
   fi
 fi
 
+# ── Qdrant (vector store) ─────────────────────────────────────────────────────
+section "Qdrant"
+
+QDRANT_CONTAINER="kubepilot-qdrant"
+QDRANT_PORT=6333
+
+if ! command -v docker &>/dev/null; then
+  warn "docker not found — skipping Qdrant startup (set QDRANT_URL to an external instance)"
+else
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${QDRANT_CONTAINER}$"; then
+    ok "Qdrant already running (container: ${QDRANT_CONTAINER})"
+  else
+    # Remove a stopped container left over from a previous run
+    docker rm -f "${QDRANT_CONTAINER}" 2>/dev/null || true
+
+    log "Starting Qdrant container (port ${QDRANT_PORT})..."
+    docker run -d \
+      --name "${QDRANT_CONTAINER}" \
+      -p "${QDRANT_PORT}:6333" \
+      -p 6334:6334 \
+      --restart unless-stopped \
+      qdrant/qdrant:latest \
+      &>/dev/null
+
+    log "Waiting for Qdrant to accept connections..."
+    if wait_port "${QDRANT_PORT}" "qdrant" 30; then
+      ok "Qdrant      → http://localhost:${QDRANT_PORT}  (container: ${QDRANT_CONTAINER})"
+    fi
+  fi
+fi
+
 # ── Cluster status summary ────────────────────────────────────────────────────
 section "Cluster Status"
 
@@ -304,8 +335,10 @@ echo -e "  Add / verify these in your ${BOLD}.env${NC}:"
 echo ""
 echo -e "  ${DIM}PROMETHEUS_URL${NC}=http://localhost:9090"
 echo -e "  ${DIM}GRAFANA_URL${NC}=http://localhost:3000"
+echo -e "  ${DIM}QDRANT_URL${NC}=http://localhost:6333"
 echo ""
 echo -e "  Grafana login: ${BOLD}admin / kubepilot${NC}"
+echo -e "  Qdrant UI:     ${BOLD}http://localhost:6333/dashboard${NC}"
 echo ""
 echo -e "  Cluster contexts registered:"
 for entry in "${CLUSTERS[@]}"; do

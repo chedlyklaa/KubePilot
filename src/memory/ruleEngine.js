@@ -26,50 +26,54 @@ class RuleEngine {
         .limit(100)
         .lean();
 
-      // Count failures per (issueType, action) pair across all episodes
-      const failCounts  = new Map();  // "issueType:action" → count
+      // Count failures AND successes per (issueType, action) pair
+      const failCounts  = new Map();  // "issueType:action" → fail count
+      const succCounts  = new Map();  // "issueType:action" → success count
       const failLessons = new Map();  // "issueType:action" → most recent lesson
 
       for (const ep of episodes) {
         for (const entry of ep.timeline || []) {
-          if (entry.outcome !== 'failed') continue;
           const k = `${ep.fingerprint.issueType}:${entry.action}`;
-          failCounts.set(k, (failCounts.get(k) || 0) + 1);
-          if (ep.reflection?.lessonsLearned) failLessons.set(k, ep.reflection.lessonsLearned);
+          if (entry.outcome === 'failed') {
+            failCounts.set(k, (failCounts.get(k) || 0) + 1);
+            if (ep.reflection?.lessonsLearned) failLessons.set(k, ep.reflection.lessonsLearned);
+          } else if (entry.outcome === 'success') {
+            succCounts.set(k, (succCounts.get(k) || 0) + 1);
+          }
         }
       }
 
-      for (const [key, count] of failCounts) {
-        if (count < PATTERN_THRESHOLD) continue;
+      for (const [key, failCount] of failCounts) {
+        const successCount = succCounts.get(key) || 0;
+        const total        = failCount + successCount;
+        const failRate     = failCount / total;
+
+        // Only generate a rule when failure rate exceeds 60% with enough samples
+        if (failRate < 0.6 || total < PATTERN_THRESHOLD) continue;
 
         const [type, action] = key.split(':');
         const condition = `${type} + action:${action} + outcome:failed`;
 
-        // Increment if rule already exists
-        const existing = await LearnedRule.findOne({ issueType: type, condition });
-        if (existing) {
-          await LearnedRule.updateOne(
-            { _id: existing._id },
-            { $set: { occurrences: count, confidence: Math.min(0.5 + count * 0.08, 0.95) } }
-          );
-          continue;
-        }
+        // Bayesian-inspired confidence: weighted by sample size, scaled to [0.50, 0.95]
+        // Small samples stay near 0.5; large samples approach failRate × 0.95
+        const sampleWeight = Math.min(total / 20, 1);
+        const confidence   = Math.min(0.5 + failRate * 0.45 * sampleWeight, 0.95);
 
-        // Generate new rule
         const lesson = failLessons.get(key) || '';
-        const rule   = `Avoid "${action}" for ${type} — failed ${count}+ times.${lesson ? ' ' + lesson : ''}`;
+        const rule   = `Avoid "${action}" for ${type} — failed ${failCount}/${total} times (${Math.round(failRate * 100)}% failure rate).${lesson ? ' ' + lesson : ''}`;
 
-        await LearnedRule.create({
-          issueType:   type,
-          condition,
-          rule,
-          source:      'pattern_detected',
-          occurrences: count,
-          confidence:  Math.min(0.5 + count * 0.08, 0.95),
-          active:      true,
-        });
+        // Atomic upsert avoids duplicate rules under concurrent analyze() calls.
+        // occurrences stores total (fail+success) to stay consistent with the confidence formula.
+        await LearnedRule.findOneAndUpdate(
+          { issueType: type, condition },
+          {
+            $set:         { occurrences: total, confidence, rule },
+            $setOnInsert: { source: 'pattern_detected', active: true },
+          },
+          { upsert: true }
+        );
 
-        console.log(`[RuleEngine] New rule: ${rule}`);
+        console.log(`[RuleEngine] Rule upserted: ${rule}`);
       }
     } catch (err) {
       console.error('[RuleEngine] analyze failed:', err.message);

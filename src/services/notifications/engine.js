@@ -60,13 +60,17 @@ async function _getPersonalEmailRecipients(category, targetRole = null) {
     const { UserNotificationPreferences, User } = require('../../db/models');
     const prefs = await UserNotificationPreferences.find({ channels: 'email' }).lean();
 
+    // Batch-fetch all users in one query to avoid N+1 DB round-trips
+    const userIds  = prefs.map(p => p.userId);
+    const users    = await User.find({ _id: { $in: userIds } }).select('email active role').lean();
+    const userMap  = new Map(users.map(u => [u._id.toString(), u]));
+
     const emails = [];
     for (const pref of prefs) {
       // Skip if user has category filtering and this category is not in their list
       if (pref.categories?.length > 0 && category && !pref.categories.includes(category)) continue;
 
-      // Always fetch user — needed for active check, role gate, and email fallback
-      const user = await User.findById(pref.userId).select('email active role').lean();
+      const user = userMap.get(pref.userId?.toString());
       if (!user?.active) continue;
       if (targetRole && user.role !== targetRole) continue;
 

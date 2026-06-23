@@ -9,6 +9,8 @@ const TOPICS = [
   { id: 'orders',      icon: '⌨',  label: 'Orders (Chat)' },
   { id: 'teams',       icon: '🔔', label: 'Teams Alerts' },
   { id: 'health',      icon: '🩺', label: 'Cluster Health' },
+  { id: 'capacity',    icon: '📈', label: 'Capacity' },
+  { id: 'rbac',        icon: '🔐', label: 'RBAC' },
   { id: 'chat',        icon: '💬', label: 'AI Chat' },
   { id: 'history',     icon: '📋', label: 'History' },
 ]
@@ -21,11 +23,16 @@ const CONTENT = {
 
       <h3>Key capabilities</h3>
       <ul>
-        <li><strong>Self-healing</strong> — detects CrashLoopBackOff, OOMKilled, ImagePullBackOff, and other pod failures, then attempts to fix them automatically</li>
-        <li><strong>Multi-layer safety</strong> — every action passes through an AI Guardian, a risk engine, and optionally a human approval gate before execution</li>
-        <li><strong>Escalation workflow</strong> — after 3 failed fix attempts, the issue is escalated to your team on the dashboard and via Microsoft Teams</li>
+        <li><strong>Self-healing</strong> — detects CrashLoopBackOff, OOMKilled, ImagePullBackOff, ContainerError, and PodNotReady, then attempts to fix them automatically</li>
+        <li><strong>Investigation gate</strong> — for complex failures, the agent enriches evidence (previous logs, rollout history, describe events) before planning a fix, improving diagnosis accuracy</li>
+        <li><strong>Multi-layer safety</strong> — every autonomous action passes through an AI Guardian, a risk engine, and optionally a human approval gate before execution</li>
+        <li><strong>Root Cause Analysis (RCA)</strong> — structured post-mortem cards with suspected cause, confidence score, evidence list, and capacity context for OOM-type issues</li>
+        <li><strong>Predictive Capacity</strong> — hybrid EWMA + weighted linear regression forecasts resource exhaustion with ETA countdowns and trend sparklines</li>
+        <li><strong>Change Correlation</strong> — detects whether a recent deployment or config change caused a pod failure</li>
+        <li><strong>Escalation workflow</strong> — after 3 failed fix attempts the issue is handed off to your team on the dashboard and via Microsoft Teams</li>
+        <li><strong>Orders (Command Chat)</strong> — issue natural language kubectl commands with a built-in clarification system that never guesses missing information</li>
         <li><strong>AI Chat</strong> — ask anything about Kubernetes or query your live cluster state in read-only mode</li>
-        <li><strong>Orders</strong> — send natural language commands to kubectl with safety classification before execution</li>
+        <li><strong>RBAC Management</strong> — browse role bindings, create roles, manage service accounts, and audit permission changes — all with kubectl under the hood</li>
         <li><strong>Observability</strong> — real-time agent logs, Prometheus metrics, and full audit history</li>
       </ul>
 
@@ -41,58 +48,81 @@ const CONTENT = {
   pipeline: (
     <div className="help-content">
       <h2>How the Agent Works</h2>
-      <p>Every detected issue goes through a <strong>6-step pipeline</strong> before any kubectl command is executed.</p>
+      <p>Every detected issue goes through a <strong>multi-step pipeline</strong> before any kubectl command is executed. Complex issues trigger an <strong>Investigation Gate</strong> that enriches evidence before planning.</p>
 
       <div className="help-steps">
         <div className="help-step">
           <span className="help-step-num">1</span>
           <div><strong>Detect</strong>
-            <p>The Pod Analyzer scans all pods every cycle (default: 5 min). It identifies CrashLoopBackOff, OOMKilled, ImagePullBackOff, ContainerError, and PodNotReady states.</p>
+            <p>The Pod Analyzer scans all pods every cycle (default: 5 min). It identifies CrashLoopBackOff, OOMKilled, ImagePullBackOff, ContainerError, and PodNotReady states across all monitored clusters.</p>
           </div>
         </div>
         <div className="help-step">
           <span className="help-step-num">2</span>
-          <div><strong>Diagnose — LLM</strong>
-            <p>The AI reads pod logs, issue details, and recent history, then returns a fix plan: <code>rootCause</code>, <code>action</code> (restart / rollback / delete_pod / scale_down / increase_memory / noop), and <code>risk</code> (LOW / MEDIUM / HIGH).</p>
+          <div><strong>Evidence Assessment &amp; Investigation Gate</strong>
+            <p>Before calling the LLM, the agent evaluates whether the available evidence is sufficient. Signals assessed include: exit code presence, crash loop detection, backoff events, log sparsity, and restart count. If evidence is insufficient, the agent enriches it by fetching previous container logs, <code>kubectl describe</code> events, and rollout history before proceeding.</p>
           </div>
         </div>
         <div className="help-step">
           <span className="help-step-num">3</span>
+          <div><strong>Diagnose — LLM</strong>
+            <p>The AI reads pod logs, issue details, enriched evidence, and recent history, then returns a fix plan: <code>rootCause</code>, <code>action</code> (restart / rollback / delete_pod / scale_down / increase_memory / noop), and <code>risk</code> (LOW / MEDIUM / HIGH). For OOM-type issues, capacity forecast context is also injected.</p>
+          </div>
+        </div>
+        <div className="help-step">
+          <span className="help-step-num">4</span>
+          <div><strong>Root Cause Analysis (RCA)</strong>
+            <p>After the main diagnosis, a dedicated Investigator Agent generates a structured RCA with: suspected cause, risk level, confidence score (0–100%), supporting evidence list, and a recommended focus. For memory-related issues, it also includes a Capacity context banner (current usage %, slope, and saturation ETA).</p>
+          </div>
+        </div>
+        <div className="help-step">
+          <span className="help-step-num">5</span>
           <div><strong>Review — Guardian Agent</strong>
             <p>A second independent AI reviews the plan. It can APPROVE, REJECT, or MODIFY the action. If it classifies the action as DANGEROUS, it forces a human approval gate regardless of the risk score.</p>
           </div>
         </div>
         <div className="help-step">
-          <span className="help-step-num">4</span>
+          <span className="help-step-num">6</span>
           <div><strong>Risk Engine</strong>
             <p>A rule-based engine calculates a risk score based on action type, cluster tier, blast radius, and reversibility. If the score exceeds the threshold, it overrides the risk to HIGH and triggers the approval gate.</p>
           </div>
         </div>
         <div className="help-step">
-          <span className="help-step-num">5</span>
+          <span className="help-step-num">7</span>
           <div><strong>Approval Gate</strong>
-            <p>HIGH risk actions pause. A card appears in the <strong>Approvals</strong> tab and a Teams message is sent to admins. The action only proceeds if an admin approves it within 10 minutes. Denial or timeout = action skipped for this cycle.</p>
+            <p>HIGH risk actions pause. A card appears in the <strong>Approvals</strong> tab and a Teams message is sent to admins. The action only proceeds if an admin approves within 10 minutes. Denial or timeout = action skipped for this cycle.</p>
           </div>
         </div>
         <div className="help-step">
-          <span className="help-step-num">6</span>
+          <span className="help-step-num">8</span>
           <div><strong>Fix + Validate</strong>
             <p>The kubectl command runs. After 15 seconds the agent re-checks the pod. If the issue persists it retries next cycle. After <strong>3 failed attempts</strong>, the issue is escalated and the team is notified on Teams.</p>
           </div>
         </div>
+        <div className="help-step">
+          <span className="help-step-num">9</span>
+          <div><strong>Reflect &amp; Learn</strong>
+            <p>Each resolved or escalated episode is stored in the agent's long-term memory (vector store + MongoDB). Successful fix patterns are used to improve confidence scores for future identical issues.</p>
+          </div>
+        </div>
       </div>
+
+      <h3>Parallel: Capacity Forecasting</h3>
+      <p>Every agent cycle also runs the Capacity Forecast Engine in the background. It collects CPU, memory, and disk snapshots, applies a hybrid EWMA + weighted linear regression model, and fires alerts when resource exhaustion is projected within configurable thresholds. This is completely separate from the fix pipeline.</p>
     </div>
   ),
 
   dashboard: (
     <div className="help-content">
       <h2>Dashboard</h2>
-      <p>The main real-time operations screen. Split into a left log panel and a right action panel.</p>
+      <p>The main real-time operations screen. Split into a left log panel and a right action panel with three tabs.</p>
 
       <h3>Left — Agent Logs</h3>
       <p>Real-time log stream from the autonomous agent. Every decision, LLM call, fix attempt, and validation result appears here as it happens. Use the filter chips at the top to show only WARN or ERROR entries.</p>
       <div className="help-table">
         <div className="help-tr"><span className="help-th">[AI]</span><span>LLM returned a fix plan: root cause + action + risk level</span></div>
+        <div className="help-tr"><span className="help-th">[INVESTIGATE]</span><span>Evidence gate triggered — fetching previous logs, describe events, rollout history</span></div>
+        <div className="help-tr"><span className="help-th">[RCA]</span><span>Root cause analysis generated for the current issue</span></div>
         <div className="help-tr"><span className="help-th">[GUARDIAN]</span><span>Guardian agent reviewed the plan and gave its verdict</span></div>
         <div className="help-tr"><span className="help-th">[RISK]</span><span>Risk engine calculated a score and made a decision</span></div>
         <div className="help-tr"><span className="help-th">[APPROVAL]</span><span>High-risk action is paused and waiting for a human decision</span></div>
@@ -100,6 +130,7 @@ const CONTENT = {
         <div className="help-tr"><span className="help-th">[RESOLVED]</span><span>Pod re-checked after fix — issue is confirmed gone</span></div>
         <div className="help-tr"><span className="help-th">[UNRESOLVED]</span><span>Fix did not work — agent will retry next cycle</span></div>
         <div className="help-tr"><span className="help-th">[ESCALATE]</span><span>3 attempts exhausted — escalated to team, Teams notified</span></div>
+        <div className="help-tr"><span className="help-th">[CAPACITY]</span><span>Capacity forecast alert — resource saturation approaching</span></div>
         <div className="help-tr"><span className="help-th">[SKIP]</span><span>Issue is in cooldown period — will be retried later</span></div>
       </div>
 
@@ -129,6 +160,7 @@ const CONTENT = {
         <div className="help-tr"><span className="help-th">Risk</span><span>LOW / MEDIUM / HIGH as assessed by the LLM + risk engine</span></div>
         <div className="help-tr"><span className="help-th">Root Cause</span><span>The AI's one-sentence diagnosis of why the pod is failing</span></div>
         <div className="help-tr"><span className="help-th">Guardian note</span><span>The safety reviewer's reason for flagging this action</span></div>
+        <div className="help-tr"><span className="help-th">RCA card</span><span>Structured root cause analysis with confidence score and evidence list (when available)</span></div>
         <div className="help-tr"><span className="help-th">Timer</span><span>Auto-denied after 10 minutes if no decision is made</span></div>
       </div>
 
@@ -140,7 +172,7 @@ const CONTENT = {
       <p>Only users with the <strong>admin</strong> role can see and respond to approval requests. Developers see the cards as read-only.</p>
 
       <h3>Teams notification</h3>
-      <p>Simultaneously with the card appearing, a Teams message is sent to the <strong>admin channel</strong> webhook with all the same details and a link to the dashboard. See the <em>Teams Alerts</em> section for details.</p>
+      <p>Simultaneously with the card appearing, a Teams message is sent to the <strong>admin channel</strong> webhook with all the same details and a link to the dashboard.</p>
     </div>
   ),
 
@@ -181,25 +213,32 @@ const CONTENT = {
     <div className="help-content">
       <h2>Orders — Natural Language kubectl</h2>
       <p>The <strong>Orders tab</strong> (inside the Dashboard right panel) lets you send direct kubectl commands to your clusters using plain English. The AI translates your intent into the exact kubectl command, classifies its risk, and shows it to you before executing.</p>
+      <p>A built-in <strong>Clarification System</strong> ensures the agent never invents, guesses, or silently assumes missing information. If it needs more details, it asks — then waits for your answer before generating any command.</p>
 
       <h3>How it works — step by step</h3>
       <div className="help-steps">
         <div className="help-step">
           <span className="help-step-num">1</span>
           <div><strong>You type a natural language order</strong>
-            <p>Example: <em>"restart the payment service in the backend namespace"</em> or <em>"scale the api deployment to 3 replicas"</em></p>
+            <p>Example: <em>"restart the payment service"</em> or <em>"scale the api deployment to 3 replicas in the backend namespace"</em></p>
           </div>
         </div>
         <div className="help-step">
           <span className="help-step-num">2</span>
-          <div><strong>AI generates the kubectl command</strong>
-            <p>The LLM reads your configured clusters (names, contexts, namespaces) and produces the exact kubectl command with the right <code>--context</code> and <code>-n</code> flags.</p>
+          <div><strong>Intent extraction + completeness check</strong>
+            <p>The system identifies what you want to do and what parameters you provided. It then checks whether all required information is present using a built-in schema for every Kubernetes operation. Missing anything? It asks — it never guesses.</p>
           </div>
         </div>
         <div className="help-step">
           <span className="help-step-num">3</span>
-          <div><strong>Safety classification</strong>
-            <p>The command is classified into a category and risk level:</p>
+          <div><strong>Clarification (if needed)</strong>
+            <p>If any required field is missing, ambiguous, or the confidence is too low, the agent returns a focused question instead of a command. You answer it in the same input box. The thread continues until all information is collected.</p>
+          </div>
+        </div>
+        <div className="help-step">
+          <span className="help-step-num">4</span>
+          <div><strong>Command generation + safety classification</strong>
+            <p>Once all required information is available, the AI generates the exact kubectl command and classifies its risk:</p>
           </div>
         </div>
       </div>
@@ -214,33 +253,56 @@ const CONTENT = {
 
       <div className="help-steps" style={{marginTop: 12}}>
         <div className="help-step">
-          <span className="help-step-num">4</span>
+          <span className="help-step-num">5</span>
           <div><strong>You review and confirm</strong>
-            <p>The card shows the generated command, the risk level, a short explanation, and an Approve / Deny button. You see exactly what will run before it runs.</p>
+            <p>The plan card shows the generated command, category, risk level, a short explanation, and Approve / Deny buttons. You see exactly what will run — before it runs.</p>
           </div>
         </div>
         <div className="help-step">
-          <span className="help-step-num">5</span>
+          <span className="help-step-num">6</span>
           <div><strong>Execution + output</strong>
-            <p>If you approve, the command runs and the raw kubectl output is shown inline. If the command fails, the AI diagnoses the error and suggests a corrected command.</p>
+            <p>If you approve, the command runs and the raw kubectl output is shown inline. If the command fails, the AI diagnoses the error and suggests a corrected command you can retry with one click.</p>
           </div>
         </div>
       </div>
 
-      <h3>Example orders you can type</h3>
+      <h3>Clarification in action</h3>
       <div className="help-table">
-        <div className="help-tr"><span className="help-th" style={{minWidth: 180}}>show all pods in backend</span><span>→ kubectl get pods -n backend</span></div>
-        <div className="help-tr"><span className="help-th" style={{minWidth: 180}}>restart the api service</span><span>→ kubectl rollout restart deployment/api</span></div>
-        <div className="help-tr"><span className="help-th" style={{minWidth: 180}}>show logs for payment pod</span><span>→ kubectl logs &lt;pod&gt; -n backend --tail=50</span></div>
-        <div className="help-tr"><span className="help-th" style={{minWidth: 180}}>scale order-service to 2</span><span>→ kubectl scale deployment/order-service --replicas=2</span></div>
-        <div className="help-tr"><span className="help-th" style={{minWidth: 180}}>describe the failing pod</span><span>→ kubectl describe pod &lt;pod&gt; -n &lt;ns&gt;</span></div>
+        <div className="help-tr"><span className="help-th" style={{minWidth:180}}>You: "Create a pod"</span><span>→ "What resource name, image name, and namespace should I use?"</span></div>
+        <div className="help-tr"><span className="help-th" style={{minWidth:180}}>You: "Scale auth-service"</span><span>→ "What replica count should auth-service be scaled to?"</span></div>
+        <div className="help-tr"><span className="help-th" style={{minWidth:180}}>You: "Delete a deployment"</span><span>→ "Which deployment and namespace should be targeted?"</span></div>
+        <div className="help-tr"><span className="help-th" style={{minWidth:180}}>You: "Update nginx"</span><span>→ "What deployment name, image name, and image tag should I use?"</span></div>
+        <div className="help-tr"><span className="help-th" style={{minWidth:180}}>You: "Restart auth"</span><span>→ "I found multiple possible targets: Deployment/auth, Pod/auth-xxxxx. Which one should I target?"</span></div>
       </div>
 
-      <h3>Important notes</h3>
+      <h3>Supported operations</h3>
+      <p>The system recognises all standard Kubernetes operations:</p>
       <ul>
-        <li>Orders execute on your <strong>real cluster</strong> — always review the command before approving</li>
-        <li>The AI picks the cluster and namespace from your configuration — specify explicitly if you have multiple clusters</li>
+        <li><strong>Pods &amp; Deployments</strong> — create, delete, describe, scale, restart, rollout undo/status, update image, set resources, patch</li>
+        <li><strong>StatefulSets &amp; DaemonSets</strong> — restart, scale, delete</li>
+        <li><strong>Services &amp; Ingress</strong> — create, delete, describe, expose deployment</li>
+        <li><strong>ConfigMaps &amp; Secrets</strong> — create, delete</li>
+        <li><strong>Namespaces &amp; PVCs</strong> — create, delete, describe</li>
+        <li><strong>RBAC</strong> — create/delete roles, role bindings, cluster roles, cluster role bindings</li>
+        <li><strong>Nodes</strong> — drain, cordon, uncordon, label, taint, describe</li>
+        <li><strong>Read-only</strong> — get pods/deployments/services/nodes/events, top pods/nodes</li>
+        <li><strong>Cluster provisioning</strong> — "create cluster mydev" provisions a Minikube profile and adds it to monitoring automatically</li>
+      </ul>
+
+      <h3>What the agent will NEVER do</h3>
+      <ul>
+        <li>Invent or guess a resource name, namespace, image tag, or replica count</li>
+        <li>Default the namespace to "default" unless you explicitly said so</li>
+        <li>Assume an image tag (e.g. will not use "latest" unless you said "latest")</li>
+        <li>Pick a port number, node name, or label without asking first</li>
+      </ul>
+
+      <h3>Tips</h3>
+      <ul>
+        <li>Be specific: <em>"restart the payment-api deployment in the backend namespace"</em> is better than <em>"restart payment"</em></li>
+        <li>The input box changes style when you are mid-clarification thread — type your answer and press Enter</li>
         <li>Command history is saved per user and persists across sessions</li>
+        <li>If a command fails, click <strong>Try fix ↑</strong> in the error card to retry with the suggested correction</li>
       </ul>
     </div>
   ),
@@ -276,8 +338,11 @@ const CONTENT = {
         <div className="help-tr"><span className="help-th">Re-alert</span><span>If the escalation is acknowledged but still not fixed, a new message is sent when the agent re-escalates</span></div>
       </div>
 
-      <h3>Alert type 3 — Need Help</h3>
-      <p>Sent to admins (in-app notification) when a developer marks an escalation as <strong>Need Help</strong> or requests reassignment. This does not send a Teams message — it uses the in-app notification bell instead.</p>
+      <h3>Alert type 3 — Assignment email</h3>
+      <p>When an admin assigns an escalation to a team member, that person receives an email notification (if SMTP is configured and they have email notifications enabled in their profile settings).</p>
+
+      <h3>Alert type 4 — Capacity alert</h3>
+      <p>Sent via the notification engine when the Capacity Forecast Engine predicts resource exhaustion above the HIGH or CRITICAL threshold. Includes the resource type, current usage %, rate of change, and estimated time to saturation.</p>
 
       <h3>Not receiving messages?</h3>
       <ul>
@@ -310,14 +375,84 @@ const CONTENT = {
       </div>
 
       <h3>Prometheus Error Panel</h3>
-      <p>If Prometheus is connected, a red panel appears at the top showing pods that were recently OOMKilled or have abnormally high restart counts (above threshold). These are the pods most likely to be escalated next.</p>
+      <p>If Prometheus is connected, a red panel appears at the top showing pods that were recently OOMKilled or have abnormally high restart counts. These are the pods most likely to be escalated next.</p>
+    </div>
+  ),
+
+  capacity: (
+    <div className="help-content">
+      <h2>Predictive Capacity</h2>
+      <p>The Capacity page shows resource exhaustion forecasts for every monitored workload. The forecast engine runs automatically in the background every agent cycle and stores metric snapshots in MongoDB for trend analysis.</p>
+
+      <h3>How the forecast works</h3>
+      <p>The engine uses a <strong>hybrid model</strong> combining two independent forecasts:</p>
+      <div className="help-table">
+        <div className="help-tr"><span className="help-th">EWMA (6-hour)</span><span>Exponentially weighted moving average — catches rapid short-term spikes (α = 0.3). Best for fast memory leaks.</span></div>
+        <div className="help-tr"><span className="help-th">WLR (7-day)</span><span>Weighted linear regression over the last 7 days — identifies slow steady growth trends. Best for gradual disk fill.</span></div>
+      </div>
+      <p style={{marginTop:8}}>The <strong>lower ETA</strong> (more urgent) of the two models is chosen as the forecast result. Both models apply spike suppression — individual data points that jump more than 30% from the previous reading are excluded to prevent noise from distorting the trend.</p>
+
+      <h3>Alert levels</h3>
+      <div className="help-table">
+        <div className="help-tr"><span className="help-th" style={{color:'var(--success)'}}>OK</span><span>Resource saturation is not projected within the monitored window, or usage is stable/decreasing</span></div>
+        <div className="help-tr"><span className="help-th" style={{color:'var(--warn)'}}>WARNING</span><span>Saturation projected within 7 days — keep an eye on it</span></div>
+        <div className="help-tr"><span className="help-th" style={{color:'var(--danger)'}}>HIGH</span><span>Saturation projected within 48 hours — plan action soon</span></div>
+        <div className="help-tr"><span className="help-th" style={{color:'#ef4444'}}>CRITICAL</span><span>Saturation projected within 6 hours — act immediately</span></div>
+      </div>
+
+      <h3>Confidence gating</h3>
+      <p>If fewer than 12 data points are available for a target, the alert level is automatically downgraded one step (e.g. CRITICAL → HIGH). This prevents false alarms from new workloads with insufficient history.</p>
+
+      <h3>Sparkline charts</h3>
+      <p>Each resource card shows a mini sparkline of the last N snapshots. The bars after the <strong>divider line</strong> are projected future values (dashed outline, 35% opacity). Color matches the current alert level.</p>
+
+      <h3>ETA countdown</h3>
+      <p>The nearest exhaustion time is displayed as a live countdown (e.g. <em>4h 23m</em>) updated every 30 seconds.</p>
+
+      <h3>RCA integration</h3>
+      <p>When the agent generates a Root Cause Analysis for an OOMKilled, HighRestarts, or MemNearLimit issue, it automatically injects the current capacity context (alert level, usage %, trend slope, ETA) into the RCA card so the diagnosis and the resource trend are visible together.</p>
+
+      <h3>Enabling capacity forecasting</h3>
+      <p>Set <code>CAPACITY_FORECAST_ENABLED=true</code> in your <code>.env</code> file. Optional tuning variables:</p>
+      <div className="help-table">
+        <div className="help-tr"><span className="help-th">FORECAST_INTERVAL_CYCLES</span><span>Run forecast every N agent cycles (default: 5)</span></div>
+        <div className="help-tr"><span className="help-th">FORECAST_LOOKBACK_HOURS</span><span>History window for the WLR model (default: 168 = 7 days)</span></div>
+        <div className="help-tr"><span className="help-th">FORECAST_ALERT_COOLDOWN_MS</span><span>Minimum time between repeat alerts for the same target (default: 4 h)</span></div>
+      </div>
+    </div>
+  ),
+
+  rbac: (
+    <div className="help-content">
+      <h2>RBAC Management</h2>
+      <p>The RBAC page provides a UI for viewing and managing Kubernetes Role-Based Access Control. All actions run real kubectl commands against your monitored clusters and require admin role in KubePilot.</p>
+
+      <h3>Tabs</h3>
+      <div className="help-table">
+        <div className="help-tr"><span className="help-th">Bindings</span><span>Lists all RoleBindings and ClusterRoleBindings in the selected namespace. Shows the subject (user, group, or service account), the bound role, and the binding kind.</span></div>
+        <div className="help-tr"><span className="help-th">Roles</span><span>Lists all Roles in the selected namespace with their rules (API groups, resources, and verbs). Admins can apply new YAML role definitions directly from the UI.</span></div>
+        <div className="help-tr"><span className="help-th">Service Accounts</span><span>Lists all ServiceAccounts in the selected namespace. Admins can create new service accounts.</span></div>
+        <div className="help-tr"><span className="help-th">Audit</span><span>A log of all RBAC changes made through KubePilot (applies, creates, deletes). Filterable by resource name and shows only dangerous operations if needed.</span></div>
+      </div>
+
+      <h3>Applying YAML</h3>
+      <p>On the Roles tab, admins can paste any valid Kubernetes RBAC YAML (Role, ClusterRole, RoleBinding, ClusterRoleBinding) and click <strong>Apply</strong>. The system runs <code>kubectl apply -f</code> with the selected context and shows the raw output inline.</p>
+
+      <h3>Dangerous role detection</h3>
+      <p>Binding a subject to <code>cluster-admin</code>, <code>admin</code>, or <code>edit</code> is flagged as a dangerous operation. These bindings are highlighted in the Bindings list and logged prominently in the Audit tab.</p>
+
+      <h3>Cluster and namespace selection</h3>
+      <p>Use the dropdowns at the top of the page to select which cluster context and namespace to inspect. The namespace list is fetched live from the selected cluster.</p>
+
+      <h3>Who can use this page?</h3>
+      <p>All authenticated users can view RBAC resources. Only <strong>admin</strong> users can apply YAML, create service accounts, or delete bindings.</p>
     </div>
   ),
 
   chat: (
     <div className="help-content">
       <h2>AI Chat</h2>
-      <p>A conversational Kubernetes expert powered by the same LLM as the agent. This is separate from the Orders tab — it answers questions, it does not execute commands.</p>
+      <p>A conversational Kubernetes expert powered by the same LLM as the agent. This is separate from the Orders tab — it answers questions and analyses your cluster, it does not execute commands.</p>
 
       <h3>⎈ Cluster button — Live mode</h3>
       <p>When the button is <strong>green</strong>, the AI has read-only access to your live cluster. Before every message, the dashboard fetches real pod states, active escalations, pending approvals, and Prometheus alerts and injects them directly into your question. The AI will reference real pod names, namespaces, and restart counts.</p>
@@ -335,6 +470,7 @@ const CONTENT = {
         <li>"Explain the active escalations and what I should do to resolve them"</li>
         <li>"Should I approve or deny the pending approvals? Explain the risk of each one"</li>
         <li>"Generate an incident summary report for all failing pods"</li>
+        <li>"Which workloads are projected to exhaust their memory in the next 24 hours?"</li>
       </ul>
     </div>
   ),
@@ -345,11 +481,22 @@ const CONTENT = {
       <p>A permanent audit trail of all agent decisions and human actions.</p>
 
       <h3>Approvals history</h3>
-      <p>Every approval request the agent ever made — including who approved or denied it, the action taken, the risk level, and the timestamp. Use this for compliance reviews, post-mortems, and understanding why a certain action was or wasn't taken.</p>
+      <p>Every approval request the agent ever made — including who approved or denied it, the action taken, the risk level, and the timestamp. Filterable by date range, decision (approved / denied / timeout), decided-by user, and handled-by user.</p>
+      <p>Use this for compliance reviews, post-mortems, and understanding why a certain action was or wasn't taken.</p>
 
       <h3>Escalations history</h3>
       <p>Every escalation ever created, including resolved ones. Shows: who was assigned, how many fix attempts were made, what the final status was, and when it was resolved.</p>
       <p>Admins can reassign historical escalation records from this page even after the active escalation is closed — useful for tracking accountability after the fact.</p>
+
+      <h3>Filtering</h3>
+      <div className="help-table">
+        <div className="help-tr"><span className="help-th">Date range</span><span>Filter by From / To date (calendar pickers)</span></div>
+        <div className="help-tr"><span className="help-th">Decision</span><span>Approvals: approved, denied, timeout, silenced</span></div>
+        <div className="help-tr"><span className="help-th">Risk</span><span>LOW / MEDIUM / HIGH</span></div>
+        <div className="help-tr"><span className="help-th">Decided By</span><span>Which admin approved or denied the request</span></div>
+        <div className="help-tr"><span className="help-th">Handled By</span><span>Which team member was assigned to the escalation</span></div>
+        <div className="help-tr"><span className="help-th">Cluster</span><span>Filter escalations by the cluster where the issue occurred</span></div>
+      </div>
     </div>
   ),
 }

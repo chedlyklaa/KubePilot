@@ -77,7 +77,7 @@ class PrometheusClient {
     this._maybeReconnect();
     if (!this.available) return null;
     try {
-      const res = await axios.get(`${this.baseUrl}/api/v1/query`, {
+      const res = await axios.get(`${this.baseUrl}/api/v1/query?query=up`, {
         params:  { query: promql },
         timeout: 5000,
       });

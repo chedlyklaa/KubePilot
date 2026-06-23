@@ -274,6 +274,13 @@ class PolicyEngine {
     let forceApproval = false;
     const reasons     = [];
 
+    // Cluster criticality: critical clusters always gate human approval
+    if (context.criticality === 'critical' && risk !== 'HIGH') {
+      risk = 'HIGH';
+      forceApproval = true;
+      reasons.push('cluster marked critical — all actions require human approval');
+    }
+
     // OOM + increase_memory: irreversible live resource change — always HIGH
     if ((oomKilled || issueType === 'OOMKilled') && plan.action === 'increase_memory') {
       if (risk !== 'HIGH') {

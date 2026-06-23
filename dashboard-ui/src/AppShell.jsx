@@ -15,6 +15,9 @@ import UsersPage from './pages/UsersPage'
 import HelpModal from './components/HelpModal'
 import ProfilePage from './pages/ProfilePage'
 import NotificationsSettingsPage from './pages/NotificationsSettingsPage'
+import RbacPage from './pages/RbacPage'
+import CapacityPage from './pages/CapacityPage'
+import AgentsPage from './pages/AgentsPage'
 
 export default function AppShell() {
   const { user, logout }            = useAuth()
@@ -112,6 +115,8 @@ export default function AppShell() {
             <button className={`nav-btn ${page === 'escalations' ? 'active' : ''}`} onClick={() => navigate('escalations')}>Escalations</button>
             <button className={`nav-btn ${page === 'chat'        ? 'active' : ''}`} onClick={() => navigate('chat')}>AI Assistant</button>
             <button className={`nav-btn ${page === 'history'     ? 'active' : ''}`} onClick={() => navigate('history')}>History</button>
+            <button className={`nav-btn ${page === 'rbac'        ? 'active' : ''}`} onClick={() => navigate('rbac')}>RBAC</button>
+            <button className={`nav-btn ${page === 'capacity'    ? 'active' : ''}`} onClick={() => navigate('capacity')}>Capacity</button>
           </nav>
 
           <div className="header-right">
@@ -144,6 +149,11 @@ export default function AppShell() {
                       <span className="dropdown-item-icon">👥</span> Users
                     </button>
                   )}
+                  {user.role === 'admin' && (
+                    <button className="dropdown-item" onClick={() => navigate('agents')}>
+                      <span className="dropdown-item-icon">⎈</span> Agent Management
+                    </button>
+                  )}
                   <div className="dropdown-divider" />
                   <button className="dropdown-item dropdown-item-danger" onClick={() => { setShowSignOut(true); setShowUserMenu(false) }}>
                     <span className="dropdown-item-icon">⏻</span> Sign Out
@@ -166,6 +176,9 @@ export default function AppShell() {
         {page === 'users'         && user.role === 'admin' && <UsersPage />}
         {page === 'profile'                               && <ProfilePage />}
         {page === 'notifications'                         && <NotificationsSettingsPage />}
+        {page === 'rbac'                                  && <RbacPage />}
+        {page === 'capacity'                              && <CapacityPage />}
+        {page === 'agents'        && user.role === 'admin' && <AgentsPage />}
       </div>
     </NotifyCtx.Provider>
   )

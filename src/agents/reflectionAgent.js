@@ -22,10 +22,20 @@ const FALLBACK = {
 };
 
 class ReflectionAgent {
-  async reflect({ issue, planAction, rootCauseDiagnosis, timeline, resolved, podLogs }) {
+  async reflect({ issue, planAction, rootCauseDiagnosis, timeline, resolved, podLogs, rca = null }) {
     const timelineText = (timeline || [])
       .map((t, i) => `  ${i + 1}. action=${t.action}  outcome=${t.outcome}${t.note ? `  (${t.note})` : ''}`)
       .join('\n');
+
+    // Look up any override feedback the admin provided when rejecting this incident
+    const overrideStore = require('../api/overrideStore');
+    const issueKey      = `${issue.type}:${issue.deployment ?? issue.podName}:${issue.namespace ?? 'default'}`;
+    const overrideData  = overrideStore.get(issueKey);
+    if (overrideData) overrideStore.clear(issueKey);
+
+    const overrideContext = (overrideData?.overrideReasons?.length || overrideData?.preferredAction)
+      ? `\nHUMAN OVERRIDE CONTEXT\nreasons:          ${(overrideData.overrideReasons ?? []).join(', ') || '—'}\npreferred action: ${overrideData.preferredAction || '—'}${overrideData.adminNote ? `\nadmin note:       ${overrideData.adminNote}` : ''}`
+      : '';
 
     const prompt = `INCIDENT
 issueType:    ${issue.type}
@@ -45,7 +55,7 @@ last action tried: ${planAction}
 AI diagnosis was:  ${rootCauseDiagnosis ?? 'unknown'}
 
 RECENT POD LOGS
-${podLogs ? podLogs.slice(-1500) : '(not available)'}
+${podLogs ? podLogs.slice(-1500) : '(not available)'}${overrideContext}${(rca && rca.confidence > 0) ? `\nRCA at time of incident: ${rca.suspected_cause}, confidence was ${rca.confidence}, risk was ${rca.risk_level}.` : ''}
 
 Return ONLY valid JSON:
 {

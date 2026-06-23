@@ -332,6 +332,64 @@ class MetricsCollector {
     }
   }
 
+  // ── Namespace aggregate metrics (for capacity forecasting) ──────────────────
+  // Returns { cpuUsedCores, memUsedBytes, cpuQuotaCores, memQuotaBytes,
+  //           cpuQuotaPct, memQuotaPct } or null when unavailable.
+  async collectNamespaceMetrics(namespace) {
+    if (!this.client.available) return null;
+    const cacheKey = `ns:${namespace}`;
+    const cached   = this._cache.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) return cached.data;
+
+    try {
+      const [cpuRes, memRes, cpuQuotaUsed, memQuotaUsed, cpuQuotaHard, memQuotaHard] =
+        await Promise.allSettled([
+          this.client.query(
+            `sum(rate(container_cpu_usage_seconds_total{namespace="${namespace}",container!=""}[5m]))`
+          ),
+          this.client.query(
+            `sum(container_memory_working_set_bytes{namespace="${namespace}",container!=""})`
+          ),
+          this.client.query(
+            `sum(kube_resourcequota{namespace="${namespace}",resource="requests.cpu",type="used"})`
+          ),
+          this.client.query(
+            `sum(kube_resourcequota{namespace="${namespace}",resource="requests.memory",type="used"})`
+          ),
+          this.client.query(
+            `sum(kube_resourcequota{namespace="${namespace}",resource="limits.cpu",type="hard"})`
+          ),
+          this.client.query(
+            `sum(kube_resourcequota{namespace="${namespace}",resource="limits.memory",type="hard"})`
+          ),
+        ]);
+
+      const _val = r => {
+        if (r.status !== 'fulfilled' || !r.value?.length) return null;
+        const v = parseFloat(r.value[0]?.value?.[1]);
+        return isNaN(v) ? null : v;
+      };
+
+      const cpuUsedCores   = _val(cpuRes);
+      const memUsedBytes   = _val(memRes);
+      const cpuQuotaCores  = _val(cpuQuotaHard);
+      const memQuotaBytes  = _val(memQuotaHard);
+      const cpuQuotaUsedV  = _val(cpuQuotaUsed);
+      const memQuotaUsedV  = _val(memQuotaUsed);
+
+      const cpuQuotaPct = cpuQuotaCores && cpuQuotaUsedV != null
+        ? +((cpuQuotaUsedV / cpuQuotaCores) * 100).toFixed(1) : null;
+      const memQuotaPct = memQuotaBytes && memQuotaUsedV != null
+        ? +((memQuotaUsedV / memQuotaBytes) * 100).toFixed(1) : null;
+
+      const data = { namespace, cpuUsedCores, memUsedBytes, cpuQuotaCores, memQuotaBytes, cpuQuotaPct, memQuotaPct };
+      this._cache.set(cacheKey, { data, expiresAt: Date.now() + CACHE_TTL_MS });
+      return data;
+    } catch {
+      return null;
+    }
+  }
+
   // ── Collect node metrics (single node) ──────────────────────────────────────
   async collectNodeMetrics(nodeName) {
     const cacheKey = `node:${nodeName}`;
@@ -351,7 +409,10 @@ class MetricsCollector {
   }
 
   // ── Collect all nodes metrics in one batch ────────────────────────────────────
-  // Returns map: nodeName → { cpu, memory, disk, network }
+  // Returns map: nodeName/IP → { cpuUsagePct, memUsedPct, diskUsedPct, ... }
+  // Each node is stored under BOTH its IP (instance label) AND its node name
+  // (node label from kube-prometheus-stack relabeling) so /api/nodes lookups
+  // succeed regardless of which identifier Kubernetes returns.
   async collectAllNodesMetrics() {
     const cacheKey = 'batch:all-nodes';
     const cached   = this._cache.get(cacheKey);
@@ -359,65 +420,73 @@ class MetricsCollector {
 
     if (!this.client.available) return null;
 
-    try {
-      const [cpuRes, memTotalRes, memAvailRes, diskTotalRes, diskAvailRes, netRxRes, netTxRes] =
-        await Promise.all([
-          // CPU utilization per node (fraction, 0–1)
-          this.client.query(
-            'sum by (instance) (rate(node_cpu_seconds_total{mode!="idle"}[5m])) / count by (instance) (node_cpu_seconds_total{mode="idle"})'
-          ),
-          // Memory total bytes
-          this.client.query('node_memory_MemTotal_bytes'),
-          // Memory available bytes
-          this.client.query('node_memory_MemAvailable_bytes'),
-          // Disk total bytes (root filesystem)
-          this.client.query('node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"}'),
-          // Disk available bytes
-          this.client.query('node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"}'),
-          // Network receive bytes/s
-          this.client.query('sum by (instance) (rate(node_network_receive_bytes_total{device!="lo"}[5m]))'),
-          // Network transmit bytes/s
-          this.client.query('sum by (instance) (rate(node_network_transmit_bytes_total{device!="lo"}[5m]))'),
-        ]);
+    // allSettled: a failed query (e.g. network) does not wipe out the others.
+    const [cpuR, memTotalR, memAvailR, diskTotalR, diskAvailR, netRxR, netTxR] =
+      await Promise.allSettled([
+        // Standard 1-minus-idle approach — more reliable than sum/count division
+        // which silently returns empty on label mismatches.
+        this.client.query(
+          '1 - avg by (instance, node) (rate(node_cpu_seconds_total{mode="idle"}[5m]))'
+        ),
+        this.client.query('node_memory_MemTotal_bytes'),
+        this.client.query('node_memory_MemAvailable_bytes'),
+        this.client.query('node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"}'),
+        this.client.query('node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"}'),
+        this.client.query(
+          'sum by (instance, node) (rate(node_network_receive_bytes_total{device!="lo"}[5m]))'
+        ),
+        this.client.query(
+          'sum by (instance, node) (rate(node_network_transmit_bytes_total{device!="lo"}[5m]))'
+        ),
+      ]);
 
-      const map = {};
+    const settled = r => r.status === 'fulfilled' ? (r.value ?? []) : [];
 
-      const _inst = r => r.metric?.instance?.replace(/:.*/, '') ?? r.metric?.node ?? null;
+    const map = {};
 
-      const _set = (res, key, transform) => {
-        for (const r of res ?? []) {
-          const node = _inst(r);
-          if (!node) continue;
-          if (!map[node]) map[node] = {};
-          map[node][key] = transform(parseFloat(r.value[1]));
-        }
-      };
+    // Register each metric under every identifier the node has:
+    // IP address (instance label with port stripped) and node name (node label).
+    // This makes the lookup in /api/nodes work with either Kubernetes name or IP.
+    const _keys = r => {
+      const keys = new Set();
+      const ip = r.metric?.instance?.replace(/:.*/, '');
+      if (ip)             keys.add(ip);
+      if (r.metric?.node) keys.add(r.metric.node);
+      return [...keys];
+    };
 
-      _set(cpuRes,      'cpuUsagePct',   v => +(v * 100).toFixed(1));
-      _set(memTotalRes, 'memTotalBytes', v => v);
-      _set(memAvailRes, 'memAvailBytes', v => v);
-      _set(diskTotalRes,'diskTotalBytes',v => v);
-      _set(diskAvailRes,'diskAvailBytes',v => v);
-      _set(netRxRes,    'netRxBytesPerSec', v => +v.toFixed(0));
-      _set(netTxRes,    'netTxBytesPerSec', v => +v.toFixed(0));
-
-      // Compute derived fields
-      for (const m of Object.values(map)) {
-        if (m.memTotalBytes && m.memAvailBytes) {
-          m.memUsedBytes = m.memTotalBytes - m.memAvailBytes;
-          m.memUsedPct   = +((m.memUsedBytes / m.memTotalBytes) * 100).toFixed(1);
-        }
-        if (m.diskTotalBytes && m.diskAvailBytes) {
-          m.diskUsedBytes = m.diskTotalBytes - m.diskAvailBytes;
-          m.diskUsedPct   = +((m.diskUsedBytes / m.diskTotalBytes) * 100).toFixed(1);
+    const _set = (res, key, transform) => {
+      for (const r of settled(res)) {
+        const v = transform(parseFloat(r.value[1]));
+        for (const k of _keys(r)) {
+          if (!map[k]) map[k] = {};
+          map[k][key] = v;
         }
       }
+    };
 
-      this._cache.set(cacheKey, { data: map, expiresAt: Date.now() + CACHE_TTL_MS });
-      return map;
-    } catch {
-      return null;
+    _set(cpuR,      'cpuUsagePct',      v => +(v * 100).toFixed(1));
+    _set(memTotalR, 'memTotalBytes',    v => v);
+    _set(memAvailR, 'memAvailBytes',    v => v);
+    _set(diskTotalR,'diskTotalBytes',   v => v);
+    _set(diskAvailR,'diskAvailBytes',   v => v);
+    _set(netRxR,    'netRxBytesPerSec', v => +v.toFixed(0));
+    _set(netTxR,    'netTxBytesPerSec', v => +v.toFixed(0));
+
+    // Compute derived fields
+    for (const m of Object.values(map)) {
+      if (m.memTotalBytes && m.memAvailBytes) {
+        m.memUsedBytes = m.memTotalBytes - m.memAvailBytes;
+        m.memUsedPct   = +((m.memUsedBytes / m.memTotalBytes) * 100).toFixed(1);
+      }
+      if (m.diskTotalBytes && m.diskAvailBytes) {
+        m.diskUsedBytes = m.diskTotalBytes - m.diskAvailBytes;
+        m.diskUsedPct   = +((m.diskUsedBytes / m.diskTotalBytes) * 100).toFixed(1);
+      }
     }
+
+    this._cache.set(cacheKey, { data: map, expiresAt: Date.now() + CACHE_TTL_MS });
+    return map;
   }
 
   // ── Pod aggregation ──────────────────────────────────────────────────────────

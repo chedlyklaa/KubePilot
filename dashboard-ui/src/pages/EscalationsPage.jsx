@@ -92,7 +92,7 @@ export default function EscalationsPage() {
   const visibleEscalations = useMemo(() => {
     let result = escalations
     if (filters.statuses.length > 0) result = result.filter(e => filters.statuses.includes(e.status))
-    if (filters.userIds.length  > 0) result = result.filter(e => filters.userIds.includes(e.assignedTo?.userId ?? '__unassigned__'))
+    if (filters.userIds.length  > 0) result = result.filter(e => filters.userIds.includes(e.assignedTo?.email ?? '__unassigned__'))
     if (filters.dateFrom) result = result.filter(e => new Date(e.createdAt).toISOString().slice(0, 10) >= filters.dateFrom)
     if (filters.dateTo)   result = result.filter(e => new Date(e.createdAt).toISOString().slice(0, 10) <= filters.dateTo)
 
@@ -171,7 +171,10 @@ export default function EscalationsPage() {
                 <thead>
                   <tr>
                     <th>Issue</th>
+                    <th>Cluster</th>
+                    <th>Node</th>
                     <th>Namespace</th>
+                    <th>Pod</th>
                     <th>Attempts</th>
                     <th className="th-sortable" onClick={() => toggleSort('status')}>Status <SortIcon col="status" /></th>
                     <th className="th-sortable" onClick={() => toggleSort('assignee')}>Handled By <SortIcon col="assignee" /></th>

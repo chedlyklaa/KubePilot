@@ -2,18 +2,21 @@ import { useState, useRef, useEffect } from 'react'
 import { apiFetch } from '../lib/api'
 import { RISK_COLOR, CATEGORY_ICON } from '../constants'
 
+// Terminal = turn is finished and should be persisted; it breaks the clarification thread.
 const TERMINAL = new Set(['done', 'denied', 'error'])
 
-// Strip ephemeral states before storing so reloaded turns render cleanly
+// Strip ephemeral states before storing so reloaded turns render cleanly.
 function cleanTurn(t) {
   return {
-    id:        t.id,
-    userInput: t.userInput,
-    status:    t.status,
-    plan:      t.plan   ?? null,
-    result:    t.result ?? null,
-    error:     t.error  ?? null,
-    recovery:  t.recovery?.status === 'ready' ? t.recovery : null,
+    id:          t.id,
+    userInput:   t.userInput,
+    status:      t.status,
+    plan:        t.plan    ?? null,
+    result:      t.result  ?? null,
+    error:       t.error   ?? null,
+    recovery:    t.recovery?.status === 'ready' ? t.recovery : null,
+    // Persist clarifying turns so the thread is readable on reload
+    ...(t.status === 'clarifying' ? { clarifyingQuestion: t.plan?.question ?? null } : {}),
   }
 }
 
@@ -22,6 +25,7 @@ export default function CommandChat() {
   const [input,   setInput]   = useState('')
   const [busy,    setBusy]    = useState(false)
   const [loaded,  setLoaded]  = useState(false)
+  const [threadId, setThreadId] = useState(1)
   const bottomRef  = useRef(null)
   const turnsRef   = useRef(turns)
   const saveTimer  = useRef(null)
@@ -40,10 +44,11 @@ export default function CommandChat() {
       .finally(() => setLoaded(true))
   }, [])
 
-  // Debounced auto-save: 1.5s after any turns change, once loaded
+  // Debounced auto-save: 1.5 s after any turns change, once loaded.
+  // Only save terminal turns to avoid persisting mid-stream states.
   useEffect(() => {
     if (!loaded) return
-    const terminal = turns.filter(t => TERMINAL.has(t.status))
+    const terminal = turns.filter(t => TERMINAL.has(t.status) || t.status === 'clarifying')
     if (terminal.length === 0) return
     clearTimeout(saveTimer.current)
     saveTimer.current = setTimeout(() => {
@@ -66,23 +71,61 @@ export default function CommandChat() {
   const patchById = (id, fn) =>
     setTurns(prev => prev.map(t => t.id === id ? fn(t) : t))
 
+  // Collect all clarifying turns in the current thread (from last terminal turn onward).
+  // Passed to LLM2 so it has full conversation context, not just the latest answer.
+  function buildConversationHistory() {
+    const all = turnsRef.current
+    let threadStart = 0
+    for (let i = all.length - 1; i >= 0; i--) {
+      if (TERMINAL.has(all[i].status)) { threadStart = i + 1; break }
+    }
+    return all.slice(threadStart)
+      .filter(t => t.status === 'clarifying')
+      .map(t => ({ userMessage: t.userInput, question: t.plan?.question ?? null }))
+  }
+
   async function send() {
     const order = input.trim()
     if (!order || busy) return
     setInput(''); setBusy(true)
 
-    const turn = { id: Date.now(), userInput: order, status: 'thinking', plan: null, result: null, error: null, recovery: null }
+    const lastTurn = turnsRef.current[turnsRef.current.length - 1]
+    const pendingRequest = lastTurn?.status === 'clarifying'
+      ? (lastTurn.plan?.request ?? null)
+      : null
+    const conversationHistory = pendingRequest ? buildConversationHistory() : []
+
+    const turn = {
+      id:        Date.now(),
+      threadId,
+      userInput: order,
+      status:    'thinking',
+      plan:      null,
+      result:    null,
+      error:     null,
+      recovery:  null,
+    }
     setTurns(p => [...p, turn])
 
     try {
-      const res  = await apiFetch('/api/command/interpret', { method: 'POST', body: { order } })
+      const res  = await apiFetch('/api/command/interpret', {
+        method: 'POST',
+        body:   { order, pendingRequest, conversationHistory },
+      })
       const data = await res.json()
+
       if (!res.ok) {
         patchLast(t => ({ ...t, status: 'error', error: data.error ?? 'Interpretation failed', recovery: null }))
         setBusy(false)
         return
       }
-      patchLast(t => ({ ...t, status: 'awaiting_approval', plan: data }))
+      // ── Phase 7: handle clarification response ────────────────────────────
+      if (data.type === 'clarification') {
+        patchLast(t => ({ ...t, status: 'clarifying', plan: data }))
+      } else {
+        // 'command' or 'provision' — proceed to approval
+        patchLast(t => ({ ...t, status: 'awaiting_approval', plan: data }))
+      }
     } catch (err) {
       patchLast(t => ({ ...t, status: 'error', error: err.message, recovery: null }))
     }
@@ -136,7 +179,7 @@ export default function CommandChat() {
               error: data.error ?? 'minikube start failed — check logs above',
             }))
           }
-        } catch { /* network hiccup — keep polling */ }
+        } catch (_e) { /* network hiccup — keep polling */ }
       }, 2000)
 
       return
@@ -169,7 +212,7 @@ export default function CommandChat() {
         ...t,
         recovery: res.ok ? { status: 'ready', ...data } : { status: 'failed' },
       }))
-    } catch {
+    } catch (_e) {
       patchById(id, t => ({ ...t, recovery: { status: 'failed' } }))
     }
   }
@@ -197,7 +240,22 @@ export default function CommandChat() {
     patchById(id, t => ({ ...t, status: 'denied' }))
   }
 
+  function cancelOperation() {
+    const last = turnsRef.current[turnsRef.current.length - 1]
+    if (last?.status === 'clarifying') {
+      patchById(last.id, t => ({ ...t, status: 'denied' }))
+    }
+    setThreadId(t => t + 1)
+    setInput('')
+  }
+
   const onKeyDown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }
+
+  // Determine placeholder hint based on context
+  const inThread = turns.length > 0 && turns[turns.length - 1]?.status === 'clarifying'
+  const inputPlaceholder = inThread
+    ? 'Type your answer…'
+    : 'e.g. restart nginx in default namespace…'
 
   return (
     <div className="cmd-chat">
@@ -215,13 +273,41 @@ export default function CommandChat() {
           </div>
         )}
 
-        {turns.map(t => (
+        {turns.map((t, idx) => (
           <div key={t.id} className="cmd-turn">
+            {idx > 0 && t.threadId !== turns[idx - 1].threadId && (
+              <div className="cmd-thread-sep"><span>New operation</span></div>
+            )}
             <div className="cmd-bubble-user">{t.userInput}</div>
 
             {t.status === 'thinking' && (
               <div className="cmd-bubble-agent">
                 <span className="thinking-dots"><span /><span /><span /></span> Analyzing…
+              </div>
+            )}
+
+            {/* ── Phase 7: clarification bubble ──────────────────────────── */}
+            {t.status === 'clarifying' && t.plan && (
+              <div className="cmd-bubble-agent cmd-clarify">
+                <div className="cmd-clarify-icon">❓</div>
+                <div className="cmd-clarify-body">
+                  <p className="cmd-clarify-question">{t.plan.question}</p>
+                  {t.plan.missingFields?.length > 0 && (
+                    <div className="cmd-clarify-fields">
+                      <span className="cmd-clarify-fields-label">Needed:</span>
+                      {t.plan.missingFields.map(f => (
+                        <span key={f} className="cmd-clarify-field-chip">{f.replace(/_/g, ' ')}</span>
+                      ))}
+                    </div>
+                  )}
+                  {t.plan.ambiguousCandidates?.length > 0 && (
+                    <div className="cmd-clarify-candidates">
+                      {t.plan.ambiguousCandidates.map(c => (
+                        <span key={c} className="cmd-clarify-candidate-chip">{c}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
@@ -325,13 +411,19 @@ export default function CommandChat() {
         <div ref={bottomRef} />
       </div>
 
+      {inThread && (
+        <div className="cmd-cancel-bar">
+          <span className="cmd-cancel-hint">Clarification in progress</span>
+          <button className="cmd-cancel-btn" onClick={cancelOperation}>Cancel operation</button>
+        </div>
+      )}
       <div className="cmd-chat-input-row">
         <input
           className="cmd-input"
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="e.g. restart nginx in default namespace…"
+          placeholder={inputPlaceholder}
           disabled={busy}
         />
         <button className="btn-primary cmd-send" onClick={send} disabled={busy || !input.trim()}>
