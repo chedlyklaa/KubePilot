@@ -68,6 +68,8 @@ class PlannerAgent {
 issueType:    ${issue.type}
 pod:          ${issue.podName ?? 'N/A'}
 deployment:   ${issue.deployment ?? 'none — bare pod'}
+ownerKind:    ${issue.ownerKind ?? 'none (bare pod)'}
+controller:   ${issue.controllerName ?? 'none'}
 namespace:    ${issue.namespace ?? 'default'}
 nodeName:     ${issue.nodeName ?? 'unknown'}
 oomKilled:    ${issue.oomKilled ?? false}
@@ -82,32 +84,67 @@ ${corrCtx}
 ${pastCtx}
 ${rulesCtx}
 ${investigationCtx}${changeCtx}${capacityCtx}${rcaCtx}
-ACTION RULES (mandatory)
-Pod actions:
-- increase_memory : oomKilled=true OR exitCode=137. Requires human approval.
-- rollback        : deployment exists AND broken image or bad config pushed recently.
-- restart         : deployment exists AND transient crash (not OOM, not bad image).
-- delete_pod      : bare pod ONLY (no deployment).
-- scale_down      : deployment exists AND resource pressure from excess replicas.
-Node actions (only when node is the root cause):
-- cordon_node     : node has conditions (NotReady/Pressure) OR multiple pods failing on same node.
-- drain_node      : node needs maintenance or is critically degraded. High blast radius — use sparingly.
-- uncordon_node   : node has recovered and should be re-enabled for scheduling.
-- noop            : no safe automated fix available.
+ACTION DECISION TREE — follow this top-to-bottom, pick the FIRST match:
 
-Exit code guidance (use with logs and rollout history to decide):
-- exitCode=127 : binary not found in image — likely a bad image push or wrong entrypoint.
-                 If deployment exists AND rollout history shows a recent revision change → rollback.
-                 If bare pod → delete_pod (force re-pull with correct image).
-- exitCode=126 : permission denied — likely an init script or entrypoint misconfiguration.
-                 If deployment exists → rollback. If bare pod → delete_pod.
-- exitCode=137 : OOM kill — always increase_memory (covered by oomKilled rule above).
-- exitCode=1/2 : generic error — restart if logs show transient failure; rollback if logs show
-                 config or image error introduced by a recent change.
-- exitCode=null: insufficient signal — rely on previous logs and describe events if available.
+Step 1: Is oomKilled=true OR exitCode=137?
+  YES → increase_memory (this is the ONLY situation where increase_memory is correct)
+  NO  → continue to step 2
+
+Step 2: What is the ownerKind?
+  Job → noop (Jobs run to completion, do not interfere)
+  none (bare pod) → noop (no controller to recreate it; escalate for human decision)
+  Deployment, StatefulSet, DaemonSet → continue to step 3
+
+Step 3: Is the issue ImagePullBackOff or ErrImagePull?
+  YES → noop (kubectl cannot fix a missing image or bad credentials)
+  NO  → continue to step 4
+
+Step 4: Was there a recent deployment change? (check rollout history, investigationContext)
+  YES → rollback (revert to the last working revision)
+  NO  → continue to step 5
+
+Step 5: Is the crash transient (exit code 1/2, application error, connection refused)?
+  YES → restart (rollout restart recycles pods with same config)
+  NO  → continue to step 6
+
+Step 6: Is the exit code 126 or 127? (permission denied / binary not found)
+  YES and Deployment/StatefulSet → rollback (bad image or entrypoint)
+  YES and DaemonSet → restart (DaemonSets don't support rollout undo)
+  NO  → noop (unclear cause, escalate)
+
+IMPORTANT: increase_memory is ONLY for OOM kills (step 1). If oomKilled is false and exitCode is not 137, do NOT choose increase_memory — choose restart, rollback, or noop instead.
+
+Node actions (only when the node itself is the root cause):
+- cordon_node   : node has conditions (NotReady/Pressure) OR multiple pods failing on same node.
+- drain_node    : node critically degraded, needs to be emptied. High blast radius.
+- uncordon_node : node recovered, re-enable scheduling.
+- noop          : no safe automated fix available.
 
 deployment present: ${hasDeployment}
+ownerKind: ${issue.ownerKind ?? 'none'}
+has controller: ${!!issue.controllerName}
 oomKilled: ${issue.oomKilled ?? false}
+
+REFERENCE DECISIONS (learn the pattern, not the specifics):
+1. oomKilled=true, exitCode=137, ownerKind=Deployment
+   → {"action":"increase_memory","rootCause":"Container killed by OOM killer — memory limit too low"}
+   WHY: OOM is the ONLY reason to increase memory. Restart would crash again immediately.
+
+2. oomKilled=false, exitCode=1, ownerKind=Deployment, logs show "connection refused"
+   → {"action":"restart","rootCause":"Application crashed due to transient dependency failure"}
+   WHY: No OOM signal, so NOT increase_memory. Generic crash with a transient cause → restart.
+
+3. oomKilled=false, exitCode=1, ownerKind=Deployment, rollout history shows recent revision change
+   → {"action":"rollback","rootCause":"Application crash after recent deployment — likely bad config or image"}
+   WHY: Recent change + crash = correlation. Rollback to last known-good state.
+
+4. oomKilled=false, exitCode=1, ownerKind=none (bare pod)
+   → {"action":"noop","rootCause":"Bare pod crashed — no controller to restart it safely"}
+   WHY: No controller means restart/rollback/scale are impossible. Escalate for human.
+
+5. type=ImagePullBackOff, ownerKind=Deployment
+   → {"action":"noop","rootCause":"Image does not exist or registry credentials are missing"}
+   WHY: No kubectl action can fix a bad image reference. Human must update the manifest.
 
 Return ONLY valid JSON:
 {
@@ -117,7 +154,7 @@ Return ONLY valid JSON:
   "targetNode":    "node name if action is a node action, else null",
   "risk":          "LOW|MEDIUM|HIGH",
   "confidence":    0.0,
-  "rationale":     "why this action — cite node/event/correlation context if it influenced the choice"
+  "rationale":     "why this action"
 }`;
 
     const t0 = Date.now();
@@ -130,9 +167,16 @@ Return ONLY valid JSON:
     );
 
     let raw = '', usage = null;
+    const createParams = {
+      model: MODEL, temperature: 0.1, stream: true,
+      stream_options: { include_usage: true },
+      messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: prompt }],
+    };
+    try { createParams.response_format = { type: 'json_object' }; } catch {}
+
     try {
       ({ raw, usage } = await runLLMCall(
-        () => client.chat.completions.create({ model: MODEL, temperature: 0.1, stream: true, stream_options: { include_usage: true }, messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: prompt }] }),
+        () => client.chat.completions.create(createParams),
         { requiredFields: ['action', 'rootCause'] }
       ));
     } catch (err) {
@@ -215,9 +259,15 @@ Return ONLY valid JSON:
     console.log(`[PLANNER] node=${nodeIssue.nodeName}  type=${nodeIssue.type}  attempt=${attempt}  affectedPods=${affectedPods.length}`);
 
     let raw = '', usage = null;
+    const nodeParams = {
+      model: MODEL, temperature: 0.1, stream: true,
+      stream_options: { include_usage: true },
+      messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: prompt }],
+    };
+    try { nodeParams.response_format = { type: 'json_object' }; } catch {}
     try {
       ({ raw, usage } = await runLLMCall(
-        () => client.chat.completions.create({ model: MODEL, temperature: 0.1, stream: true, stream_options: { include_usage: true }, messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: prompt }] }),
+        () => client.chat.completions.create(nodeParams),
         { requiredFields: ['action', 'rootCause'] }
       ));
     } catch (err) {

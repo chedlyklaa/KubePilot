@@ -91,7 +91,6 @@ class FleetOrchestrator {
   }
 
   async runFleetCycle() {
-    // Apply any pending config reload before starting the cycle
     if (this._pendingReload) {
       this._pendingReload = false;
       this._reconcileAgents();
@@ -102,12 +101,29 @@ class FleetOrchestrator {
     console.log('====================================');
 
     const t0 = Date.now();
-
-    // Snapshot the agent list so mid-cycle reconciliation can't corrupt iteration
     const agents = [...this.clusterAgents];
-    for (const agent of agents) {
-      await agent.run();
-    }
+    const concurrency = parseInt(process.env.CLUSTER_CONCURRENCY || '3', 10);
+
+    // Run clusters concurrently with a concurrency cap
+    const queue = [...agents];
+    const running = new Set();
+
+    await new Promise(resolve => {
+      function next() {
+        if (queue.length === 0 && running.size === 0) return resolve();
+        while (queue.length > 0 && running.size < concurrency) {
+          const agent = queue.shift();
+          const p = agent.run().catch(err => {
+            console.error(`[ORCHESTRATOR] ${agent.name} failed: ${err.message}`);
+          }).finally(() => {
+            running.delete(p);
+            next();
+          });
+          running.add(p);
+        }
+      }
+      next();
+    });
 
     const duration = ((Date.now() - t0) / 1000).toFixed(2);
     console.log('\n====================================');

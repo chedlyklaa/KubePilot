@@ -100,16 +100,18 @@ class PolicyEngine {
       }
     }
 
-    // ── Rule 3: Deployment safety — delete_pod forbidden ──────────────────────
-    // A Deployment controller will immediately recreate a deleted pod; deleting it
-    // achieves nothing and burns an attempt slot.  Use restart or rollback instead.
-    if (deploymentExists && action === 'delete_pod') {
+    // ── Rule 3: Controller safety — delete_pod forbidden on managed pods ──────
+    // Any controller (Deployment, StatefulSet, DaemonSet) will recreate deleted pods.
+    const hasController = context.hasController ?? deploymentExists;
+    const ownerKind     = context.ownerKind ?? (deploymentExists ? 'Deployment' : null);
+
+    if (hasController && action === 'delete_pod') {
       blockedRules.push(
-        'POLICY_DEPLOYMENT_DELETE: delete_pod is forbidden when a Deployment controller exists — use restart or rollback'
+        `POLICY_CONTROLLER_DELETE: delete_pod forbidden when ${ownerKind ?? 'controller'} exists — use restart or rollback`
       );
       action = 'restart';
       if (status !== 'rejected') status = 'modified';
-      warnings.push('delete_pod overridden to restart — target is deployment-managed');
+      warnings.push(`delete_pod overridden to restart — target is ${ownerKind}-managed`);
     }
 
     // ── Rule 3a: scale_down requires a Deployment controller (all tiers) ────────
@@ -128,9 +130,9 @@ class PolicyEngine {
     // kubectl cannot fix a bad image URL or missing pull credentials.
     // Any action other than noop (or restart as a retry hint) is pointless here.
     if (issueType === 'ImagePullBackOff') {
-      if (action !== 'noop' && action !== 'restart') {
+      if (action !== 'noop') {
         blockedRules.push(
-          `POLICY_IMAGE_PULL: ImagePullBackOff only allows noop or restart — "${action}" is forbidden`
+          `POLICY_IMAGE_PULL: ImagePullBackOff only allows noop — "${action}" is forbidden (rollback/restart won't fix a missing image)`
         );
         action = 'noop';
         if (status !== 'rejected') status = 'modified';
@@ -173,6 +175,41 @@ class PolicyEngine {
         if (status !== 'rejected') status = 'modified';
         warnings.push('Retry protection triggered — escalation is recommended after repeated identical failures');
       }
+    }
+
+    // ── Rule 7: Bare pod delete_pod block ──────────────────────────────────
+    // A bare pod with no controller is truly one-shot.
+    // delete_pod destroys it permanently with no recreation.
+    if (action === 'delete_pod' && !hasController) {
+      blockedRules.push(
+        'POLICY_BARE_DELETE: delete_pod on unmanaged bare pod (no controller) — pod will be permanently destroyed with no recreation'
+      );
+      action = 'noop';
+      if (status !== 'rejected') status = 'modified';
+      warnings.push('delete_pod blocked on bare pod — escalation recommended; pod has no controller to recreate it');
+    }
+
+    // ── Rule 7b: Job pods — only noop allowed ─────────────────────────────
+    if (ownerKind === 'Job' && action !== 'noop') {
+      blockedRules.push(
+        `POLICY_JOB_ACTION: Jobs run to completion — "${action}" is not valid; only noop is allowed`
+      );
+      action = 'noop';
+      if (status !== 'rejected') status = 'modified';
+      warnings.push('Action overridden to noop — Job-managed pods should not be restarted or deleted');
+    }
+
+    // ── Rule 8: Change correlation constraint ────────────────────────────────
+    // When a recent deployment/config change is correlated with the failure,
+    // rollback is almost always the correct action. Block non-rollback actions
+    // unless the planner explicitly justified why rollback is wrong.
+    if (context.recentDeployment && deploymentExists && action !== 'rollback' && action !== 'noop') {
+      blockedRules.push(
+        `POLICY_CHANGE_CORR: recent deployment change detected — non-rollback action "${action}" blocked; rollback is the expected response`
+      );
+      action = 'rollback';
+      if (status !== 'rejected') status = 'modified';
+      warnings.push('Action overridden to rollback — a recent deployment change was correlated with this failure');
     }
 
     // ── Finalize ──────────────────────────────────────────────────────────────

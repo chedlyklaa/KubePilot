@@ -14,10 +14,22 @@ class PodAnalyzer {
       // Completed = Job/init container finished cleanly. Not an issue.
      
       const ownerRefs  = pod.metadata?.ownerReferences ?? [];
-      const replicaSet = ownerRefs.find((r) => r.kind === "ReplicaSet");
-      const deployment = replicaSet
-        ? PodAnalyzer._deploymentFromReplicaSet(replicaSet.name)
-        : null; // bare pod — no deployment
+      const { deployment, ownerKind, controllerName } = PodAnalyzer._extractOwner(ownerRefs);
+
+      // Startup grace period: skip pods younger than 30s that have no explicit
+      // error state yet (still in Pending/ContainerCreating). This prevents
+      // false positives during normal deployment rollouts.
+      const podAgeSecs = pod.metadata?.creationTimestamp
+        ? (Date.now() - new Date(pod.metadata.creationTimestamp).getTime()) / 1000
+        : Infinity;
+      const hasExplicitError = (pod.status?.containerStatuses ?? []).some(cs =>
+        cs.state?.waiting?.reason === 'CrashLoopBackOff' ||
+        cs.state?.waiting?.reason === 'ImagePullBackOff' ||
+        cs.state?.waiting?.reason === 'ErrImagePull' ||
+        cs.state?.terminated?.reason === 'OOMKilled' ||
+        (cs.state?.terminated && cs.state.terminated.exitCode !== 0)
+      );
+      if (podAgeSecs < 30 && !hasExplicitError && phase !== 'Running') continue;
 
       for (const cs of pod.status?.containerStatuses ?? []) {
         const waiting    = cs.state?.waiting;
@@ -36,7 +48,7 @@ class PodAnalyzer {
             type:          "CrashLoopBackOff",
             podName,
             namespace,
-            deployment,    // may be null for bare pods
+            deployment, ownerKind, controllerName,
             containerName: cs.name,
             restartCount:  cs.restartCount,
             // Pass OOM signal explicitly so LLM/fix logic can use it
@@ -52,7 +64,7 @@ class PodAnalyzer {
             type:          "OOMKilled",
             podName,
             namespace,
-            deployment,
+            deployment, ownerKind, controllerName,
             containerName: cs.name,
             restartCount:  cs.restartCount,
             oomKilled:     true,
@@ -74,7 +86,7 @@ class PodAnalyzer {
               type:          "ContainerError",
               podName,
               namespace,
-              deployment,
+              deployment, ownerKind, controllerName,
               containerName: cs.name,
               exitCode:      terminated.exitCode,
               reason:        terminated.reason,
@@ -92,7 +104,7 @@ class PodAnalyzer {
             type:          "ImagePullBackOff",
             podName,
             namespace,
-            deployment,
+            deployment, ownerKind, controllerName,
             containerName: cs.name,
             message:       waiting.message ?? null,
           });
@@ -115,7 +127,7 @@ class PodAnalyzer {
             type:          'CrashLoopBackOff',
             podName,
             namespace,
-            deployment,
+            deployment, ownerKind, controllerName,
             containerName: ics.name,
             initContainer: true,
             restartCount:  ics.restartCount,
@@ -129,7 +141,7 @@ class PodAnalyzer {
               type:          'ContainerError',
               podName,
               namespace,
-              deployment,
+              deployment, ownerKind, controllerName,
               containerName: ics.name,
               initContainer: true,
               exitCode:      iTerminated.exitCode,
@@ -160,10 +172,38 @@ class PodAnalyzer {
         ? (Date.now() - new Date(pod.metadata.creationTimestamp).getTime()) / 1000
         : 0;
       const stuckPending =
-        phase === 'Pending' && !hasAnyStatuses && !!deployment && ageSecs > 60;
+        phase === 'Pending' && !hasAnyStatuses && ageSecs > 60;
 
+      // ── Unschedulable / FailedScheduling ─────────────────────────────────
+      // Detect pods stuck in Pending with impossible resource requests or
+      // scheduling constraints. These will never start without human intervention.
       if (
         !alreadyReported &&
+        phase === 'Pending' &&
+        !hasAnyStatuses &&
+        ageSecs > 45
+      ) {
+        const conditions = pod.status?.conditions ?? [];
+        const unschedulable = conditions.find(c =>
+          c.type === 'PodScheduled' && c.status === 'False' &&
+          (c.reason === 'Unschedulable' || c.reason === 'FailedScheduling')
+        );
+        if (unschedulable) {
+          issues.push({
+            type:       'Unschedulable',
+            podName,
+            namespace,
+            deployment, ownerKind, controllerName,
+            reason:     unschedulable.reason,
+            message:    unschedulable.message ?? 'Pod cannot be scheduled — insufficient resources or constraints',
+          });
+        }
+      }
+
+      const alreadyReported2 = issues.some((i) => i.podName === podName);
+
+      if (
+        !alreadyReported2 &&
         phase !== "Succeeded" &&
         phase !== "Running" &&
         (podReady?.status === "False" || stuckPending)
@@ -172,7 +212,7 @@ class PodAnalyzer {
           type:       "PodNotReady",
           podName,
           namespace,
-          deployment,
+          deployment, ownerKind, controllerName,
           reason:     podReady?.reason  ?? (stuckPending ? 'Pending'  : 'Unknown'),
           message:    podReady?.message ?? (stuckPending
             ? 'Pod stuck in Pending with no container activity — possible missing Secret, ConfigMap, or volume'
@@ -184,11 +224,27 @@ class PodAnalyzer {
     return issues;
   }
 
-  // "my-deployment-6c8fb8d957" → "my-deployment"
-  // Strips the last ReplicaSet hash (10 hex chars).
-  static _deploymentFromReplicaSet(rsName) {
-    // Strip the trailing pod-template-hash segment (variable length hex)
-    return rsName.replace(/-[a-z0-9]+$/, '') || null;
+  static _extractOwner(ownerRefs) {
+    if (!ownerRefs?.length) return { deployment: null, ownerKind: null, controllerName: null };
+
+    const owner = ownerRefs[0];
+    const kind = owner.kind;
+    const name = owner.name;
+
+    if (kind === 'ReplicaSet') {
+      const depName = name.replace(/-[a-z0-9]+$/, '') || null;
+      return { deployment: depName, ownerKind: 'Deployment', controllerName: depName };
+    }
+    if (kind === 'StatefulSet') {
+      return { deployment: null, ownerKind: 'StatefulSet', controllerName: name };
+    }
+    if (kind === 'DaemonSet') {
+      return { deployment: null, ownerKind: 'DaemonSet', controllerName: name };
+    }
+    if (kind === 'Job') {
+      return { deployment: null, ownerKind: 'Job', controllerName: name };
+    }
+    return { deployment: null, ownerKind: kind, controllerName: name };
   }
 }
 

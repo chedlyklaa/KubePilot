@@ -20,8 +20,11 @@ const REASON_CATEGORY = {
   ImagePullBackOff:        'image',
 };
 
-// Events older than this are ignored
+// Events older than this are ignored entirely
 const EVENT_MAX_AGE_MS = parseInt(process.env.EVENT_MAX_AGE_MS || String(30 * 60 * 1000), 10);
+// Persistence threshold: events must be recurring (count >= N) OR very recent to be actionable
+const EVENT_MIN_COUNT       = parseInt(process.env.EVENT_MIN_COUNT || '3', 10);
+const EVENT_RECENT_WINDOW_MS = parseInt(process.env.EVENT_RECENT_WINDOW_MS || String(2 * 60 * 1000), 10);
 
 class EventAnalyzer {
   /**
@@ -40,6 +43,10 @@ class EventAnalyzer {
 
       const lastSeen = new Date(ev.lastTimestamp || ev.eventTime || 0).getTime();
       if (lastSeen < cutoff) continue;
+
+      const count = ev.count ?? 1;
+      const isRecent = (now - lastSeen) < EVENT_RECENT_WINDOW_MS;
+      if (count < EVENT_MIN_COUNT && !isRecent) continue;
 
       const reason    = ev.reason ?? 'Unknown';
       const category  = REASON_CATEGORY[reason] ?? 'other';

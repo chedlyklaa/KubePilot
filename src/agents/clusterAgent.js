@@ -68,6 +68,12 @@ class ClusterAgent {
     this.attemptCounts    = new Map();  // issueKey → number of failed attempts
     this.episodeTimelines = new Map();  // issueKey → { fingerprint, context, timeline[] }
 
+    // ── Run lock — prevents overlapping cycles on the same cluster ──────
+    this._running = false;
+    // ── Per-resource lock — prevents two pipelines racing the same resource ──
+    this._resourceLocks = new Map();
+    this.ISSUE_CONCURRENCY = parseInt(process.env.ISSUE_CONCURRENCY || '3', 10);
+
     // ── Node-level tracking ────────────────────────────────────────────────
     this.nodeHistory      = {};         // nodeName → { transitions[] } for flapping detection
     this.nodeDrainAttempts = new Map(); // nodeName → drain attempt count
@@ -78,7 +84,20 @@ class ClusterAgent {
 
   // ── Called once per cycle by orchestrator ─────────────────────────────────
   async run() {
-    const cycleStartedAt = new Date(); // upper-bound timestamp for change correlation window
+    if (this._running) {
+      console.log(`[${this.name}] [SKIP] Previous cycle still running — skipping this tick`);
+      return;
+    }
+    this._running = true;
+    try {
+      await this._runCycle();
+    } finally {
+      this._running = false;
+    }
+  }
+
+  async _runCycle() {
+    const cycleStartedAt = new Date();
     console.log(`\n${'='.repeat(50)}`);
     console.log(`[${this.name}] Cycle started`);
     console.log(`${'='.repeat(50)}`);
@@ -177,13 +196,13 @@ class ClusterAgent {
       });
     }
 
-    // ── Handle pod issues ─────────────────────────────────────────────────
+    // ── Handle pod issues (concurrency-capped with per-resource locks) ────
     if (annotatedPodIssues.length === 0) {
       console.log(`[${this.name}] All pods healthy`);
     } else {
       console.log(`[${this.name}] ${annotatedPodIssues.length} pod issue(s) detected`);
-      for (const issue of annotatedPodIssues) {
-        // Determine node-level context relevant to this pod's node
+
+      const issueQueue = annotatedPodIssues.map(issue => {
         const podNodeIssues  = issue.nodeName
           ? allNodeIssues.filter(n => n.nodeName === issue.nodeName)
           : [];
@@ -193,17 +212,14 @@ class ClusterAgent {
         const corrFindings   = correlation.findings.filter(f =>
           f.nodeName === issue.nodeName || f.level === 'cluster'
         );
+        return { issue, ctx: {
+          nodeIssues: podNodeIssues, nodeMetrics: podNodeMetrics, events,
+          correlationFindings: corrFindings, clusterFindings: clusterIssues,
+          eventsJson: eventsJson ?? { items: [] }, cycleStartedAt,
+        }};
+      });
 
-        await this._handle(issue, {
-          nodeIssues:          podNodeIssues,
-          nodeMetrics:         podNodeMetrics,
-          events,
-          correlationFindings: corrFindings,
-          clusterFindings:     clusterIssues,
-          eventsJson:          eventsJson ?? { items: [] }, // raw EventList for ChangeCorrelationEngine
-          cycleStartedAt,                                   // incident detection upper-bound timestamp
-        });
-      }
+      await this._processIssuePool(issueQueue);
     }
 
     // ── Capacity Forecasting (fire-and-forget — never delays remediation) ─────
@@ -218,9 +234,44 @@ class ClusterAgent {
     console.log(`[${this.name}] Cycle complete\n`);
   }
 
+  // ── Concurrency-capped issue worker pool with per-resource locks ──────────
+  async _processIssuePool(items) {
+    const queue = [...items];
+    const running = new Set();
+    const self = this;
+
+    return new Promise(resolve => {
+      function next() {
+        if (queue.length === 0 && running.size === 0) return resolve();
+        while (queue.length > 0 && running.size < self.ISSUE_CONCURRENCY) {
+          const { issue, ctx } = queue.shift();
+          const resourceKey = `${issue.namespace}/${issue.deployment ?? issue.podName}`;
+
+          // Per-resource lock — skip if another pipeline is working on the same resource
+          if (self._resourceLocks.has(resourceKey)) {
+            console.log(`[${self.name}] [POOL] Skipping ${resourceKey} — already being handled`);
+            next();
+            continue;
+          }
+
+          self._resourceLocks.set(resourceKey, true);
+          const p = self._handle(issue, ctx)
+            .catch(err => console.error(`[${self.name}] [POOL] ${resourceKey} failed: ${err.message}`))
+            .finally(() => {
+              self._resourceLocks.delete(resourceKey);
+              running.delete(p);
+              next();
+            });
+          running.add(p);
+        }
+      }
+      next();
+    });
+  }
+
   // ── 12-step self-improving pipeline (pod issues) ──────────────────────────
   async _handle(issue, nodeCtx = {}) {
-    const target = issue.deployment ?? issue.podName;
+    const target = issue.controllerName ?? issue.deployment ?? issue.podName;
     const key    = `${issue.type}:${target}:${issue.namespace}`;
 
     const last = this.cooldowns.get(key);
@@ -464,14 +515,17 @@ class ClusterAgent {
       risk:   diagnosis.risk,
     };
     const policyCtx = {
-      cluster:          this.name,
-      issueType:        issue.type,
-      tier:             this.tier,
-      criticality:      this.criticality ?? null,
-      deploymentExists: !!issue.deployment,
-      exitCode:         issue.exitCode   ?? null,
-      oomKilled:        issue.oomKilled  ?? false,
-      attemptHistory:   this.episodeTimelines.get(key)?.timeline ?? [],
+      cluster:           this.name,
+      issueType:         issue.type,
+      tier:              this.tier,
+      criticality:       this.criticality ?? null,
+      deploymentExists:  !!issue.deployment,
+      hasController:     !!issue.controllerName,
+      ownerKind:         issue.ownerKind ?? null,
+      exitCode:          issue.exitCode   ?? null,
+      oomKilled:         issue.oomKilled  ?? false,
+      attemptHistory:    this.episodeTimelines.get(key)?.timeline ?? [],
+      recentDeployment:  !!changeCorrelation,
     };
 
     const policyResult = this.policyEngine.validate(policyPlan, policyCtx);
@@ -620,7 +674,7 @@ class ClusterAgent {
       console.warn(`[${this.name}] [VALIDATE] kubectl wait timed out or errored — validating anyway`);
     }
 
-    const resolved = await this._validateFix(issue);
+    const resolved = await this._validateFix(issue, diagnosis.action);
 
     if (resolved) {
       console.log(`[${this.name}] [RESOLVED] ${key} fixed after ${attempt} attempt(s)`);
@@ -863,31 +917,35 @@ class ClusterAgent {
       return;
     }
 
+    const ownerKind = issue.ownerKind ?? (dep ? 'Deployment' : null);
+    const controller = issue.controllerName ?? dep;
+    const resourceType = ownerKind === 'StatefulSet' ? 'statefulset'
+                       : ownerKind === 'DaemonSet'   ? 'daemonset'
+                       : 'deployment';
+
     switch (action) {
       case 'restart':
-        if (!dep) throw new Error('restart requires a deployment');
-        console.log(`[${this.name}] kubectl rollout restart deployment/${dep} -n ${ns}`);
+        if (!controller) throw new Error('restart requires a controller');
+        console.log(`[${this.name}] kubectl rollout restart ${resourceType}/${controller} -n ${ns}`);
         await this._runSafeCommand(
-          `kubectl --context=${this.context} rollout restart deployment/${dep} -n ${ns}`
+          `kubectl --context=${this.context} rollout restart ${resourceType}/${controller} -n ${ns}`
         );
         break;
 
       case 'rollback':
-        if (!dep) throw new Error('rollback requires a deployment');
-        console.log(`[${this.name}] kubectl rollout undo deployment/${dep} -n ${ns}`);
+        if (!controller || ownerKind === 'DaemonSet') throw new Error('rollback requires a Deployment or StatefulSet');
+        console.log(`[${this.name}] kubectl rollout undo ${resourceType}/${controller} -n ${ns}`);
         await this._runSafeCommand(
-          `kubectl --context=${this.context} rollout undo deployment/${dep} -n ${ns}`
+          `kubectl --context=${this.context} rollout undo ${resourceType}/${controller} -n ${ns}`
         );
         break;
 
       case 'increase_memory': {
-        if (!dep) throw new Error('increase_memory requires a deployment');
-        // Read current memory limit so we increase from the real baseline, not a hardcoded 256Mi.
-        // The GET is read-only so it bypasses the write sanitizer intentionally.
+        if (!controller) throw new Error('increase_memory requires a controller');
         let currentLimitMi = 128;
         try {
           const raw = await kubectl.runCommand(
-            `kubectl --context=${this.context} get deployment/${dep} -n ${ns}` +
+            `kubectl --context=${this.context} get ${resourceType}/${controller} -n ${ns}` +
             ` -o jsonpath={.spec.template.spec.containers[0].resources.limits.memory}`
           );
           if (raw.trim()) currentLimitMi = _parseMiB(raw.trim());
@@ -895,9 +953,9 @@ class ClusterAgent {
 
         const newLimitMi   = Math.max(256, Math.ceil(currentLimitMi * 1.5));
         const newRequestMi = Math.ceil(newLimitMi * 0.5);
-        console.log(`[${this.name}] memory ${currentLimitMi}Mi → ${newLimitMi}Mi (×1.5) for deployment/${dep} -n ${ns}`);
+        console.log(`[${this.name}] memory ${currentLimitMi}Mi → ${newLimitMi}Mi (×1.5) for ${resourceType}/${controller} -n ${ns}`);
         await this._runSafeCommand(
-          `kubectl --context=${this.context} set resources deployment/${dep}` +
+          `kubectl --context=${this.context} set resources ${resourceType}/${controller}` +
           ` -n ${ns} --limits=memory=${newLimitMi}Mi --requests=memory=${newRequestMi}Mi`
         );
         break;
@@ -912,13 +970,10 @@ class ClusterAgent {
         break;
 
       case 'scale_down':
-        // Policy (Rule 3a) rejects scale_down when deploymentExists is false, so dep should
-        // always be set here. Throw rather than silently falling back to delete_pod, which
-        // would execute a different action than what the risk/approval gates evaluated.
-        if (!dep) throw new Error('scale_down requires a Deployment — bare pod scale is not supported');
-        console.log(`[${this.name}] kubectl scale deployment/${dep} --replicas=1 -n ${ns}`);
+        if (!controller) throw new Error('scale_down requires a controller');
+        console.log(`[${this.name}] kubectl scale ${resourceType}/${controller} --replicas=1 -n ${ns}`);
         await this._runSafeCommand(
-          `kubectl --context=${this.context} scale deployment/${dep} --replicas=1 -n ${ns}`
+          `kubectl --context=${this.context} scale ${resourceType}/${controller} --replicas=1 -n ${ns}`
         );
         break;
 
@@ -928,11 +983,27 @@ class ClusterAgent {
   }
 
   // ── Re-check if pod issue is gone after fix ──────────────────────────────
-  async _validateFix(issue) {
+  async _validateFix(issue, action) {
     try {
       const pods   = await kubectl.getPods(issue.namespace, this.context, true);
       const issues = PodAnalyzer.extractIssues(pods);
-      const match  = i =>
+
+      // For delete_pod: the original pod is gone. Check if a controller
+      // recreated a replacement (Job, ReplicaSet, etc.) that is now healthy.
+      if (action === 'delete_pod') {
+        const originalGone = !(pods.items ?? []).some(p => p.metadata?.name === issue.podName);
+        if (!originalGone) return false;
+
+        // If there's a deployment, check if its pods are healthy
+        if (issue.deployment) {
+          const depIssues = issues.filter(i => i.deployment === issue.deployment);
+          return depIssues.length === 0;
+        }
+        // Bare pod — deletion is the terminal action, pod is gone = "resolved"
+        return true;
+      }
+
+      const match = i =>
         i.type === issue.type &&
         (issue.deployment ? i.deployment === issue.deployment : i.podName === issue.podName);
       return !issues.some(match);
@@ -1072,6 +1143,25 @@ class ClusterAgent {
       console.log(`[${this.name}] [DRY-RUN] Simulating "${action}" on node ${nodeName}`);
       return;
     }
+
+    if (action === 'cordon_node' || action === 'drain_node') {
+      try {
+        const nodesJson = await kubectl.getNodes(this.context);
+        const schedulableNodes = (nodesJson.items ?? []).filter(n => {
+          const unschedulable = n.spec?.unschedulable === true;
+          const name = n.metadata?.name;
+          return !unschedulable && name !== nodeName;
+        });
+        if (schedulableNodes.length === 0) {
+          console.warn(`[${this.name}] [NODE-FIX] BLOCKED: ${action} on "${nodeName}" — it is the only schedulable node. Cordoning would make all pods unschedulable.`);
+          return;
+        }
+      } catch (err) {
+        console.warn(`[${this.name}] [NODE-FIX] Cannot verify node count, blocking ${action} as safety precaution: ${err.message}`);
+        return;
+      }
+    }
+
     switch (action) {
       case 'cordon_node':
         await kubectl.cordonNode(nodeName, this.context);

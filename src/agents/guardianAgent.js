@@ -109,13 +109,23 @@ class GuardianAgent {
       ? `\n━━━ SUPPORTING RCA ━━━\n${rca.suspected_cause} (confidence: ${rca.confidence}, risk: ${rca.risk_level}). Factor this into your safety assessment.`
       : '';
 
+    const ownerType = issue.deployment ? 'Deployment' :
+                      issue.ownerKind  ? issue.ownerKind : 'none (bare pod)';
+    const replicaInfo = issue.replicaCount != null
+      ? `Replicas:      ${issue.replicaCount}`
+      : issue.deployment
+        ? 'Replicas:      unknown'
+        : 'Replicas:      n/a (bare pod — single instance, no controller will recreate it)';
+
     const userPrompt = `CLUSTER: ${this.clusterName} (tier: ${this.tier})
 
 ━━━ DETECTED ISSUE ━━━
 Type:          ${issue.type}
 Pod:           ${issue.podName}
 Namespace:     ${issue.namespace ?? 'default'}
+Owner:         ${ownerType}
 Deployment:    ${issue.deployment ?? 'none — this is a bare pod'}
+${replicaInfo}
 Container:     ${issue.containerName ?? 'unknown'}
 Restart count: ${issue.restartCount ?? 0}
 OOM killed:    ${issue.oomKilled ?? false}

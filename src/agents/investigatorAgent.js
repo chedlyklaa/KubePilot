@@ -16,8 +16,51 @@ const client = new OpenAI({
 const MODEL    = process.env.OPENAI_MODEL;
 const PROM_URL = process.env.PROMETHEUS_URL || 'http://localhost:9090';
 
+function buildDeterministicFallback(issue) {
+  const type = issue.type ?? 'Unknown';
+  const exit = issue.exitCode;
+  const oom  = issue.oomKilled;
+
+  let cause, focus;
+  if (oom || exit === 137) {
+    cause = `OOMKilled — container exceeded memory limit (exit code ${exit ?? 137})`;
+    focus = 'increase memory limits or fix memory leak';
+  } else if (exit === 127) {
+    cause = 'Binary not found in container image (exit code 127) — wrong entrypoint or bad image build';
+    focus = 'verify image entrypoint and command configuration';
+  } else if (exit === 126) {
+    cause = 'Permission denied executing entrypoint (exit code 126) — file not executable or wrong permissions';
+    focus = 'check container entrypoint file permissions';
+  } else if (exit === 1 || exit === 2) {
+    cause = `Application error (exit code ${exit}) — process crashed during startup or runtime`;
+    focus = 'review application logs and configuration';
+  } else if (type === 'ImagePullBackOff') {
+    cause = 'Image pull failed — image does not exist, wrong tag, or registry credentials missing';
+    focus = 'verify image name, tag, and registry access';
+  } else if (type === 'CrashLoopBackOff') {
+    cause = `CrashLoopBackOff — container repeatedly crashing${exit != null ? ` (exit code ${exit})` : ''}`;
+    focus = 'check previous container logs and describe events';
+  } else if (type === 'PodNotReady') {
+    cause = 'Pod not ready — readiness probe failing or container not starting';
+    focus = 'check readiness probe configuration and container startup';
+  } else {
+    cause = `${type} — unable to determine specific root cause from available evidence`;
+    focus = 'manual inspection required';
+  }
+
+  return {
+    suspected_cause:   cause,
+    rootCause:         cause,
+    confidence:        0.15,
+    evidence:          [],
+    recommended_focus: focus,
+    risk_level:        'medium',
+  };
+}
+
 const FALLBACK_RCA = {
   suspected_cause:   'unknown — investigation failed',
+  rootCause:         'unknown — investigation failed',
   confidence:        0.0,
   evidence:          [],
   recommended_focus: 'manual inspection required',
@@ -139,34 +182,39 @@ GATHERED EVIDENCE
 ${evidence.join('\n\n') || '(no evidence gathered)'}`;
 
       let raw = '', usage = null;
+      const createParams = {
+        model:          MODEL,
+        temperature:    0.1,
+        stream:         true,
+        stream_options: { include_usage: true },
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user',   content: userPrompt },
+        ],
+      };
+      try { createParams.response_format = { type: 'json_object' }; } catch {}
+
       try {
         ({ raw, usage } = await runLLMCall(
-          () => client.chat.completions.create({
-            model:          MODEL,
-            temperature:    0.1,
-            stream:         true,
-            stream_options: { include_usage: true },
-            messages: [
-              { role: 'system', content: SYSTEM_PROMPT },
-              { role: 'user',   content: userPrompt },
-            ],
-          }),
+          () => client.chat.completions.create(createParams),
           { requiredFields: ['suspected_cause', 'confidence'] }
         ));
       } catch (err) {
         console.warn(`[INVESTIGATOR][${clusterName}] LLM failed: ${err.message}`);
-        return { ...FALLBACK_RCA };
+        return buildDeterministicFallback(issue);
       }
       if (usage) tokenStore.record('investigator', usage);
 
       const match = raw.match(/\{[\s\S]*\}/);
-      if (!match) return { ...FALLBACK_RCA };
+      if (!match) return buildDeterministicFallback(issue);
 
-      const result = JSON.parse(match[0]);
-      if (!result.suspected_cause || typeof result.confidence !== 'number') return { ...FALLBACK_RCA };
+      let result;
+      try { result = JSON.parse(match[0]); } catch { return buildDeterministicFallback(issue); }
+      if (!result.suspected_cause || typeof result.confidence !== 'number') return buildDeterministicFallback(issue);
       result.confidence = Math.max(0, Math.min(1, result.confidence));
       if (!['low', 'medium', 'high', 'critical'].includes(result.risk_level)) result.risk_level = 'medium';
       if (!Array.isArray(result.evidence)) result.evidence = [];
+      result.rootCause = result.suspected_cause;
 
       // Enrich with capacity forecast context for memory/OOM issues
       const CAPACITY_ISSUE_TYPES = new Set(['OOMKilled', 'HighRestarts', 'MemNearLimit']);
