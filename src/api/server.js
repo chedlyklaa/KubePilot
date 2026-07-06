@@ -907,9 +907,10 @@ Return ONLY valid JSON (no markdown, no extra text):
       return res.status(403).json({ success: false, error: `Permission denied: you cannot run ${cmdScope.category} commands on cluster "${cmdScope.cluster}"${cmdScope.namespace ? ` namespace "${cmdScope.namespace}"` : ''}` });
     }
 
-    console.log(`[CMD] ${req.user.name} → ${command}`);
+    const impersonateAs = req.user.role === 'admin' ? null : req.user.email;
+    console.log(`[CMD] ${req.user.name}${impersonateAs ? ` (--as=${impersonateAs})` : ''} → ${command}`);
     try {
-      const output = await kubectl.runCommand(command);
+      const output = await kubectl.runCommand(command, { impersonateAs });
       res.json({ success: true, output: output || '(command completed with no output)' });
     } catch (err) {
       res.status(500).json({ success: false, error: err.message });

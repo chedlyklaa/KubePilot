@@ -1,18 +1,20 @@
 import { useState } from 'react'
 
 const TOPICS = [
-  { id: 'overview',    icon: '⎈',  label: 'Overview' },
-  { id: 'pipeline',    icon: '⚙',  label: 'Agent Pipeline' },
-  { id: 'dashboard',   icon: '📊', label: 'Dashboard' },
-  { id: 'approvals',   icon: '✅', label: 'Approvals' },
-  { id: 'escalations', icon: '🚨', label: 'Escalations' },
-  { id: 'orders',      icon: '⌨',  label: 'Orders (Chat)' },
-  { id: 'teams',       icon: '🔔', label: 'Teams Alerts' },
-  { id: 'health',      icon: '🩺', label: 'Cluster Health' },
-  { id: 'capacity',    icon: '📈', label: 'Capacity' },
-  { id: 'rbac',        icon: '🔐', label: 'RBAC' },
-  { id: 'chat',        icon: '💬', label: 'AI Chat' },
-  { id: 'history',     icon: '📋', label: 'History' },
+  { id: 'overview',       icon: '⎈',  label: 'Overview' },
+  { id: 'pipeline',       icon: '⚙',  label: 'Agent Pipeline' },
+  { id: 'agents',         icon: '🧠', label: 'Agent Management' },
+  { id: 'dashboard',      icon: '📊', label: 'Dashboard' },
+  { id: 'approvals',      icon: '✅', label: 'Approvals' },
+  { id: 'escalations',    icon: '🚨', label: 'Escalations' },
+  { id: 'orders',         icon: '⌨',  label: 'Orders (Chat)' },
+  { id: 'chat',           icon: '💬', label: 'AI Chat' },
+  { id: 'health',         icon: '🩺', label: 'Cluster Health' },
+  { id: 'capacity',       icon: '📈', label: 'Capacity' },
+  { id: 'rbac',           icon: '🔐', label: 'RBAC' },
+  { id: 'notifications',  icon: '🔔', label: 'Notifications' },
+  { id: 'users',          icon: '👥', label: 'Users & Teams' },
+  { id: 'history',        icon: '📋', label: 'History' },
 ]
 
 const CONTENT = {
@@ -54,7 +56,7 @@ const CONTENT = {
         <div className="help-step">
           <span className="help-step-num">1</span>
           <div><strong>Detect</strong>
-            <p>The Pod Analyzer scans all pods every cycle (default: 5 min). It identifies CrashLoopBackOff, OOMKilled, ImagePullBackOff, ContainerError, and PodNotReady states across all monitored clusters.</p>
+            <p>Five data sources are fetched in parallel every cycle (default: <strong>30 seconds</strong>): pods, nodes, events, per-pod Prometheus metrics, and per-node Prometheus metrics. The Pod Analyzer then identifies CrashLoopBackOff, OOMKilled, ImagePullBackOff, ContainerError, Unschedulable, PodNotReady, and init-container failures. The Node Analyzer flags NodeNotReady, resource pressure, flapping, and CPU/memory saturation. The Correlation Engine maps failing pods to their node to detect hot-node patterns.</p>
           </div>
         </div>
         <div className="help-step">
@@ -109,6 +111,59 @@ const CONTENT = {
 
       <h3>Parallel: Capacity Forecasting</h3>
       <p>Every agent cycle also runs the Capacity Forecast Engine in the background. It collects CPU, memory, and disk snapshots, applies a hybrid EWMA + weighted linear regression model, and fires alerts when resource exhaustion is projected within configurable thresholds. This is completely separate from the fix pipeline.</p>
+    </div>
+  ),
+
+  agents: (
+    <div className="help-content">
+      <h2>Agent Management</h2>
+      <p>The Agent Management page lets you monitor the status of every autonomous component, tune runtime configuration on the fly, review learned rules, and see which clusters are being watched.</p>
+
+      <h3>Status bar</h3>
+      <div className="help-table">
+        <div className="help-tr"><span className="help-th">Total Agents</span><span>Number of registered agent modules (core agents + analyzers + engines)</span></div>
+        <div className="help-tr"><span className="help-th">Active</span><span>How many are currently enabled and participating in the cycle</span></div>
+        <div className="help-tr"><span className="help-th">Clusters</span><span>Number of clusters the orchestrator is monitoring</span></div>
+        <div className="help-tr"><span className="help-th">Prometheus</span><span>Connected = metrics available. Offline = agent runs without CPU/memory data</span></div>
+        <div className="help-tr"><span className="help-th">Vector Store</span><span>Ready = Qdrant is reachable and semantic search is active. Offline = memory-based fallback only</span></div>
+      </div>
+
+      <h3>Agent types</h3>
+      <div className="help-table">
+        <div className="help-tr"><span className="help-th">🧠 Core Agents</span><span>LLM-powered agents — Investigator (RCA), Planner (decision), Guardian (safety review), Reflection (learning). Each calls the LLM with a dedicated prompt and structured output.</span></div>
+        <div className="help-tr"><span className="help-th">🔍 Analyzers</span><span>Deterministic rule-based modules — Pod Analyzer, Node Analyzer, Event Analyzer, Correlation Engine. No LLM, no network call — pure code running on raw kubectl JSON output.</span></div>
+        <div className="help-tr"><span className="help-th">⚙ Engines</span><span>Specialized engines — Change Correlation Engine (detects if a recent deploy caused an issue), Capacity Forecast Engine (predicts resource exhaustion). Run alongside the main pipeline each cycle.</span></div>
+      </div>
+
+      <h3>Runtime Configuration</h3>
+      <p>Settings you can change without restarting the server. Changes apply to the next cycle immediately.</p>
+      <div className="help-table">
+        <div className="help-tr"><span className="help-th">Cycle Interval</span><span>How often the orchestrator runs a full detection + remediation cycle. Default: 30 seconds. Expressed in milliseconds (<code>CYCLE_INTERVAL_MS</code>).</span></div>
+        <div className="help-tr"><span className="help-th">LLM Model</span><span>The primary model used by Planner, Investigator, and Chat (<code>OPENAI_MODEL</code>). Change this to switch between GPT-4o, GPT-4-turbo, etc.</span></div>
+        <div className="help-tr"><span className="help-th">Guardian Model</span><span>The model used by Guardian and Reflection agents (<code>GUARDIAN_MODEL</code>). Can differ from the primary model — e.g. use a faster/cheaper model for safety review.</span></div>
+        <div className="help-tr"><span className="help-th">Capacity Forecast</span><span>Enable or disable the Capacity Forecast Engine (<code>CAPACITY_FORECAST_ENABLED</code>). When disabled, the Capacity page shows no new data.</span></div>
+      </div>
+
+      <h3>Learned Rules</h3>
+      <p>Rules are automatically generated by the Reflection Agent when the same action fails repeatedly for the same issue type. They are injected into the Planner's prompt at the start of each diagnosis — preventing the LLM from repeating known-bad decisions.</p>
+      <div className="help-table">
+        <div className="help-tr"><span className="help-th">Issue Type</span><span>The Kubernetes issue this rule applies to (e.g. CrashLoopBackOff, OOMKilled)</span></div>
+        <div className="help-tr"><span className="help-th">Condition</span><span>The trigger condition in human-readable form (e.g. "exit code 137 + restart count &gt; 5")</span></div>
+        <div className="help-tr"><span className="help-th">Rule</span><span>The constraint given to the Planner (e.g. "do not restart — memory limit increase required first")</span></div>
+        <div className="help-tr"><span className="help-th">Confidence</span><span>How strongly the rule should be weighted. Auto-generated rules start at 50% and grow with occurrences.</span></div>
+        <div className="help-tr"><span className="help-th">Source</span><span>Auto-detected (generated by Reflection Agent) or Manual (created by an admin)</span></div>
+      </div>
+      <p>You can <strong>disable</strong> a rule temporarily without deleting it — useful if you want to test whether the LLM makes a different decision without the constraint. <strong>Delete</strong> removes it permanently.</p>
+
+      <h3>Monitored Clusters</h3>
+      <p>The list of clusters the orchestrator runs agents against each cycle. Defined in <code>clusters.yaml</code>. Each entry shows the cluster name, tier (dev / staging / production), kubectl context, and the monitored namespaces.</p>
+      <p>Changes to <code>clusters.yaml</code> are detected automatically — new clusters are added and removed clusters are stopped <strong>without restarting the server</strong> (hot-reload via file watcher).</p>
+      <div className="help-table">
+        <div className="help-tr"><span className="help-th">dev</span><span>Low risk threshold — most actions auto-approved</span></div>
+        <div className="help-tr"><span className="help-th">staging</span><span>Moderate — some actions need approval</span></div>
+        <div className="help-tr"><span className="help-th">production</span><span>Strictest rules — most actions need admin approval</span></div>
+      </div>
+      <p>To add a new cluster, use the <strong>Orders tab</strong> and type <em>"create cluster &lt;name&gt;"</em> — or edit <code>clusters.yaml</code> directly.</p>
     </div>
   ),
 
@@ -307,50 +362,98 @@ const CONTENT = {
     </div>
   ),
 
-  teams: (
+  notifications: (
     <div className="help-content">
-      <h2>Microsoft Teams Alerts</h2>
-      <p>KubePilot sends Adaptive Card messages to Teams automatically. Two separate webhooks are used so different channels can receive different alert types.</p>
+      <h2>Notifications</h2>
+      <p>KubePilot's notification system routes alerts to multiple channels based on severity. Configure channels and routing rules from the <strong>Notifications Settings</strong> page.</p>
 
-      <h3>Setup — .env configuration</h3>
+      <h3>Supported channels</h3>
+      <div className="help-table">
+        <div className="help-tr"><span className="help-th">In-App</span><span>Bell icon in the top bar — real-time alerts inside the dashboard, visible to all users</span></div>
+        <div className="help-tr"><span className="help-th">Microsoft Teams</span><span>Adaptive Card messages via webhook — separate webhooks for admin alerts and general alerts</span></div>
+        <div className="help-tr"><span className="help-th">Email</span><span>SMTP-based email notifications — assignment emails when an escalation is assigned to a team member</span></div>
+        <div className="help-tr"><span className="help-th">Slack</span><span>Webhook-based Slack messages (configurable)</span></div>
+        <div className="help-tr"><span className="help-th">Telegram / Discord / Webhook</span><span>Additional channels configurable via the Notifications Settings page</span></div>
+      </div>
+
+      <h3>Severity routing</h3>
+      <div className="help-table">
+        <div className="help-tr"><span className="help-th">INFO</span><span>In-App only</span></div>
+        <div className="help-tr"><span className="help-th">WARNING</span><span>In-App + Teams</span></div>
+        <div className="help-tr"><span className="help-th">ERROR</span><span>In-App + Teams + Email</span></div>
+        <div className="help-tr"><span className="help-th">CRITICAL</span><span>In-App + Teams + Email + Slack</span></div>
+      </div>
+      <p style={{marginTop:8}}>Routing rules are fully customizable from the Notifications Settings page.</p>
+
+      <h3>Alert types</h3>
+      <div className="help-table">
+        <div className="help-tr"><span className="help-th">Approval Request</span><span>Sent to the admin Teams channel when the agent needs a human decision (risk = HIGH or DANGEROUS). Auto-denied after 10 minutes.</span></div>
+        <div className="help-tr"><span className="help-th">Escalation</span><span>Sent when the agent exhausts 3 fix attempts. Includes issue key, cluster, namespace, and a link to the Escalations page.</span></div>
+        <div className="help-tr"><span className="help-th">Assignment Email</span><span>Sent to a team member when an admin assigns an escalation to them.</span></div>
+        <div className="help-tr"><span className="help-th">Capacity Alert</span><span>Sent when the Capacity Forecast Engine predicts resource exhaustion above the WARNING threshold. Includes usage %, trend slope, and ETA.</span></div>
+        <div className="help-tr"><span className="help-th">Re-escalation</span><span>Sent when an acknowledged escalation is still unresolved — prevents issues from being silently forgotten.</span></div>
+      </div>
+
+      <h3>Teams setup</h3>
       <div className="help-table">
         <div className="help-tr"><span className="help-th">TEAMS_ADMIN_WEBHOOK_URL</span><span>Admin channel — receives approval requests</span></div>
         <div className="help-tr"><span className="help-th">TEAMS_WEBHOOK_URL</span><span>General channel — receives escalation alerts</span></div>
         <div className="help-tr"><span className="help-th">DASHBOARD_URL</span><span>Link included in every Teams card (e.g. http://localhost:5173)</span></div>
       </div>
-      <p style={{marginTop: 8}}>To create a webhook: in Teams, go to your channel → <strong>Connectors</strong> → <strong>Incoming Webhook</strong> → copy the URL into your <code>.env</code> file.</p>
+      <p style={{marginTop: 8}}>To create a Teams webhook: go to your channel → <strong>Connectors</strong> → <strong>Incoming Webhook</strong> → copy the URL.</p>
 
-      <h3>Alert type 1 — Approval Request</h3>
-      <p>Sent to <strong>TEAMS_ADMIN_WEBHOOK_URL</strong> when the agent needs a human decision on a high-risk action.</p>
-      <div className="help-table">
-        <div className="help-tr"><span className="help-th">When</span><span>Agent reaches the approval gate (risk = HIGH or DANGEROUS)</span></div>
-        <div className="help-tr"><span className="help-th">Content</span><span>Issue key, cluster, namespace, proposed action, risk level, root cause, Guardian note</span></div>
-        <div className="help-tr"><span className="help-th">Action button</span><span>"Open Dashboard to Approve / Deny" → takes you straight to the Approvals tab</span></div>
-        <div className="help-tr"><span className="help-th">Urgency</span><span>Auto-denied after 10 minutes if nobody acts</span></div>
-      </div>
+      <h3>Per-user preferences</h3>
+      <p>Each user can configure their own notification preferences from their <strong>Profile</strong> page: which channels they want to receive alerts on and their personal notification email address.</p>
 
-      <h3>Alert type 2 — Escalation</h3>
-      <p>Sent to <strong>TEAMS_WEBHOOK_URL</strong> when the agent gives up after 3 failed fix attempts.</p>
-      <div className="help-table">
-        <div className="help-tr"><span className="help-th">When</span><span>Agent exhausts MAX_FIX_ATTEMPTS (3) without resolving the issue</span></div>
-        <div className="help-tr"><span className="help-th">Content</span><span>Issue key, cluster, namespace, issue type, number of attempts made</span></div>
-        <div className="help-tr"><span className="help-th">Action button</span><span>"Open Escalations Dashboard" → takes you to the Escalations tab</span></div>
-        <div className="help-tr"><span className="help-th">Re-alert</span><span>If the escalation is acknowledged but still not fixed, a new message is sent when the agent re-escalates</span></div>
-      </div>
-
-      <h3>Alert type 3 — Assignment email</h3>
-      <p>When an admin assigns an escalation to a team member, that person receives an email notification (if SMTP is configured and they have email notifications enabled in their profile settings).</p>
-
-      <h3>Alert type 4 — Capacity alert</h3>
-      <p>Sent via the notification engine when the Capacity Forecast Engine predicts resource exhaustion above the HIGH or CRITICAL threshold. Includes the resource type, current usage %, rate of change, and estimated time to saturation.</p>
-
-      <h3>Not receiving messages?</h3>
+      <h3>Not receiving notifications?</h3>
       <ul>
-        <li>Check <code>TEAMS_WEBHOOK_URL</code> and <code>TEAMS_ADMIN_WEBHOOK_URL</code> are set in your <code>.env</code> file</li>
-        <li>Check the server logs for <code>[Teams] Failed to send</code> errors</li>
-        <li>Verify the webhook URL is still valid in your Teams channel settings (they expire if unused)</li>
-        <li>Make sure <code>DASHBOARD_URL</code> points to a reachable address (not localhost if Teams is external)</li>
+        <li>Check that the channel is enabled on the Notifications Settings page</li>
+        <li>Verify webhook URLs are valid and not expired</li>
+        <li>Check server logs for <code>[Notif]</code> errors</li>
+        <li>Make sure <code>DASHBOARD_URL</code> is reachable from the external service (not localhost)</li>
       </ul>
+    </div>
+  ),
+
+  users: (
+    <div className="help-content">
+      <h2>Users &amp; Teams</h2>
+      <p>KubePilot has its own internal access control system separate from Kubernetes RBAC. Manage who can log in, what they can see, and which clusters they can act on.</p>
+
+      <h3>Roles</h3>
+      <div className="help-table">
+        <div className="help-tr"><span className="help-th">admin</span><span>Full access — approve/deny agent actions, assign escalations, manage users and teams, apply RBAC YAML, configure notifications</span></div>
+        <div className="help-tr"><span className="help-th">developer</span><span>Operational access — claim escalations, update status, request reassignment, use Orders and AI Chat</span></div>
+      </div>
+
+      <h3>Users page</h3>
+      <p>Admins can create, edit, and deactivate user accounts. Each user has:</p>
+      <ul>
+        <li><strong>Email &amp; password</strong> — used for login (password stored as bcrypt hash)</li>
+        <li><strong>Role</strong> — admin or developer</li>
+        <li><strong>Cluster permissions</strong> — per-cluster, per-namespace access scopes (viewer / editor / admin)</li>
+        <li><strong>Group membership</strong> — optionally assigned to a team that inherits group permissions</li>
+        <li><strong>canProvision</strong> — allows the user to create new clusters via the Orders tab</li>
+        <li><strong>Active flag</strong> — deactivated users cannot log in but their history is preserved</li>
+      </ul>
+
+      <h3>Teams page</h3>
+      <p>Teams (groups) let you manage permissions for multiple users at once. A team has:</p>
+      <ul>
+        <li><strong>Name &amp; description</strong></li>
+        <li><strong>Permission scopes</strong> — a list of cluster + namespace + role combinations that all members inherit</li>
+      </ul>
+      <p>Assigning a user to a team automatically grants them the team's permissions on top of their individual permissions.</p>
+
+      <h3>Cluster permission scopes</h3>
+      <div className="help-table">
+        <div className="help-tr"><span className="help-th">viewer</span><span>Read-only — can see cluster state, escalations, and history</span></div>
+        <div className="help-tr"><span className="help-th">editor</span><span>Can use Orders to send kubectl commands on the scoped cluster/namespace</span></div>
+        <div className="help-tr"><span className="help-th">admin</span><span>Full control including RBAC management and approvals for the scoped cluster</span></div>
+      </div>
+
+      <h3>Who can manage users?</h3>
+      <p>Only users with the <strong>admin</strong> role can create, edit, or deactivate accounts and manage teams.</p>
     </div>
   ),
 
@@ -455,10 +558,10 @@ const CONTENT = {
       <p>A conversational Kubernetes expert powered by the same LLM as the agent. This is separate from the Orders tab — it answers questions and analyses your cluster, it does not execute commands.</p>
 
       <h3>⎈ Cluster button — Live mode</h3>
-      <p>When the button is <strong>green</strong>, the AI has read-only access to your live cluster. Before every message, the dashboard fetches real pod states, active escalations, pending approvals, and Prometheus alerts and injects them directly into your question. The AI will reference real pod names, namespaces, and restart counts.</p>
+      <p>When the button is <strong>green</strong>, the AI has read-only access to your live cluster via 8 built-in tools: <code>list_pods</code>, <code>describe_pod</code>, <code>get_pod_logs</code>, <code>get_pod_events</code>, <code>get_node_status</code>, <code>query_prometheus</code>, <code>get_escalations</code>, <code>get_deployments</code>. The AI decides which tools to call, fetches real data from the cluster, and composes its answer from the live results. A <em>Fetching live data…</em> indicator appears while tools are running.</p>
 
       <h3>General mode (button off)</h3>
-      <p>A senior Kubernetes SRE for any general question — YAML, Helm, HPA, debugging, architecture, networking, cloud providers, CI/CD.</p>
+      <p>A senior Kubernetes SRE expert for any general question — YAML, Helm, HPA, debugging, architecture, networking, cloud providers, CI/CD. No cluster access, answers from knowledge only.</p>
 
       <h3>📥 Download PDF</h3>
       <p>When your question contains the words <em>report</em>, <em>pdf</em>, <em>download</em>, <em>export</em>, <em>summary</em>, or <em>incident</em>, a <strong>📥 Download PDF</strong> button appears automatically below the AI's response. Click it to open a formatted print-ready page and save as PDF from your browser print dialog.</p>

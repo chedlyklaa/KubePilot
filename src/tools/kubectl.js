@@ -7,12 +7,21 @@ const { execFile } = require('child_process');
 function _parseArgs(command) {
   const withoutBinary = command.replace(/^kubectl\s+/, '');
   const tokens = withoutBinary.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
-  return tokens.map(t => t.replace(/^["']|["']$/g, ''));
+  return tokens.map(t => {
+    // --flag="quoted value" or --flag='quoted value' → --flag=value
+    const flagQuoted = t.match(/^(--?[\w-]+=)["'](.*)["']$/);
+    if (flagQuoted) return flagQuoted[1] + flagQuoted[2];
+    // "standalone quoted token" → strip wrapping quotes
+    return t.replace(/^["']|["']$/g, '');
+  });
 }
 
-function runCommand(command, { timeoutMs = 60_000 } = {}) {
+function runCommand(command, { timeoutMs = 60_000, impersonateAs = null } = {}) {
   return new Promise((resolve, reject) => {
     const args = _parseArgs(command);
+    if (impersonateAs) {
+      args.unshift(`--as=${impersonateAs}`);
+    }
     const child = execFile(
       'kubectl', args,
       { maxBuffer: 10 * 1024 * 1024, timeout: timeoutMs },

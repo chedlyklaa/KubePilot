@@ -197,6 +197,7 @@ async function streamChat(req, res, { llm, chatTools }) {
   ];
 
   try {
+    let fetchingShown = false;
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
       const createParams = {
         model:       model || process.env.OPENAI_MODEL,
@@ -211,6 +212,7 @@ async function streamChat(req, res, { llm, chatTools }) {
       let toolCalls = [];
       let currentToolCall = null;
       let hasContent = false;
+      let roundContent = '';
 
       for await (const chunk of stream) {
         const delta = chunk.choices[0]?.delta;
@@ -218,7 +220,13 @@ async function streamChat(req, res, { llm, chatTools }) {
 
         if (delta.content) {
           hasContent = true;
-          res.write(`data: ${JSON.stringify({ content: delta.content })}\n\n`);
+          if (useTools) {
+            // Buffer when in tool mode — we only flush once we know this is the final answer round.
+            // This prevents raw <tool_call> XML or preamble text from leaking into the UI.
+            roundContent += delta.content;
+          } else {
+            res.write(`data: ${JSON.stringify({ content: delta.content })}\n\n`);
+          }
         }
 
         if (delta.tool_calls) {
@@ -239,9 +247,22 @@ async function streamChat(req, res, { llm, chatTools }) {
 
       toolCalls = toolCalls.filter(Boolean);
 
-      if (toolCalls.length === 0) break;
+      if (toolCalls.length === 0) {
+        // Final answer round — flush buffered content, strip any leftover tool_call XML
+        if (roundContent) {
+          const cleaned = roundContent
+            .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
+            .replace(/^\s*\n+/gm, '')
+            .trim();
+          if (cleaned) res.write(`data: ${JSON.stringify({ content: cleaned })}\n\n`);
+        }
+        break;
+      }
 
-      res.write(`data: ${JSON.stringify({ content: '\n\n*Fetching live data...*\n\n' })}\n\n`);
+      if (!fetchingShown) {
+        res.write(`data: ${JSON.stringify({ content: '\n\n*Fetching live data...*\n\n' })}\n\n`);
+        fetchingShown = true;
+      }
 
       conversationMessages.push({
         role: 'assistant',

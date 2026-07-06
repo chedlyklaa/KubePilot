@@ -28,9 +28,12 @@ function detectIntent(text) {
   const lower = text.toLowerCase()
 
   const PDF_PATTERNS = [
-    { re: /\b(generate|create|make|build|give\s+me)\s+(\w+\s+){0,3}report\b/, score: 6 },
-    { re: /\b(download|export|save)\s+(\w+\s+){0,2}report\b/,                  score: 6 },
-    { re: /\b(generate|create|export|save|make)\s+(\w+\s+){0,2}pdf\b/,          score: 6 },
+    { re: /\b(generate|create|make|build|give\s+me)\s+(\w+\s+){0,3}report\b/,   score: 6 },
+    { re: /\b(download|export|save)\s+(\w+\s+){0,2}report\b/,                   score: 6 },
+    { re: /\b(generate|create|export|save|make)\s+(\w+\s+){0,2}pdf\b/,           score: 6 },
+    { re: /\bgive\s+me\s+(\w+\s+){0,3}pdf\b/,                                   score: 6 },
+    { re: /\bgive\s+me\s+(\w+\s+){0,3}report\b/,                                score: 6 },
+    { re: /\b(make|create|give)\s+me\s+(\w+\s+){0,2}document\b/,                score: 5 },
     { re: /\bexport\s+as\s+pdf\b/,                                               score: 6 },
     { re: /\bsave\s+as\s+pdf\b/,                                                 score: 6 },
     { re: /\bhealth\s+report\b/,                                                 score: 5 },
@@ -90,6 +93,8 @@ function detectIntent(text) {
         { text: 'how do i',               score: 5 },
         { text: 'how to',                 score: 5 },
         { text: 'what is',                score: 4 },
+        { text: 'what is a',              score: 6 },
+        { text: 'what is an',             score: 6 },
         { text: 'what are',               score: 4 },
         { text: 'explain the',            score: 5 },
         { text: 'can you explain',        score: 5 },
@@ -98,11 +103,23 @@ function detectIntent(text) {
         { text: 'why is',                 score: 4 },
         { text: 'what does',              score: 4 },
         { text: 'what do',                score: 4 },
+        { text: 'give me the definition', score: 7 },
+        { text: 'definition of',          score: 7 },
+        { text: 'why do we need',         score: 6 },
+        { text: 'why need',               score: 5 },
+        { text: 'why use',                score: 5 },
+        { text: 'tell me about',          score: 5 },
+        { text: 'give me an overview',    score: 5 },
+        { text: 'give me an explanation', score: 6 },
+        { text: 'what are the benefits',  score: 5 },
+        { text: 'what are the advantages',score: 5 },
       ],
       keywords: [
         { text: 'explain',    score: 2 },
-        { text: 'definition', score: 2 },
-        { text: 'meaning',    score: 2 },
+        { text: 'definition', score: 5 },
+        { text: 'meaning',    score: 3 },
+        { text: 'overview',   score: 2 },
+        { text: 'concept',    score: 3 },
       ],
     },
   }
@@ -551,7 +568,7 @@ export default function ChatPage() {
       return
     }
 
-    const wantsPdf = intent === 'export_pdf' && confidence > 0.2
+    const wantsPdf = intent === 'export_pdf' && confidence >= 0.2
     setMessages(prev => [...prev, userMsg, { role: 'assistant', content: '' }])
     setBusy(true); setElapsed(null)
 
@@ -562,17 +579,21 @@ export default function ChatPage() {
     })
 
     const currentMsgs = messagesRef.current
+    const apiUserMsg = wantsPdf
+      ? { role: 'user', content: `${text}\n\n[Note: produce a comprehensive, well-structured report with headings, tables, and bullet points. The KubePilot dashboard will provide a PDF download button automatically — do NOT say you cannot generate files.]` }
+      : userMsg
     let apiHistory = [
       ...currentMsgs.slice(-2),
-      userMsg,
+      apiUserMsg,
     ]
     if (withClusterContext) {
       try {
         const r = await apiFetch('/api/chat/cluster-context')
         const { text: snapshot } = await r.json()
+        const suffix = wantsPdf ? '\n\n[Note: produce a comprehensive structured report. The KubePilot dashboard provides a PDF download button — do NOT say you cannot generate files.]' : ''
         apiHistory = [
           ...currentMsgs.slice(-1),
-          { role: 'user', content: `[LIVE CLUSTER DATA]\n${snapshot}\n\n[MY QUESTION]\n${text}` },
+          { role: 'user', content: `[LIVE CLUSTER DATA]\n${snapshot}\n\n[MY QUESTION]\n${text}${suffix}` },
         ]
       } catch { /* cluster unreachable */ }
     }

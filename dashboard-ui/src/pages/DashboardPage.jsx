@@ -9,9 +9,10 @@ import EscalationClaimCard from '../components/EscalationClaimCard'
 import CommandChat from '../components/CommandChat'
 
 const AGENT_DEFS = [
-  { key: 'planner',    label: 'Planner',    icon: '🧠', color: 'primary' },
-  { key: 'guardian',   label: 'Guardian',   icon: '🛡',  color: 'warn'    },
-  { key: 'reflection', label: 'Reflection', icon: '💡', color: 'success' },
+  { key: 'planner',      label: 'Planner',      icon: '🧠', color: 'primary' },
+  { key: 'guardian',     label: 'Guardian',     icon: '🛡',  color: 'warn'    },
+  { key: 'investigator', label: 'Investigator', icon: '🔍', color: 'info'    },
+  { key: 'reflection',   label: 'Reflection',   icon: '💡', color: 'success' },
 ]
 function fmtN(n) { return (n ?? 0).toLocaleString() }
 

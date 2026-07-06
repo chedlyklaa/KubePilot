@@ -1,7 +1,7 @@
 // Token usage counter — tracks LLM consumption per agent since last server start.
 // Agents call record() after each LLM response; the dashboard reads getAll().
 
-const AGENTS = ['planner', 'guardian', 'reflection'];
+const AGENTS = ['planner', 'guardian', 'reflection', 'investigator'];
 
 function _empty() { return { prompt: 0, completion: 0, total: 0, calls: 0 }; }
 

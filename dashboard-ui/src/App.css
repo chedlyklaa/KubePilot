@@ -88,7 +88,7 @@
 .btn-take:disabled { opacity: .4; cursor: not-allowed; }
 
 /* ── Escalations page ─────────────────────────────────────────────────────── */
-.escalations-page { padding: 24px; max-width: 1400px; margin: 0 auto; width: 100%; }
+.escalations-page { padding: 24px; max-width: 1500px; margin: 0 auto; width: 100%; }
 .stat-chip        { font-size: 12px; font-weight: 600; padding: 4px 12px; border-radius: 12px; }
 .chip-warn   { background: var(--warn-dim);    color: var(--warn); }
 .chip-info   { background: var(--primary-dim); color: var(--primary); }
@@ -611,6 +611,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
 .token-chip-primary .token-chip-total { color: var(--primary); }
 .token-chip-warn    .token-chip-total { color: var(--warn);    }
 .token-chip-success .token-chip-total { color: var(--success); }
+.token-chip-info    .token-chip-total { color: #38bdf8;        }
 .token-chip-grand {
   border-color: var(--primary); background: var(--primary-dim);
 }
