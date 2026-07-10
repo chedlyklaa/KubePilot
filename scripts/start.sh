@@ -62,12 +62,57 @@ check_cmd minikube "minikube version --short"
 check_cmd kubectl   "kubectl version --client --short"
 check_cmd helm      "helm version --short"
 
+# ── Qdrant (vector store) ─────────────────────────────────────────────────────
+# Started early and independently of the minikube/Helm steps below — it has no
+# Kubernetes dependency, and we don't want a slow/failed cluster or Helm install
+# (which can hit `set -e` and abort the script) to prevent Qdrant from starting.
+section "Qdrant"
+
+QDRANT_CONTAINER="qdrant"
+QDRANT_PORT=6333
+QDRANT_LOG="${ROOT_DIR}/.pf-logs/qdrant-start.log"
+mkdir -p "${ROOT_DIR}/.pf-logs"
+
+if ! command -v docker &>/dev/null; then
+  warn "docker not found — skipping Qdrant startup (set QDRANT_URL to an external instance)"
+elif ! docker info &>/dev/null; then
+  err "Docker daemon not reachable — is Docker Desktop running?"
+  warn "  Start Docker Desktop, then re-run this script (Qdrant startup skipped)"
+else
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${QDRANT_CONTAINER}$"; then
+    ok "Qdrant already running (container: ${QDRANT_CONTAINER})"
+  elif docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${QDRANT_CONTAINER}$"; then
+    log "Starting existing Qdrant container (${QDRANT_CONTAINER})..."
+    if docker start "${QDRANT_CONTAINER}" >"${QDRANT_LOG}" 2>&1; then
+      ok "Qdrant container started"
+    else
+      err "Failed to start Qdrant container — see ${QDRANT_LOG}"
+      tail -20 "${QDRANT_LOG}" || true
+    fi
+  else
+    log "No existing '${QDRANT_CONTAINER}' container found — creating one (port ${QDRANT_PORT})..."
+    if docker run -d \
+      --name "${QDRANT_CONTAINER}" \
+      -p "${QDRANT_PORT}:6333" \
+      -p 6334:6334 \
+      --restart unless-stopped \
+      qdrant/qdrant:latest \
+      >"${QDRANT_LOG}" 2>&1; then
+      ok "Qdrant container created"
+    else
+      err "Failed to start Qdrant container — see ${QDRANT_LOG}"
+      tail -20 "${QDRANT_LOG}" || true
+    fi
+  fi
+fi
+
 # ── Cluster definitions ───────────────────────────────────────────────────────
 # Each entry: "profile|cpus|memory|disk"
 CLUSTERS=(
   "minikube|4|4096|20g"
   "cluster2|2|2048|10g"
   "staging-cluster|2|2048|10g"
+  "cluster3|2|2048|10g"
 )
 
 # ── Helper: start one minikube profile ────────────────────────────────────────
@@ -283,34 +328,13 @@ if [[ "${INSTALL_MONITORING}" == "true" ]]; then
   fi
 fi
 
-# ── Qdrant (vector store) ─────────────────────────────────────────────────────
-section "Qdrant"
-
-QDRANT_CONTAINER="kubepilot-qdrant"
-QDRANT_PORT=6333
-
-if ! command -v docker &>/dev/null; then
-  warn "docker not found — skipping Qdrant startup (set QDRANT_URL to an external instance)"
-else
-  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${QDRANT_CONTAINER}$"; then
-    ok "Qdrant already running (container: ${QDRANT_CONTAINER})"
-  else
-    # Remove a stopped container left over from a previous run
-    docker rm -f "${QDRANT_CONTAINER}" 2>/dev/null || true
-
-    log "Starting Qdrant container (port ${QDRANT_PORT})..."
-    docker run -d \
-      --name "${QDRANT_CONTAINER}" \
-      -p "${QDRANT_PORT}:6333" \
-      -p 6334:6334 \
-      --restart unless-stopped \
-      qdrant/qdrant:latest \
-      &>/dev/null
-
-    log "Waiting for Qdrant to accept connections..."
-    if wait_port "${QDRANT_PORT}" "qdrant" 30; then
-      ok "Qdrant      → http://localhost:${QDRANT_PORT}  (container: ${QDRANT_CONTAINER})"
-    fi
+# ── Qdrant connectivity check ─────────────────────────────────────────────────
+# The container itself was already started in the Prerequisites section above,
+# before anything that could trip `set -e` and abort the script early.
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${QDRANT_CONTAINER}$"; then
+  log "Waiting for Qdrant to accept connections..."
+  if wait_port "${QDRANT_PORT}" "qdrant" 30; then
+    ok "Qdrant      → http://localhost:${QDRANT_PORT}  (container: ${QDRANT_CONTAINER})"
   fi
 fi
 

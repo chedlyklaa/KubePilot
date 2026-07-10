@@ -435,13 +435,15 @@ export default function LoginPage() {
                   Forgot password?
                 </button>
               </div>
-              <div className="login-hint">
-                <span>Quick fill:</span>
-                <button type="button" className="autofill-chip"
-                  onClick={() => { setEmail('admin@admin.com'); setPassword('admin') }}>Admin</button>
-                <button type="button" className="autofill-chip"
-                  onClick={() => { setEmail('developer@developer.com'); setPassword('developer') }}>Developer</button>
-              </div>
+              {import.meta.env.DEV && (
+                <div className="login-hint">
+                  <span>Quick fill (dev only):</span>
+                  <button type="button" className="autofill-chip"
+                    onClick={() => { setEmail('admin@admin.com'); setPassword('admin') }}>Admin</button>
+                  <button type="button" className="autofill-chip"
+                    onClick={() => { setEmail('developer@developer.com'); setPassword('developer') }}>Developer</button>
+                </div>
+              )}
             </>)}
 
             {/* ── Forgot-password view ─────────────────────────────────── */}

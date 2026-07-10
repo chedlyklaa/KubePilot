@@ -7,6 +7,7 @@ const kubectl             = require('../tools/kubectl');
 const escalationStore     = require('../api/escalationStore');
 const approvalStore       = require('../api/approvalStore');
 const metricsCollector    = require('../monitoring/metricsCollector');
+const { loadConfig }      = require('../config');
 
 const CONFIG_PATH = path.join(__dirname, '../../config/clusters.yaml');
 
@@ -178,13 +179,15 @@ function sseHeaders(res) {
 }
 
 async function streamChat(req, res, { llm, chatTools }) {
-  const { messages, apiKey, baseURL, model, withClusterContext } = req.body;
+  const { messages, withClusterContext } = req.body;
   if (!Array.isArray(messages) || messages.length === 0)
     return res.status(400).json({ error: 'messages array required' });
 
-  const client = (apiKey || baseURL)
-    ? new (require('openai'))({ apiKey: apiKey || process.env.OPENAI_API_KEY, baseURL: baseURL || process.env.OPENAI_BASE_URL })
-    : llm;
+  // Always the shared, admin-configured client (src/api/llmClient.js) — this used to
+  // accept a per-request apiKey/baseURL override from the request body, but nothing in
+  // the dashboard ever sent one, and it let a caller redirect conversation content
+  // (including injected cluster context) to an arbitrary endpoint.
+  const client = llm;
 
   const systemPrompt = withClusterContext ? CLUSTER_SYSTEM_PROMPT : CHAT_SYSTEM_PROMPT;
 
@@ -200,7 +203,7 @@ async function streamChat(req, res, { llm, chatTools }) {
     let fetchingShown = false;
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
       const createParams = {
-        model:       model || process.env.OPENAI_MODEL,
+        model:       loadConfig().OPENAI_MODEL,
         temperature: 0.7,
         stream:      true,
         messages:    conversationMessages,
@@ -295,18 +298,18 @@ async function streamChat(req, res, { llm, chatTools }) {
 }
 
 async function chatNonStreaming(req, res, llm) {
-  const { messages, apiKey, baseURL, model } = req.body;
+  const { messages } = req.body;
   if (!Array.isArray(messages) || messages.length === 0)
     return res.status(400).json({ error: 'messages array required' });
 
-  const client = (apiKey || baseURL)
-    ? new (require('openai'))({ apiKey: apiKey || process.env.OPENAI_API_KEY, baseURL: baseURL || process.env.OPENAI_BASE_URL })
-    : llm;
+  // Always the shared, admin-configured client — see streamChat() above for why a
+  // per-request apiKey/baseURL/model override is no longer accepted here.
+  const client = llm;
 
   const t0 = Date.now();
   try {
     const stream = await client.chat.completions.create({
-      model:       model || process.env.OPENAI_MODEL,
+      model:       loadConfig().OPENAI_MODEL,
       temperature: 0.7,
       stream:      true,
       messages: [
@@ -364,7 +367,7 @@ Required schema:
 
   try {
     const completion = await llm.chat.completions.create({
-      model:       process.env.OPENAI_MODEL,
+      model:       loadConfig().OPENAI_MODEL,
       temperature: 0.1,
       stream:      false,
       messages: [

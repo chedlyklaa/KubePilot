@@ -233,6 +233,69 @@ async function deleteRbacResource(kind, name, namespace, context) {
   return await runCommand(`kubectl --context="${context}" delete ${kind} "${name}" ${nsFlag}`);
 }
 
+// ── CertificateSigningRequest (client-cert issuance for direct kubectl access) ──
+
+// Submit a CSR using the cluster's built-in client-cert signer — works on managed
+// clusters (AKS) as well as self-hosted ones, unlike signing directly with a local
+// ca.key file (which managed clusters don't expose).
+async function submitCsr(name, csrPemBase64, context) {
+  const yamlLib  = require('js-yaml');
+  const manifest = {
+    apiVersion: 'certificates.k8s.io/v1',
+    kind: 'CertificateSigningRequest',
+    metadata: { name, labels: { 'app.kubernetes.io/managed-by': 'kubepilot' } },
+    spec: {
+      request:    csrPemBase64,
+      signerName: 'kubernetes.io/kube-apiserver-client',
+      usages:     ['client auth'],
+    },
+  };
+  return applyManifest(yamlLib.dump(manifest), context);
+}
+
+async function approveCsr(name, context) {
+  return runCommand(`kubectl --context="${context}" certificate approve "${name}"`);
+}
+
+// Returns the base64 DER certificate from status.certificate, or null if not yet issued.
+async function getCsrCertificate(name, context) {
+  const out = await runCommand(`kubectl --context="${context}" get csr "${name}" -o json`);
+  const csr = JSON.parse(out);
+  return csr.status?.certificate ?? null;
+}
+
+async function deleteCsr(name, context) {
+  return runCommand(`kubectl --context="${context}" delete csr "${name}" --ignore-not-found`);
+}
+
+// Exports a self-contained kubeconfig for one context, using whatever credentials
+// this server itself already has for it (--raw undoes the DATA+OMITTED redaction,
+// --minify keeps only this context's cluster/user/context, --flatten inlines
+// cert/key data so the file works standalone on another machine).
+async function getRawKubeconfig(context) {
+  return await runCommand(`kubectl --context="${context}" config view --raw --minify --flatten -o yaml`);
+}
+
+// Resolve a context's cluster server URL + CA data — needed to build a standalone
+// kubeconfig for a user's client cert. Parses the whole raw kubeconfig as JSON rather
+// than a jsonpath filter expression, since _parseArgs' tokenizer isn't built to survive
+// jsonpath's own quoting/bracket syntax.
+async function getClusterConnectionInfo(context) {
+  const out = await runCommand('kubectl config view --raw -o json');
+  const cfg = JSON.parse(out);
+  const ctxEntry = (cfg.contexts ?? []).find(c => c.name === context);
+  if (!ctxEntry) throw new Error(`Context "${context}" not found in kubeconfig`);
+  const clusterName  = ctxEntry.context.cluster;
+  const clusterEntry = (cfg.clusters ?? []).find(c => c.name === clusterName);
+  if (!clusterEntry) throw new Error(`Cluster "${clusterName}" not found in kubeconfig`);
+  return {
+    clusterName,
+    server:                clusterEntry.cluster.server,
+    caData:                clusterEntry.cluster['certificate-authority-data'] ?? null,
+    insecureSkipTlsVerify: !!clusterEntry.cluster['insecure-skip-tls-verify'],
+  };
+}
+
 // ── Wait for a fix to settle (replaces blind sleep after _applyFix) ──────────
 // Dispatches the right kubectl wait/rollout-status variant based on action type.
 // Rejects on timeout — callers should catch and fall through to _validateFix.
@@ -329,6 +392,12 @@ module.exports = {
   applyManifest,
   dryRunManifest,
   deleteRbacResource,
+  submitCsr,
+  approveCsr,
+  getCsrCertificate,
+  deleteCsr,
+  getClusterConnectionInfo,
+  getRawKubeconfig,
   getNetworkPolicies,
   getServices,
   getIngresses,

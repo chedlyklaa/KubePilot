@@ -1,5 +1,7 @@
 'use strict';
 
+const { NODE_UNHEALTHY_TYPES } = require('./nodeConditions');
+
 // ── Change-relevant Kubernetes event reasons (mostly Normal type — dropped by EventAnalyzer) ──
 const DEPLOYMENT_CHANGE_REASONS = new Set([
   'ScalingReplicaSet',  // Deployment controller scaling RS — most reliable rollout signal
@@ -117,9 +119,7 @@ function parseRolloutHistory(text) {
 
 // Return true if the pod's node has active pressure conditions.
 function hasNodePressure(nodeIssues) {
-  return Array.isArray(nodeIssues) && nodeIssues.some(n =>
-    ['NodeMemoryPressure', 'NodeDiskPressure', 'NodePIDPressure', 'NodeNotReady', 'NodeNetworkUnavailable'].includes(n.type)
-  );
+  return Array.isArray(nodeIssues) && nodeIssues.some(n => NODE_UNHEALTHY_TYPES.includes(n.type));
 }
 
 // ── Deterministic confidence scorer — zero LLM involvement ────────────────────

@@ -1,6 +1,9 @@
 'use strict';
 
-const MASS_FAILURE_THRESHOLD = parseInt(process.env.MASS_FAILURE_THRESHOLD || '5', 10);
+const { NODE_RESOURCE_PRESSURE_TYPES } = require('./nodeConditions');
+const { loadConfig } = require('../config');
+
+const MASS_FAILURE_THRESHOLD = loadConfig().MASS_FAILURE_THRESHOLD;
 
 class ClusterAnalyzer {
   /**
@@ -9,7 +12,7 @@ class ClusterAnalyzer {
    * @param {object} params
    * @param {Array}  params.podIssues        - From PodAnalyzer
    * @param {Array}  params.nodeIssues       - From NodeAnalyzer
-   * @param {object} params.correlation      - From CorrelationEngine.correlate()
+   * @param {object} params.correlation      - From NodeHotspotCorrelator.correlate()
    * @param {Array}  params.events           - From EventAnalyzer
    * @param {string} params.clusterName
    *
@@ -50,7 +53,7 @@ class ClusterAnalyzer {
     // ── ClusterDegradation ─────────────────────────────────────────────────
     const notReadyNodes = nodeIssues.filter(n => n.type === 'NodeNotReady').length;
     const pressureNodes = nodeIssues.filter(n =>
-      ['NodeMemoryPressure','NodeDiskPressure','NodePIDPressure'].includes(n.type)
+      NODE_RESOURCE_PRESSURE_TYPES.includes(n.type)
     ).length;
 
     if (notReadyNodes >= 2 || (notReadyNodes >= 1 && pressureNodes >= 1)) {

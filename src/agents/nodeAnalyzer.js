@@ -1,19 +1,16 @@
 'use strict';
 
-// ── Condition type → issue type mapping ────────────────────────────────────────
-const CONDITION_ISSUE = {
-  MemoryPressure:    'NodeMemoryPressure',
-  DiskPressure:      'NodeDiskPressure',
-  PIDPressure:       'NodePIDPressure',
-  NetworkUnavailable:'NodeNetworkUnavailable',
-};
+const { CONDITION_TO_ISSUE_TYPE: CONDITION_ISSUE } = require('./nodeConditions');
+const { loadConfig } = require('../config');
+
+const _config = loadConfig();
 
 // CPU saturation threshold (fraction, e.g. 0.90 = 90%)
-const CPU_SAT_THRESHOLD  = parseFloat(process.env.NODE_CPU_SAT_THRESHOLD  || '0.90');
-const MEM_SAT_THRESHOLD  = parseFloat(process.env.NODE_MEM_SAT_THRESHOLD  || '0.90');
+const CPU_SAT_THRESHOLD  = _config.NODE_CPU_SAT_THRESHOLD;
+const MEM_SAT_THRESHOLD  = _config.NODE_MEM_SAT_THRESHOLD;
 // Flapping: ≥ N Ready→NotReady transitions within the window
-const FLAP_TRANSITIONS   = parseInt(process.env.NODE_FLAP_TRANSITIONS || '2', 10);
-const FLAP_WINDOW_MS     = parseInt(process.env.NODE_FLAP_WINDOW_MS   || String(10 * 60 * 1000), 10);
+const FLAP_TRANSITIONS   = _config.NODE_FLAP_TRANSITIONS;
+const FLAP_WINDOW_MS     = _config.NODE_FLAP_WINDOW_MS;
 
 class NodeAnalyzer {
   /**

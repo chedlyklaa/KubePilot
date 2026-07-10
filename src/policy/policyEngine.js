@@ -11,10 +11,13 @@ const ALLOWED_ACTIONS = new Set([
 
 const NODE_ACTIONS = new Set(['cordon_node', 'drain_node', 'uncordon_node']);
 
-// Characters that enable shell injection or command chaining.
-// Includes \n and \r because exec() passes strings to /bin/sh -c which splits on newlines,
-// and quotes allow escaping the kubectl argument context.
-const SHELL_INJECTION_RE = /[;&|`$(){}[\]<>\\\n\r'"]/;
+// Characters that enable shell injection or command chaining. kubectl.js executes via
+// execFile (never a shell), so {}[] are excluded — they're required by legitimate
+// jsonpath queries (-o jsonpath={.spec...}) and don't enable command execution even in
+// a real shell (brace/glob expansion only, not execution). \n and \r are still blocked
+// since command-history/log fields sometimes flow through here, and quotes allow
+// escaping the kubectl argument context.
+const SHELL_INJECTION_RE = /[;&|`$()<>\\\n\r'"]/;
 // Every kubectl invocation must start with the literal word "kubectl"
 const KUBECTL_RE         = /^kubectl\b/;
 // Valid Kubernetes resource name: lowercase alphanumeric + hyphens/dots
@@ -266,10 +269,12 @@ class PolicyEngine {
       };
     }
 
-    // Write commands must include an explicit namespace
-    const isReadOnly = /\b(get|describe|logs|top|rollout\s+status|version|cluster-info)\b/.test(trimmed);
+    // Write commands must include an explicit namespace — except cluster-scoped node
+    // operations (cordon/uncordon/drain/taint), which have no namespace concept at all.
+    const isReadOnly      = /\b(get|describe|logs|top|rollout\s+status|version|cluster-info)\b/.test(trimmed);
+    const isClusterScoped = /\b(cordon|uncordon|drain|taint)\b/.test(trimmed);
     const hasNs      = /-n\s+\S+|--namespace[= ]\S+|--all-namespaces/.test(trimmed);
-    if (!isReadOnly && !hasNs) {
+    if (!isReadOnly && !isClusterScoped && !hasNs) {
       return {
         safe: false, command: null,
         reason: 'write command is missing a namespace flag (-n <ns> or --all-namespaces)',

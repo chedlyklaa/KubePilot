@@ -8,6 +8,17 @@ const kubectl        = require('../tools/kubectl');
 const vectorStore    = require('../memory/vectorStore');
 const tokenStore     = require('../api/tokenStore');
 const { runLLMCall } = require('../resilience/llmCircuitBreaker');
+const PolicyEngine   = require('../policy/policyEngine');
+
+const policyEngine = new PolicyEngine();
+
+// Sanitize a kubectl command before executing it — the same allowlist/injection gate
+// ClusterAgent applies to its own kubectl calls (see ClusterAgent._runSafeCommand).
+function safeRun(cmd) {
+  const { safe, command, reason } = policyEngine.sanitizeCommand(cmd);
+  if (!safe) return Promise.reject(new Error(`Command blocked by policy sanitizer: ${reason}`));
+  return kubectl.runCommand(command);
+}
 
 const client = new OpenAI({
   apiKey:  process.env.OPENAI_API_KEY,
@@ -103,24 +114,27 @@ class InvestigatorAgent {
       const ns = namespace;
 
       // ── Gather all evidence concurrently ───────────────────────────────────
+      // Every command runs through the same sanitizer gate ClusterAgent uses before
+      // its own kubectl calls. Investigator only ever reads, so a sanitizer rejection
+      // just rejects that one promise — already tolerated by Promise.allSettled below.
       const logStep = podName
-        ? kubectl.runCommand(`kubectl --context="${kubeContext}" logs ${podName} -n ${ns} --tail=100`)
+        ? safeRun(`kubectl --context=${kubeContext} logs ${podName} -n ${ns} --tail=100`)
         : Promise.resolve(null);
 
       const prevLogStep = podName
-        ? kubectl.runCommand(`kubectl --context="${kubeContext}" logs ${podName} -n ${ns} --tail=100 --previous`)
+        ? safeRun(`kubectl --context=${kubeContext} logs ${podName} -n ${ns} --tail=100 --previous`)
         : Promise.resolve(null);
 
       const eventsStep = podName
-        ? kubectl.runCommand(`kubectl --context="${kubeContext}" get events -n ${ns} --field-selector involvedObject.name=${podName}`)
+        ? safeRun(`kubectl --context=${kubeContext} get events -n ${ns} --field-selector involvedObject.name=${podName}`)
         : Promise.resolve(null);
 
       const deployStep = deployment
-        ? kubectl.runCommand(`kubectl --context="${kubeContext}" get deployment ${deployment} -n ${ns} -o json`)
+        ? safeRun(`kubectl --context=${kubeContext} get deployment ${deployment} -n ${ns} -o json`)
         : Promise.resolve(null);
 
       const nodeStep = nodeName
-        ? kubectl.runCommand(`kubectl --context="${kubeContext}" describe node ${nodeName}`)
+        ? safeRun(`kubectl --context=${kubeContext} describe node ${nodeName}`)
         : Promise.resolve(null);
 
       const promStep = podName ? (async () => {

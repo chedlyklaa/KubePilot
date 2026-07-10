@@ -32,37 +32,64 @@ Node-level actions (cordon_node, drain_node, uncordon_node) should only be propo
 Output ONLY valid JSON. No markdown.`;
 
 class PlannerAgent {
+  constructor() {
+    // ── Context section registry ──────────────────────────────────────────
+    // Each entry formats one optional evidence block for plan()'s prompt. Adding a new
+    // signal source (a new engine's output) means adding ONE entry here — not a new
+    // destructured param, a new method, AND a new template insertion point kept in sync
+    // by hand across three places.
+    //
+    // `prefix` reproduces this file's historical prompt layout exactly: the first seven
+    // sections were each on their own template-literal line, so got an unconditional
+    // leading blank line even when empty; the last three were concatenated with no
+    // separator, relying solely on each formatter's own leading '\n' when non-empty.
+    // New sections should normally use prefix: '' (self-contained leading '\n' inside
+    // the formatter itself, as changeCorrelation/capacityForecast/rca already do) so an
+    // inactive section doesn't leave a stray blank line.
+    this.contextSections = [
+      { key: 'metrics',           prefix: '\n', formatter: p => this._formatMetrics(p.metrics) },
+      { key: 'nodeContext',       prefix: '\n', formatter: p => this._formatNodeContext(p.nodeMetrics, p.nodeIssues) },
+      { key: 'events',            prefix: '\n', formatter: p => this._formatEvents(p.events, p.issue) },
+      { key: 'correlation',       prefix: '\n', formatter: p => this._formatCorrelation(p.correlationFindings, p.clusterFindings) },
+      { key: 'pastEpisodes',      prefix: '\n', formatter: p => this._formatPastEpisodes(p.structuralMatches, p.semanticMatches) },
+      { key: 'learnedRules',      prefix: '\n', formatter: p => this._formatRules(p.learnedRules) },
+      { key: 'investigationGate', prefix: '\n', formatter: p => this._formatInvestigationContext(p.investigationContext) },
+      { key: 'changeCorrelation', prefix: '',   formatter: p => this._formatChangeCorrelation(p.changeCorrelation) },
+      { key: 'capacityForecast',  prefix: '',   formatter: p => this._formatCapacityForecast(p.capacityForecast) },
+      {
+        key: 'rootCauseAnalysis', prefix: '',
+        formatter: p => (p.rca && p.rca.confidence > 0)
+          ? `\nRoot cause analysis:\nSuspected cause: ${p.rca.suspected_cause}\nConfidence: ${p.rca.confidence}\nEvidence: ${(p.rca.evidence ?? []).join(', ')}\nRisk level: ${p.rca.risk_level}\nFocus: ${p.rca.recommended_focus}\nUse this analysis to inform your action decision.`
+          : '',
+      },
+    ];
+  }
+
+  // Builds the full dynamic-evidence block from the registered context sections above.
+  _buildContextBlock(params) {
+    return this.contextSections.map(s => s.prefix + s.formatter(params)).join('');
+  }
+
   /**
    * Plan remediation for a pod issue.
    * All existing parameters preserved; new optional node/event/correlation context added.
    */
-  async plan({
-    issue, podLogs, structuralMatches, semanticMatches, learnedRules, attempt, metrics,
-    // Node/event/correlation context
-    nodeMetrics = null, nodeIssues = [], events = [], correlationFindings = [], clusterFindings = [],
-    // Investigation gate output (null = evidence was already sufficient)
-    investigationContext = null,
-    // InvestigatorAgent RCA — optional, injected into prompt when confidence > 0
-    rca = null,
-    // ChangeCorrelationEngine result — optional, null when feature is off or no signal
-    changeCorrelation = null,
-    // CapacityForecastEngine result — optional, null when feature is off or below HIGH threshold
-    capacityForecast = null,
-  }) {
-    const hasDeployment = !!issue.deployment;
+  async plan(params) {
+    const {
+      issue, podLogs, attempt, structuralMatches, semanticMatches, learnedRules, metrics,
+      // Defaults applied here since params is no longer destructured in the signature —
+      // callers may omit any of these exactly as before.
+      nodeMetrics = null, nodeIssues = [], events = [], correlationFindings = [], clusterFindings = [],
+      investigationContext = null, rca = null, changeCorrelation = null, capacityForecast = null,
+    } = params;
+    const normalizedParams = {
+      ...params,
+      nodeMetrics, nodeIssues, events, correlationFindings, clusterFindings,
+      investigationContext, rca, changeCorrelation, capacityForecast,
+    };
 
-    const pastCtx          = this._formatPastEpisodes(structuralMatches, semanticMatches);
-    const rulesCtx         = this._formatRules(learnedRules);
-    const metricsCtx       = this._formatMetrics(metrics);
-    const nodeCtx          = this._formatNodeContext(nodeMetrics, nodeIssues);
-    const eventCtx         = this._formatEvents(events, issue);
-    const corrCtx          = this._formatCorrelation(correlationFindings, clusterFindings);
-    const investigationCtx  = this._formatInvestigationContext(investigationContext);
-    const changeCtx         = this._formatChangeCorrelation(changeCorrelation);
-    const capacityCtx       = this._formatCapacityForecast(capacityForecast);
-    const rcaCtx = (rca && rca.confidence > 0)
-      ? `\nRoot cause analysis:\nSuspected cause: ${rca.suspected_cause}\nConfidence: ${rca.confidence}\nEvidence: ${(rca.evidence ?? []).join(', ')}\nRisk level: ${rca.risk_level}\nFocus: ${rca.recommended_focus}\nUse this analysis to inform your action decision.`
-      : '';
+    const hasDeployment = !!issue.deployment;
+    const contextBlock = this._buildContextBlock(normalizedParams);
 
     const prompt = `CURRENT ISSUE
 issueType:    ${issue.type}
@@ -76,14 +103,7 @@ oomKilled:    ${issue.oomKilled ?? false}
 exitCode:     ${issue.exitCode ?? 'N/A'}
 restartCount: ${issue.restartCount ?? 0}
 attempt:      #${attempt}
-${podLogs ? `\nRECENT POD LOGS\n${podLogs.slice(-1200)}` : ''}
-${metricsCtx}
-${nodeCtx}
-${eventCtx}
-${corrCtx}
-${pastCtx}
-${rulesCtx}
-${investigationCtx}${changeCtx}${capacityCtx}${rcaCtx}
+${podLogs ? `\nRECENT POD LOGS\n${podLogs.slice(-1200)}` : ''}${contextBlock}
 ACTION DECISION TREE — follow this top-to-bottom, pick the FIRST match:
 
 Step 1: Is oomKilled=true OR exitCode=137?

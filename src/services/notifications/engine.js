@@ -55,10 +55,18 @@ function invalidateRoutingCache() {
 // ── Collect personal email recipients from user preferences ──────────────────
 // Returns array of email addresses for users who have email enabled.
 // Pass targetRole to restrict delivery to a specific role (e.g. 'admin').
-async function _getPersonalEmailRecipients(category, targetRole = null) {
+// Pass targetUserIds to restrict delivery to a specific, already-resource-scoped set of
+// users (e.g. escalationStore only resolves recipients who actually have access to the
+// affected cluster/namespace) — channel/category preferences still apply on top of it.
+async function _getPersonalEmailRecipients(category, targetRole = null, targetUserIds = null) {
   try {
     const { UserNotificationPreferences, User } = require('../../db/models');
-    const prefs = await UserNotificationPreferences.find({ channels: 'email' }).lean();
+    let prefs = await UserNotificationPreferences.find({ channels: 'email' }).lean();
+
+    if (Array.isArray(targetUserIds)) {
+      const allowed = new Set(targetUserIds.map(String));
+      prefs = prefs.filter(p => allowed.has(p.userId?.toString()));
+    }
 
     // Batch-fetch all users in one query to avoid N+1 DB round-trips
     const userIds  = prefs.map(p => p.userId);
@@ -183,9 +191,15 @@ async function emit(event) {
   channelsToUse.add('inApp');
 
   // Pre-fetch personal email recipients once (only if email channel is active).
-  // targetRole restricts delivery to a specific role (e.g. 'admin' for approvals).
+  // targetRole restricts delivery to a specific role (e.g. 'admin' for approvals);
+  // targetUserIds restricts it to an already resource-scoped set of users (e.g.
+  // escalations only resolving to admins + developers with access to that cluster).
   const personalEmails = channelsToUse.has('email') && enabledByType['email']
-    ? await _getPersonalEmailRecipients(notification.category, notification.targetRole)
+    ? await _getPersonalEmailRecipients(
+        notification.category,
+        notification.targetRole,
+        notification.targetUserIds?.length ? notification.targetUserIds : null
+      )
     : [];
 
   await Promise.all([...channelsToUse].map(async type => {

@@ -1,6 +1,10 @@
 // Per-user SSE notification delivery + MongoDB persistence.
 // Tracks live SSE connections so notifications reach the right browser tab.
 
+'use strict';
+
+const { Notification } = require('../db/models');
+
 const connections = new Map(); // userId → Set<SSEResponse>
 
 function register(userId, res) {
@@ -20,7 +24,6 @@ function _push(userId, payload) {
 async function send(targetUserIds, { type = 'info', message, data = {} }) {
   let doc;
   try {
-    const { Notification } = require('../db/models');
     doc = await Notification.create({ targetUserIds, type, message, data, readBy: [] });
   } catch (err) {
     console.error('[Notifications] DB save failed:', err.message);
@@ -44,7 +47,6 @@ async function send(targetUserIds, { type = 'info', message, data = {} }) {
 }
 
 async function getForUser(userId) {
-  const { Notification } = require('../db/models');
   const docs = await Notification.find({ targetUserIds: userId }).sort({ createdAt: -1 }).limit(50);
   return docs.map(d => ({
     id:        d._id.toString(),
@@ -57,12 +59,10 @@ async function getForUser(userId) {
 }
 
 async function markRead(userId, notifId) {
-  const { Notification } = require('../db/models');
   await Notification.findByIdAndUpdate(notifId, { $addToSet: { readBy: userId } });
 }
 
 async function markAllRead(userId) {
-  const { Notification } = require('../db/models');
   await Notification.updateMany({ targetUserIds: userId }, { $addToSet: { readBy: userId } });
 }
 

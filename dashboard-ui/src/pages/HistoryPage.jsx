@@ -5,14 +5,12 @@ import { fmtDT } from '../utils/format'
 import { STATE_LABEL } from '../constants'
 import AssignCell from '../components/AssignCell'
 import FilterDrawer, { FilterSection, FilterChips, FilterUserList, FilterDateRange } from '../components/FilterDrawer'
+import { useFilters } from '../hooks/useFilters'
 
 const ALL_STATUSES   = ['pending', 'need_help', 'not_fixed', 'in_progress', 'acknowledged', 'fixed']
 const STATUS_OPTS    = ALL_STATUSES.map(s => ({ value: s, label: STATE_LABEL[s] ?? s }))
 const DECISION_OPTS  = [{ value: 'approved', label: 'Approved' }, { value: 'denied', label: 'Denied' }, { value: 'silenced', label: 'Silenced' }, { value: 'timeout', label: 'Timeout' }]
 const RISK_OPTS      = [{ value: 'LOW', label: 'Low' }, { value: 'MEDIUM', label: 'Medium' }, { value: 'HIGH', label: 'High' }]
-
-const toDate  = () => new Date().toISOString().slice(0, 10)
-const daysAgo = n => new Date(Date.now() - (n - 1) * 86400000).toISOString().slice(0, 10)
 
 const EMPTY_APPR = { decisions: [], risks: [], userIds: [], dateFrom: '', dateTo: '' }
 const EMPTY_ESC  = { statuses: [],  userIds: [], dateFrom: '', dateTo: '' }
@@ -27,11 +25,17 @@ export default function HistoryPage() {
   const [drawerOpen,  setDrawerOpen]      = useState(false)
 
   // Approval filters
-  const [apprFilters,     setApprFilters]     = useState(EMPTY_APPR)
-  const [apprDatePreset,  setApprDatePreset]  = useState('all')
+  const {
+    filters: apprFilters, setFilters: setApprFilters, toggle: toggleAppr, clear: clearApprFilters,
+    activeCount: apprActiveCount, datePreset: apprDatePreset, applyPreset: applyApprPreset,
+    setDateFrom: setApprDateFrom, setDateTo: setApprDateTo,
+  } = useFilters(EMPTY_APPR, { withDatePreset: true })
   // Escalation filters
-  const [escFilters,      setEscFilters]      = useState(EMPTY_ESC)
-  const [escDatePreset,   setEscDatePreset]   = useState('all')
+  const {
+    filters: escFilters, setFilters: setEscFilters, toggle: toggleEsc, clear: clearEscFilters,
+    activeCount: escActiveCount, datePreset: escDatePreset, applyPreset: applyEscPreset,
+    setDateFrom: setEscDateFrom, setDateTo: setEscDateTo,
+  } = useFilters(EMPTY_ESC, { withDatePreset: true })
 
   useEffect(() => {
     setLoading(true)
@@ -51,51 +55,11 @@ export default function HistoryPage() {
     setEscalations(p => p.map(e => e._id === recordId ? { ...e, assignedTo } : e))
   }
 
-  // ── Generic toggle helper ─────────────────────────────────────────────────
-  const toggleAppr = key => val =>
-    setApprFilters(f => ({ ...f, [key]: f[key].includes(val) ? f[key].filter(x => x !== val) : [...f[key], val] }))
-
-  const toggleEsc = key => val =>
-    setEscFilters(f => ({ ...f, [key]: f[key].includes(val) ? f[key].filter(x => x !== val) : [...f[key], val] }))
-
-  // ── Date preset helpers ───────────────────────────────────────────────────
-  function applyApprPreset(preset) {
-    setApprDatePreset(preset)
-    if      (preset === 'today') setApprFilters(f => ({ ...f, dateFrom: toDate(),    dateTo: toDate() }))
-    else if (preset === '7d')    setApprFilters(f => ({ ...f, dateFrom: daysAgo(7),  dateTo: toDate() }))
-    else if (preset === '30d')   setApprFilters(f => ({ ...f, dateFrom: daysAgo(30), dateTo: toDate() }))
-    else                         setApprFilters(f => ({ ...f, dateFrom: '',          dateTo: '' }))
-  }
-  function setApprDateFrom(val) { setApprDatePreset('custom'); setApprFilters(f => ({ ...f, dateFrom: val })) }
-  function setApprDateTo(val)   { setApprDatePreset('custom'); setApprFilters(f => ({ ...f, dateTo:   val })) }
-
-  function applyEscPreset(preset) {
-    setEscDatePreset(preset)
-    if      (preset === 'today') setEscFilters(f => ({ ...f, dateFrom: toDate(),    dateTo: toDate() }))
-    else if (preset === '7d')    setEscFilters(f => ({ ...f, dateFrom: daysAgo(7),  dateTo: toDate() }))
-    else if (preset === '30d')   setEscFilters(f => ({ ...f, dateFrom: daysAgo(30), dateTo: toDate() }))
-    else                         setEscFilters(f => ({ ...f, dateFrom: '',          dateTo: '' }))
-  }
-  function setEscDateFrom(val) { setEscDatePreset('custom'); setEscFilters(f => ({ ...f, dateFrom: val })) }
-  function setEscDateTo(val)   { setEscDatePreset('custom'); setEscFilters(f => ({ ...f, dateTo:   val })) }
-
-  // ── Active filter counts ──────────────────────────────────────────────────
-  const apprActiveCount =
-    (apprFilters.decisions.length > 0 ? 1 : 0) +
-    (apprFilters.risks.length     > 0 ? 1 : 0) +
-    (apprFilters.userIds.length   > 0 ? 1 : 0) +
-    ((apprFilters.dateFrom || apprFilters.dateTo) ? 1 : 0)
-
-  const escActiveCount =
-    (escFilters.statuses.length > 0 ? 1 : 0) +
-    (escFilters.userIds.length  > 0 ? 1 : 0) +
-    ((escFilters.dateFrom || escFilters.dateTo) ? 1 : 0)
-
   const activeCount = tab === 'approvals' ? apprActiveCount : escActiveCount
 
   function clearFilters() {
-    if (tab === 'approvals') { setApprFilters(EMPTY_APPR); setApprDatePreset('all') }
-    else                     { setEscFilters(EMPTY_ESC);   setEscDatePreset('all') }
+    if (tab === 'approvals') clearApprFilters()
+    else                     clearEscFilters()
   }
 
   // ── Filtered data ─────────────────────────────────────────────────────────

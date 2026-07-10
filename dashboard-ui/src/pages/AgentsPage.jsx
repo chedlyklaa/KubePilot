@@ -15,6 +15,9 @@ export default function AgentsPage() {
   const [rules, setRules]     = useState([])
   const [rulesLoading, setRulesLoading] = useState(true)
   const [showRules, setShowRules]       = useState(false)
+  const [ruleSearch, setRuleSearch]         = useState('')
+  const [ruleStatusFilter, setRuleStatusFilter] = useState('all')
+  const [ruleSourceFilter, setRuleSourceFilter] = useState('all')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -85,6 +88,19 @@ export default function AgentsPage() {
   const coreAgents    = agents.filter(a => a.type === 'core')
   const analyzers     = agents.filter(a => a.type === 'analyzer')
   const engines       = agents.filter(a => a.type === 'engine')
+
+  const filteredRules = rules.filter(rl => {
+    if (ruleStatusFilter === 'active' && !rl.active) return false
+    if (ruleStatusFilter === 'disabled' && rl.active) return false
+    if (ruleSourceFilter !== 'all' && rl.source !== ruleSourceFilter) return false
+    if (ruleSearch.trim()) {
+      const q = ruleSearch.trim().toLowerCase()
+      const haystack = `${rl.issueType} ${rl.condition} ${rl.rule}`.toLowerCase()
+      if (!haystack.includes(q)) return false
+    }
+    return true
+  })
+  const rulesFiltered = ruleSearch.trim() !== '' || ruleStatusFilter !== 'all' || ruleSourceFilter !== 'all'
 
   const configItems = [
     { key: 'CYCLE_INTERVAL_MS',          label: 'Cycle Interval',       value: config.cycleIntervalMs, display: `${(config.cycleIntervalMs / 1000).toFixed(0)}s`, hint: 'Milliseconds between orchestrator cycles' },
@@ -208,7 +224,7 @@ export default function AgentsPage() {
       <div className="ag-section">
         <div className="ag-section-head">
           <div>
-            <h3 className="ag-section-title">Learned Rules {showRules && rules.length > 0 && <span className="ag-rules-count">{rules.length}</span>}</h3>
+            <h3 className="ag-section-title">Learned Rules {showRules && rules.length > 0 && <span className="ag-rules-count">{rulesFiltered ? `${filteredRules.length}/${rules.length}` : rules.length}</span>}</h3>
             <span className="ag-section-desc">Auto-generated from repeated failure patterns — injected into Planner prompts to avoid known-bad actions</span>
           </div>
           <button className="ag-rules-toggle-btn" onClick={() => setShowRules(v => !v)}>
@@ -216,6 +232,31 @@ export default function AgentsPage() {
             <span className="ag-rules-chevron">{showRules ? '▲' : '▼'}</span>
           </button>
         </div>
+        {showRules && rules.length > 0 && (
+          <div className="ag-rules-filter-row">
+            <input
+              className="ag-rules-search-input"
+              placeholder="Search issue type, condition, or rule text..."
+              value={ruleSearch}
+              onChange={e => setRuleSearch(e.target.value)}
+            />
+            <select value={ruleStatusFilter} onChange={e => setRuleStatusFilter(e.target.value)}>
+              <option value="all">All statuses</option>
+              <option value="active">Active</option>
+              <option value="disabled">Disabled</option>
+            </select>
+            <select value={ruleSourceFilter} onChange={e => setRuleSourceFilter(e.target.value)}>
+              <option value="all">All sources</option>
+              <option value="manual">Manual</option>
+              <option value="pattern_detected">Auto-detected</option>
+            </select>
+            {rulesFiltered && (
+              <button className="clear-filter-btn" onClick={() => { setRuleSearch(''); setRuleStatusFilter('all'); setRuleSourceFilter('all') }}>
+                Clear filters
+              </button>
+            )}
+          </div>
+        )}
         {showRules && (rulesLoading && rules.length === 0
           ? <div className="ag-loading">Loading rules...</div>
           : rules.length === 0
@@ -223,9 +264,14 @@ export default function AgentsPage() {
                 <span className="ag-rules-empty-icon">📋</span>
                 <div>No learned rules yet. Rules are created automatically when the same action fails repeatedly for the same issue type.</div>
               </div>
+            : filteredRules.length === 0
+              ? <div className="ag-rules-empty">
+                  <span className="ag-rules-empty-icon">🔍</span>
+                  <div>No rules match the current filters.</div>
+                </div>
             : (
               <div className="ag-rules-list">
-                {rules.map(rl => (
+                {filteredRules.map(rl => (
                   <div key={rl._id} className={`ag-rule-card ${!rl.active ? 'ag-rule-disabled' : ''}`}>
                     <div className="ag-rule-top">
                       <div className="ag-rule-issue">

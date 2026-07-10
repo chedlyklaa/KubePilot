@@ -1,181 +1,186 @@
+# Fixtures for benchmark/runner/run.js — a deterministic regression suite for the
+# PolicyEngine + RiskEngine decision layer (src/policy/policyEngine.js, src/risk/engine.js).
+#
+# Each scenario constructs the exact { plan, context } shape ClusterAgent builds in
+# src/agents/clusterAgent.js (see policyPlan/policyCtx around _handle()) and asserts on
+# the REAL output of policyEngine.validate() and riskEngine.calculateRisk() — no live
+# cluster, no running server, no LLM calls. This intentionally does not cover
+# PlannerAgent's LLM output or actual kubectl execution; for that, see
+# benchmark/agent-benchmark-advanced1.js or scripts/test-agent-decisions.sh, both of
+# which require a live minikube cluster and a running API server.
+#
+# Field reference:
+#   issue             → context.issueType
+#   proposedAction    → plan.action (what the "planner" claims it wants to do)
+#   proposedRisk      → plan.risk (LOW | MEDIUM | HIGH)
+#   deploymentExists  → context.deploymentExists
+#   hasController     → context.hasController (defaults to deploymentExists if omitted)
+#   ownerKind         → context.ownerKind (Deployment | StatefulSet | DaemonSet | Job)
+#   oomKilled         → context.oomKilled
+#   attemptHistory    → context.attemptHistory ([{action, outcome}, ...])
+#   recentDeployment  → context.recentDeployment
+#   llmConfidence     → fed into RiskEngine as llmConfidence
+#   expectedAction    → the action PolicyEngine should settle on after all rules run
+#   expectedStatus    → approved | modified | rejected
+#   expectedDecision  → AUTONOMOUS | NOTIFY | BLOCK | NOOP (see run.js for how this is derived)
+
 scenarios:
 
-  # ==========================================
-  # LOW-RISK AUTONOMOUS SCENARIOS
-  # ==========================================
-
-  - name: "CrashLoopBackOff Recovery"
+  # ── Rule 1: unknown action (e.g. LLM hallucination) is always rejected ──────────
+  - name: "Unknown action is rejected outright"
     cluster: "dev-cluster"
     tier: "dev"
-
     issue: "CrashLoopBackOff"
+    proposedAction: "delete_everything"
+    proposedRisk: "LOW"
+    deploymentExists: true
+    expectedAction: "noop"
+    expectedStatus: "rejected"
+    expectedDecision: "BLOCK"
 
-    severity: "medium"
-
-    expectedAction: "restart_deployment"
-
-    expectedRisk: 0.22
-
-    expectedDecision: "AUTONOMOUS"
-
-  - name: "Pod Restart Failure"
-    cluster: "staging-cluster"
-    tier: "staging"
-
-    issue: "ContainerRestartFailure"
-
-    severity: "medium"
-
-    expectedAction: "delete_pod"
-
-    expectedRisk: 0.35
-
-    expectedDecision: "NOTIFY"
-
-  - name: "Temporary API Timeout"
+  # ── Rule 2: OOMKilled absolute — only increase_memory (or noop) is meaningful ───
+  - name: "OOMKilled forces increase_memory"
     cluster: "dev-cluster"
     tier: "dev"
+    issue: "OOMKilled"
+    oomKilled: true
+    proposedAction: "restart"
+    proposedRisk: "LOW"
+    deploymentExists: true
+    llmConfidence: 0.85
+    expectedAction: "increase_memory"
+    expectedStatus: "modified"
+    expectedDecision: "NOTIFY"   # increase_memory is a HIGH_RISK_ACTION — always needs approval
 
-    issue: "ApiServerTimeout"
-
-    severity: "low"
-
-    expectedAction: "restart_pod"
-
-    expectedRisk: 0.18
-
+  # ── Rule 3: delete_pod forbidden on a controller-managed pod ────────────────────
+  - name: "delete_pod on Deployment-managed pod is overridden to restart"
+    cluster: "staging-cluster"
+    tier: "staging"
+    issue: "ContainerRestartFailure"
+    proposedAction: "delete_pod"
+    proposedRisk: "MEDIUM"
+    deploymentExists: true
+    llmConfidence: 0.8
+    expectedAction: "restart"
+    expectedStatus: "modified"
     expectedDecision: "AUTONOMOUS"
 
-  - name: "High CPU Usage"
-    cluster: "staging-cluster"
-    tier: "staging"
-
+  # ── Rule 3a: scale_down requires an actual Deployment controller ────────────────
+  - name: "scale_down with no Deployment controller is blocked to noop"
+    cluster: "dev-cluster"
+    tier: "dev"
     issue: "CpuPressure"
+    proposedAction: "scale_down"
+    proposedRisk: "MEDIUM"
+    deploymentExists: false
+    hasController: false
+    expectedAction: "noop"
+    expectedStatus: "modified"
+    expectedDecision: "NOOP"
 
-    severity: "medium"
-
-    expectedAction: "scale_small"
-
-    expectedRisk: 0.42
-
-    expectedDecision: "NOTIFY"
-
-  # ==========================================
-  # MEDIUM-RISK SCENARIOS
-  # ==========================================
-
-  - name: "Memory Saturation"
-    cluster: "prod-cluster"
-    tier: "production"
-
-    issue: "MemoryPressure"
-
-    severity: "high"
-
-    expectedAction: "scale_large"
-
-    expectedRisk: 0.61
-
-    expectedDecision: "NOTIFY"
-
-  - name: "Node Pool Saturation"
-    cluster: "prod-cluster"
-    tier: "production"
-
-    issue: "NodePoolExhaustion"
-
-    severity: "high"
-
-    expectedAction: "scale_nodepool"
-
-    expectedRisk: 0.66
-
-    expectedDecision: "NOTIFY"
-
-  - name: "Image Pull Failure"
+  # ── Rule 4: ImagePullBackOff cannot be fixed by restart/rollback/scale ──────────
+  - name: "ImagePullBackOff only allows noop"
     cluster: "staging-cluster"
     tier: "staging"
-
     issue: "ImagePullBackOff"
+    proposedAction: "restart"
+    proposedRisk: "MEDIUM"
+    deploymentExists: true
+    expectedAction: "noop"
+    expectedStatus: "modified"
+    expectedDecision: "NOOP"
 
-    severity: "high"
+  # ── Rule 5: delete_pod on a Deployment-managed pod is hard-forbidden in prod ────
+  - name: "Production delete_pod on managed pod is hard-rejected"
+    cluster: "prod-cluster"
+    tier: "production"
+    issue: "ContainerRestartFailure"
+    proposedAction: "delete_pod"
+    proposedRisk: "MEDIUM"
+    deploymentExists: true
+    expectedAction: "noop"
+    expectedStatus: "rejected"
+    expectedDecision: "BLOCK"
 
-    expectedAction: "notify_human"
+  # ── Rule 6: retry protection — same action failed twice already ────────────────
+  - name: "Retry limit trips after two identical failures"
+    cluster: "staging-cluster"
+    tier: "staging"
+    issue: "CrashLoopBackOff"
+    proposedAction: "restart"
+    proposedRisk: "LOW"
+    deploymentExists: true
+    attemptHistory:
+      - { action: "restart", outcome: "failed" }
+      - { action: "restart", outcome: "failed" }
+    expectedAction: "noop"
+    expectedStatus: "modified"
+    expectedDecision: "NOOP"
 
-    expectedRisk: 0.58
+  # ── Rule 7: delete_pod on a bare, unmanaged pod is permanently destructive ──────
+  - name: "delete_pod on bare pod (no controller) is blocked to noop"
+    cluster: "dev-cluster"
+    tier: "dev"
+    issue: "PodNotReady"
+    proposedAction: "delete_pod"
+    proposedRisk: "LOW"
+    deploymentExists: false
+    hasController: false
+    expectedAction: "noop"
+    expectedStatus: "modified"
+    expectedDecision: "NOOP"
 
+  # ── Rule 7b: Job-owned pods run to completion — never restart/delete them ──────
+  - name: "Job-owned pod restart is blocked to noop"
+    cluster: "dev-cluster"
+    tier: "dev"
+    issue: "PodNotReady"
+    proposedAction: "restart"
+    proposedRisk: "LOW"
+    deploymentExists: true
+    ownerKind: "Job"
+    expectedAction: "noop"
+    expectedStatus: "modified"
+    expectedDecision: "NOOP"
+
+  # ── Rule 8: a correlated recent deployment change means rollback, not restart ──
+  - name: "Recent deployment change forces rollback over scale_down"
+    cluster: "prod-cluster"
+    tier: "production"
+    issue: "CrashLoopBackOff"
+    proposedAction: "scale_down"
+    proposedRisk: "MEDIUM"
+    deploymentExists: true
+    recentDeployment: true
+    llmConfidence: 0.75
+    expectedAction: "rollback"
+    expectedStatus: "modified"
     expectedDecision: "NOTIFY"
 
-  - name: "Repeated Deployment Failure"
-    cluster: "prod-cluster"
-    tier: "production"
+  # ── Baseline: a clean, low-risk dev-tier fix with nothing blocking it ───────────
+  - name: "Clean low-risk dev restart proceeds autonomously"
+    cluster: "dev-cluster"
+    tier: "dev"
+    issue: "CrashLoopBackOff"
+    proposedAction: "restart"
+    proposedRisk: "LOW"
+    deploymentExists: true
+    llmConfidence: 0.9
+    expectedAction: "restart"
+    expectedStatus: "approved"
+    expectedDecision: "AUTONOMOUS"
 
-    issue: "RepeatedCrashLoop"
-
-    severity: "high"
-
-    expectedAction: "freeze_autonomy"
-
-    expectedRisk: 0.69
-
+  # ── HIGH_RISK_ACTIONS override: increase_memory always needs a human, even when
+  #    the computed risk score alone would have qualified as autonomous ────────────
+  - name: "increase_memory always requires approval regardless of score"
+    cluster: "dev-cluster"
+    tier: "dev"
+    issue: "OOMKilled"
+    oomKilled: true
+    proposedAction: "increase_memory"
+    proposedRisk: "LOW"
+    deploymentExists: true
+    llmConfidence: 0.95
+    expectedAction: "increase_memory"
+    expectedStatus: "approved"
     expectedDecision: "NOTIFY"
-
-  # ==========================================
-  # HIGH-RISK BLOCKED SCENARIOS
-  # ==========================================
-
-  - name: "Dangerous Namespace Deletion"
-    cluster: "prod-cluster"
-    tier: "production"
-
-    issue: "NamespaceCorruption"
-
-    severity: "critical"
-
-    expectedAction: "delete_namespace"
-
-    expectedRisk: 0.96
-
-    expectedDecision: "BLOCK"
-
-  - name: "Production RBAC Modification"
-    cluster: "prod-cluster"
-    tier: "production"
-
-    issue: "UnauthorizedAccess"
-
-    severity: "critical"
-
-    expectedAction: "modify_rbac"
-
-    expectedRisk: 0.92
-
-    expectedDecision: "BLOCK"
-
-  - name: "Cluster Upgrade Attempt"
-    cluster: "prod-cluster"
-    tier: "production"
-
-    issue: "VersionDrift"
-
-    severity: "critical"
-
-    expectedAction: "cluster_upgrade"
-
-    expectedRisk: 0.94
-
-    expectedDecision: "BLOCK"
-
-  - name: "Scale To Zero Production"
-    cluster: "prod-cluster"
-    tier: "production"
-
-    issue: "AggressiveCostOptimization"
-
-    severity: "critical"
-
-    expectedAction: "scale_to_zero"
-
-    expectedRisk: 0.88
-
-    expectedDecision: "BLOCK"

@@ -1,11 +1,18 @@
 'use strict';
 
-// Minimum failing pods on one node to trigger a node-level root cause candidate
+// Spatial correlation: groups pod failures by the node they're running on, to detect
+// "hot nodes" (many unrelated pods failing on the same node — usually a node-level
+// problem, not N independent app bugs). Distinct from changeCorrelationEngine.js, which
+// does TEMPORAL correlation (does a recent deployment/config change explain this one
+// incident). The near-identical original names (correlationEngine.js /
+// changeCorrelationEngine.js) invited exactly the "is one of these dead?" confusion this
+// file's rename is meant to remove — both are live, called from different places in
+// ClusterAgent for different purposes.
+
 const NODE_CORR_THRESHOLD = parseInt(process.env.NODE_CORR_THRESHOLD || '3', 10);
-// Minimum namespaces affected on one node to flag cluster-level impact
 const NS_CORR_THRESHOLD   = parseInt(process.env.NS_CORR_THRESHOLD   || '2', 10);
 
-class CorrelationEngine {
+class NodeHotspotCorrelator {
   /**
    * Map pod issues to nodes and find multi-pod failure patterns.
    *
@@ -133,4 +140,4 @@ function _confidence(affectedPods, namespaceCount, hasNodeIssue) {
   return Math.min(Math.round(score * 100) / 100, 1.0);
 }
 
-module.exports = CorrelationEngine;
+module.exports = NodeHotspotCorrelator;

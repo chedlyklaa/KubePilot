@@ -2,8 +2,18 @@
 
 const crypto = require('crypto');
 
+// NOTIFICATION_SECRET protects Slack/Teams/SMTP credentials stored in NotificationChannelConfig.
+// It must be set explicitly — falling back to a fixed value would mean every deployment
+// that forgets to set it encrypts its channel secrets with the same publicly-known key.
+if (!process.env.NOTIFICATION_SECRET) {
+  throw new Error(
+    'NOTIFICATION_SECRET environment variable is required (protects encrypted Slack/Teams/SMTP ' +
+    'channel credentials). Set it to a long random value, e.g.: openssl rand -hex 32'
+  );
+}
+
 const KEY = crypto.createHash('sha256')
-  .update(process.env.NOTIFICATION_SECRET || 'kubepilot-notifications-secret-key')
+  .update(process.env.NOTIFICATION_SECRET)
   .digest(); // 32 bytes for AES-256
 
 function encrypt(obj) {

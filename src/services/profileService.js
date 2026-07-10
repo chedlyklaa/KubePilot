@@ -2,8 +2,8 @@
 const mongoose = require('mongoose');
 const bcrypt   = require('bcrypt');
 const { User, ApprovalHistory, EscalationHistory, ChatHistory, CommandHistory } = require('../db/models');
-const authService  = require('../api/authService');
-const emailService = require('../notifications/email');
+const authService = require('../api/authService');
+const mailer      = require('./mailer');
 
 const SALT_ROUNDS = 10;
 
@@ -18,12 +18,12 @@ setInterval(() => {
 }, 15 * 60 * 1000).unref();
 
 class ProfileService {
-  isEmailConfigured() {
-    return emailService.isConfigured();
+  async isEmailConfigured() {
+    return mailer.isConfigured();
   }
 
   async requestOtp(user) {
-    if (!emailService.isConfigured())
+    if (!(await mailer.isConfigured()))
       throw Object.assign(new Error('Email service is not configured on this server'), { status: 503 });
 
     const existing = otpStore.get(user.id);
@@ -31,7 +31,7 @@ class ProfileService {
       throw Object.assign(new Error('Please wait before requesting another code'), { status: 429 });
 
     const otp = String(Math.floor(100000 + Math.random() * 900000));
-    await emailService.sendOtp(user.email, user.name, otp);
+    await mailer.sendOtp(user.email, user.name, otp);
     otpStore.set(user.id, { otp, expiresAt: Date.now() + 10 * 60 * 1000, issuedAt: Date.now() });
     return { sent: true };
   }
