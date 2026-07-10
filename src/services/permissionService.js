@@ -66,6 +66,39 @@ async function loadPermissions(userId) {
   return perms;
 }
 
+// Which active users should be notified about something happening on a given
+// cluster/namespace: admins always, developers only if their effective permissions
+// actually grant them at least read access to that resource. Batched (2 queries total)
+// rather than looping loadPermissions() per user, since this runs across the whole
+// user base (e.g. once per escalation).
+// `models` is an injectable seam for tests (pass fake { User, Group } finders) — defaults
+// to the real Mongoose models in production.
+async function getEligibleRecipients(cluster, namespace, category = 'read-only', models = {}) {
+  const UserModel  = models.User  ?? User;
+  const GroupModel = models.Group ?? Group;
+
+  const users = await UserModel.find({ active: { $ne: false } }).select('_id role permissions group').lean();
+
+  const groupIds = [...new Set(users.filter(u => u.group).map(u => u.group.toString()))];
+  const groups   = groupIds.length
+    ? await GroupModel.find({ _id: { $in: groupIds } }).select('_id permissions').lean()
+    : [];
+  const groupById = new Map(groups.map(g => [g._id.toString(), g]));
+
+  const targets = [];
+  for (const u of users) {
+    if (u.role === 'admin') { targets.push(u._id.toString()); continue; }
+
+    let perms = [...(u.permissions ?? [])];
+    if (u.group) {
+      const group = groupById.get(u.group.toString());
+      if (group?.permissions?.length) perms = perms.concat(group.permissions);
+    }
+    if (checkAccess(perms, cluster, namespace, category)) targets.push(u._id.toString());
+  }
+  return targets;
+}
+
 // Does the permission set grant access?
 function checkAccess(permissions, cluster, namespace, category) {
   const minRole = CATEGORY_MIN_ROLE[category] ?? 'admin';
@@ -73,9 +106,11 @@ function checkAccess(permissions, cluster, namespace, category) {
 
   for (const p of permissions) {
     const clusterOk   = p.cluster === '*' || p.cluster === cluster;
-    // namespace=null means cluster-scoped command (get nodes, cordon) — any permission on that cluster grants access
-    // namespace=string means namespaced command — must match exactly or wildcard
-    const namespaceOk = p.namespace === '*' || !namespace || (namespace && p.namespace === namespace);
+    // namespace=null means a cluster-scoped command (get nodes, cordon, drain) — only a
+    // cluster-wide grant (namespace === '*') authorizes it; a single-namespace grant must
+    // not be able to approve an action that applies to the whole cluster.
+    // namespace=string means a namespaced command — must match exactly or be wildcarded.
+    const namespaceOk = namespace ? (p.namespace === '*' || p.namespace === namespace) : p.namespace === '*';
     const roleOk      = (ROLE_RANK[p.role] ?? 0) >= minRank;
     if (clusterOk && namespaceOk && roleOk) return true;
   }
@@ -129,6 +164,7 @@ function describeScope(permissions) {
 
 module.exports = {
   loadPermissions,
+  getEligibleRecipients,
   checkAccess,
   filterClusters,
   describeScope,

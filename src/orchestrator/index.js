@@ -1,36 +1,21 @@
 'use strict';
-const fs   = require('fs');
-const path = require('path');
-const yaml = require('js-yaml');
-
 const ClusterAgent     = require('../agents/clusterAgent');
 const vectorStore      = require('../memory/vectorStore');
 const episodicMemory   = require('../memory/episodicMemory');
 const ruleEngine       = require('../memory/ruleEngine');
 const metricsCollector = require('../monitoring/metricsCollector');
+const clusterConfig    = require('../config/clusterConfig');
+const { loadConfig }   = require('../config');
 
 class FleetOrchestrator {
   constructor() {
-    this.clusterAgents   = [];
-    this.configPath      = path.join(__dirname, '../../config/clusters.yaml');
-    this._pendingReload  = false;
-    this._reloadDebounce = null;
-  }
-
-  loadClusterConfig() {
-    try {
-      const file   = fs.readFileSync(this.configPath, 'utf8');
-      const config = yaml.load(file);
-      return config.clusters || [];
-    } catch (err) {
-      console.error('Failed to load cluster configuration:', err.message);
-      process.exit(1);
-    }
+    this.clusterAgents  = [];
+    this._pendingReload = false;
   }
 
   initializeAgents() {
     console.log('\nInitializing cluster agents...');
-    const clusters = this.loadClusterConfig();
+    const clusters = clusterConfig.getClusters();
     this.clusterAgents = clusters.map(cluster => {
       console.log(`  → ${cluster.name} (${cluster.tier ?? 'dev'})`);
       return new ClusterAgent(cluster);
@@ -40,14 +25,7 @@ class FleetOrchestrator {
 
   // ── Hot-reload: add/remove agents without restarting ─────────────────────
   _reconcileAgents() {
-    let newClusters;
-    try {
-      const file = fs.readFileSync(this.configPath, 'utf8');
-      newClusters = yaml.load(file)?.clusters ?? [];
-    } catch (err) {
-      console.error('[ORCHESTRATOR] Hot-reload: could not parse clusters.yaml —', err.message);
-      return;
-    }
+    const newClusters = clusterConfig.getClusters();
 
     const existingByCtx = new Map(this.clusterAgents.map(a => [a.context, a]));
     const desiredCtxs   = new Set(newClusters.map(c => c.context));
@@ -72,22 +50,15 @@ class FleetOrchestrator {
     console.log(`[ORCHESTRATOR] Hot-reload complete — ${this.clusterAgents.length} agent(s) active`);
   }
 
-  // ── Watch clusters.yaml for changes ──────────────────────────────────────
+  // ── React to clusters.yaml changes (shared watcher — see src/config/clusterConfig.js) ──
+  // Reconciliation itself is deferred to the next cycle boundary (runFleetCycle), not run
+  // immediately here, so agents are never swapped out mid-cycle.
   _startConfigWatcher() {
-    try {
-      fs.watch(this.configPath, eventType => {
-        if (eventType !== 'change') return;
-        // Debounce: yaml.dump writes the file in two steps on some OSes
-        clearTimeout(this._reloadDebounce);
-        this._reloadDebounce = setTimeout(() => {
-          this._pendingReload = true;
-          console.log('[ORCHESTRATOR] clusters.yaml changed — will hot-reload after current cycle');
-        }, 500);
-      });
-      console.log('[BOOT] Config watcher : active (cluster changes apply without restart)');
-    } catch (err) {
-      console.warn('[BOOT] Config watcher : could not start —', err.message);
-    }
+    clusterConfig.onChange(() => {
+      this._pendingReload = true;
+      console.log('[ORCHESTRATOR] clusters.yaml changed — will hot-reload after current cycle');
+    });
+    console.log('[BOOT] Config watcher : active (cluster changes apply without restart)');
   }
 
   async runFleetCycle() {
@@ -102,7 +73,7 @@ class FleetOrchestrator {
 
     const t0 = Date.now();
     const agents = [...this.clusterAgents];
-    const concurrency = parseInt(process.env.CLUSTER_CONCURRENCY || '3', 10);
+    const concurrency = loadConfig().CLUSTER_CONCURRENCY;
 
     // Run clusters concurrently with a concurrency cap
     const queue = [...agents];
@@ -160,7 +131,7 @@ class FleetOrchestrator {
     // ── First cycle immediately ───────────────────────────────────────────
     await this.runFleetCycle();
 
-    const intervalMs = intervalMsOverride ?? parseInt(process.env.CYCLE_INTERVAL_MS || '30000', 10);
+    const intervalMs = intervalMsOverride ?? loadConfig().CYCLE_INTERVAL_MS;
     console.log(`\nNext cycle in ${intervalMs / 1000}s`);
 
     const loop = async () => {

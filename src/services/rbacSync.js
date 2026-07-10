@@ -12,6 +12,11 @@ const CONFIG_PATH = path.join(__dirname, '../../config/clusters.yaml');
 // Platform role → built-in K8s ClusterRole
 const K8S_ROLE = { viewer: 'view', editor: 'edit', admin: 'admin' };
 
+// Reverse of K8S_ROLE, for pulling K8s bindings back into system permissions.
+// Only these built-in ClusterRoles are recognized — a binding referencing a custom
+// Role/ClusterRole (anything else) is skipped rather than guessed at.
+const PLATFORM_ROLE = { view: 'viewer', edit: 'editor', admin: 'admin', 'cluster-admin': 'admin' };
+
 function _sanitize(str) {
   return str.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
 }
@@ -69,7 +74,13 @@ async function syncUserToK8s(userId) {
   const user = await User.findById(userId).lean();
   if (!user) return [];
 
-  const effective  = await permissionService.loadPermissions(userId);
+  // Admins get their full-access wildcard synthesized here too — the same wildcard
+  // loadPerms middleware hands out for API purposes — since user.permissions is
+  // normally empty for an admin account (their access comes from `role`, not stored
+  // scopes). Without this, syncing an admin produces zero RoleBindings.
+  const effective  = user.role === 'admin'
+    ? [{ cluster: '*', namespace: '*', role: 'admin' }]
+    : await permissionService.loadPermissions(userId);
   const contextMap = _getContextMap();
 
   // Group permissions by target cluster (expand '*' to all clusters)
@@ -157,4 +168,79 @@ async function removeUserFromK8s(email) {
   }
 }
 
-module.exports = { syncUserToK8s, syncGroupToK8s, removeUserFromK8s };
+// ── Reverse sync: K8s RoleBindings/ClusterRoleBindings → system User.permissions ──
+//
+// Reads every RoleBinding/ClusterRoleBinding in one cluster, keeps only subjects of
+// kind "User" bound to a recognized built-in ClusterRole (view/edit/admin/cluster-admin
+// — the same set syncUserToK8s writes), and reconciles that into each matching system
+// User's `permissions` array, scoped to this one cluster:
+//   - a user with current bindings has their permission entries for THIS cluster
+//     replaced with what's actually bound in K8s right now (their entries for other
+//     clusters, and any '*' wildcard grant, are left untouched)
+//   - a user who previously had entries for this cluster but has no binding anymore
+//     has those stale entries removed
+//   - a bound subject with no matching system User (by email) is reported, never
+//     auto-created
+async function syncFromK8s(context) {
+  const contextMap  = _getContextMap();
+  const clusterName = [...contextMap.entries()].find(([, ctx]) => ctx === context)?.[0];
+  if (!clusterName) throw new Error(`Context "${context}" is not in monitored clusters`);
+
+  const [roleBindings, clusterRoleBindings] = await Promise.all([
+    kubectl.getRoleBindings('*', context),
+    kubectl.getClusterRoleBindings(context),
+  ]);
+
+  // email → Map(namespaceKey → role), namespaceKey '*' meaning cluster-wide
+  const byEmail = new Map();
+  function _record(email, nsKey, k8sRoleName) {
+    const role = PLATFORM_ROLE[k8sRoleName?.toLowerCase()];
+    if (!role || !email) return;
+    if (!byEmail.has(email)) byEmail.set(email, new Map());
+    const nsMap = byEmail.get(email);
+    const cur = nsMap.get(nsKey);
+    if (!cur || (permissionService.ROLE_RANK[role] ?? 0) > (permissionService.ROLE_RANK[cur] ?? 0)) {
+      nsMap.set(nsKey, role);
+    }
+  }
+
+  for (const crb of clusterRoleBindings) {
+    for (const s of crb.subjects ?? []) {
+      if (s.kind === 'User') _record(s.name, '*', crb.roleRef?.name);
+    }
+  }
+  for (const rb of roleBindings) {
+    for (const s of rb.subjects ?? []) {
+      if (s.kind === 'User') _record(s.name, rb.metadata?.namespace, rb.roleRef?.name);
+    }
+  }
+
+  const results = { cluster: clusterName, updated: [], unmatched: [], cleared: [] };
+  const touchedEmails = new Set([...byEmail.keys()].map(e => e.toLowerCase()));
+
+  for (const [email, nsMap] of byEmail) {
+    const derivedPerms = [...nsMap.entries()].map(([namespace, role]) => ({ cluster: clusterName, namespace, role }));
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) { results.unmatched.push({ email, permissions: derivedPerms }); continue; }
+    user.permissions = [...(user.permissions ?? []).filter(p => p.cluster !== clusterName), ...derivedPerms];
+    await user.save();
+    results.updated.push({ email: user.email, permissions: derivedPerms });
+  }
+
+  // Users who currently hold permission entries for this cluster but have no K8s
+  // binding here anymore — their access was revoked in K8s, so drop the stale entries.
+  const staleUsers = await User.find({ 'permissions.cluster': clusterName });
+  for (const user of staleUsers) {
+    if (touchedEmails.has(user.email.toLowerCase())) continue;
+    const before = user.permissions.length;
+    user.permissions = user.permissions.filter(p => p.cluster !== clusterName);
+    if (user.permissions.length !== before) {
+      await user.save();
+      results.cleared.push({ email: user.email });
+    }
+  }
+
+  return results;
+}
+
+module.exports = { syncUserToK8s, syncGroupToK8s, removeUserFromK8s, syncFromK8s };

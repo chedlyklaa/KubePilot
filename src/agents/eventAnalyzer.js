@@ -1,5 +1,7 @@
 'use strict';
 
+const { loadConfig } = require('../config');
+
 // Event reason → structured category mapping
 const REASON_CATEGORY = {
   FailedScheduling:        'scheduling',
@@ -20,11 +22,13 @@ const REASON_CATEGORY = {
   ImagePullBackOff:        'image',
 };
 
+const _config = loadConfig();
+
 // Events older than this are ignored entirely
-const EVENT_MAX_AGE_MS = parseInt(process.env.EVENT_MAX_AGE_MS || String(30 * 60 * 1000), 10);
+const EVENT_MAX_AGE_MS = _config.EVENT_MAX_AGE_MS;
 // Persistence threshold: events must be recurring (count >= N) OR very recent to be actionable
-const EVENT_MIN_COUNT       = parseInt(process.env.EVENT_MIN_COUNT || '3', 10);
-const EVENT_RECENT_WINDOW_MS = parseInt(process.env.EVENT_RECENT_WINDOW_MS || String(2 * 60 * 1000), 10);
+const EVENT_MIN_COUNT        = _config.EVENT_MIN_COUNT;
+const EVENT_RECENT_WINDOW_MS = _config.EVENT_RECENT_WINDOW_MS;
 
 class EventAnalyzer {
   /**

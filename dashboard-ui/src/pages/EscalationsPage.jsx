@@ -5,13 +5,11 @@ import { apiFetch, sseUrl } from '../lib/api'
 import { STATE_LABEL } from '../constants'
 import EscalationRow from '../components/EscalationRow'
 import FilterDrawer, { FilterSection, FilterChips, FilterUserList, FilterDateRange } from '../components/FilterDrawer'
+import { useFilters } from '../hooks/useFilters'
 
 const STATUS_ORDER = { pending: 0, need_help: 1, not_fixed: 2, in_progress: 3, acknowledged: 4, fixed: 5 }
 const ALL_STATUSES = ['pending', 'need_help', 'not_fixed', 'in_progress', 'acknowledged', 'fixed']
 const STATUS_OPTS  = ALL_STATUSES.map(s => ({ value: s, label: STATE_LABEL[s] ?? s }))
-
-const toDate   = () => new Date().toISOString().slice(0, 10)
-const daysAgo  = n  => new Date(Date.now() - (n - 1) * 86400000).toISOString().slice(0, 10)
 
 const EMPTY_FILTERS = { statuses: [], userIds: [], dateFrom: '', dateTo: '' }
 
@@ -21,8 +19,8 @@ export default function EscalationsPage() {
   const [escalations, setEscalations] = useState([])
   const [users,  setUsers]            = useState([])
   const [sort,   setSort]             = useState({ key: null, dir: 'asc' })
-  const [filters, setFilters]         = useState(EMPTY_FILTERS)
-  const [datePreset, setDatePreset]   = useState('all')
+  const { filters, setFilters, toggle, clear: clearFilters, activeCount, datePreset, applyPreset, setDateFrom, setDateTo } =
+    useFilters(EMPTY_FILTERS, { withDatePreset: true })
   const [drawerOpen, setDrawerOpen]   = useState(false)
   const escSseReady = useRef(false)
 
@@ -65,28 +63,6 @@ export default function EscalationsPage() {
       ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
       : { key, dir: 'asc' })
   }
-
-  // ── Filter helpers ────────────────────────────────────────────────────────
-  const toggle = key => val =>
-    setFilters(f => ({ ...f, [key]: f[key].includes(val) ? f[key].filter(x => x !== val) : [...f[key], val] }))
-
-  function applyPreset(preset) {
-    setDatePreset(preset)
-    if      (preset === 'today') setFilters(f => ({ ...f, dateFrom: toDate(),    dateTo: toDate() }))
-    else if (preset === '7d')    setFilters(f => ({ ...f, dateFrom: daysAgo(7),  dateTo: toDate() }))
-    else if (preset === '30d')   setFilters(f => ({ ...f, dateFrom: daysAgo(30), dateTo: toDate() }))
-    else                         setFilters(f => ({ ...f, dateFrom: '',          dateTo: '' }))
-  }
-
-  function setDateFrom(val) { setDatePreset('custom'); setFilters(f => ({ ...f, dateFrom: val })) }
-  function setDateTo(val)   { setDatePreset('custom'); setFilters(f => ({ ...f, dateTo:   val })) }
-
-  function clearFilters() { setFilters(EMPTY_FILTERS); setDatePreset('all') }
-
-  const activeCount =
-    (filters.statuses.length > 0 ? 1 : 0) +
-    (filters.userIds.length  > 0 ? 1 : 0) +
-    ((filters.dateFrom || filters.dateTo) ? 1 : 0)
 
   // ── Filter + sort ─────────────────────────────────────────────────────────
   const visibleEscalations = useMemo(() => {

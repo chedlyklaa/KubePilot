@@ -1,14 +1,17 @@
 'use strict';
 require('dotenv').config({ override: true });
-const OpenAI     = require('openai');
-const tokenStore = require('../api/tokenStore');
+const OpenAI         = require('openai');
+const tokenStore     = require('../api/tokenStore');
+const { runLLMCall } = require('../resilience/llmCircuitBreaker');
+const { loadConfig } = require('../config');
 
 // Reuse the Guardian LLM (Mistral) — fast, structured JSON, different family from Planner
+const _config = loadConfig();
 const client = new OpenAI({
-  apiKey:  process.env.GUARDIAN_API_KEY  || process.env.OPENAI_API_KEY,
-  baseURL: process.env.GUARDIAN_BASE_URL || process.env.OPENAI_BASE_URL,
+  apiKey:  _config.GUARDIAN_API_KEY  || _config.OPENAI_API_KEY,
+  baseURL: _config.GUARDIAN_BASE_URL || _config.OPENAI_BASE_URL,
 });
-const MODEL = process.env.GUARDIAN_MODEL || process.env.OPENAI_MODEL;
+const MODEL = _config.GUARDIAN_MODEL || _config.OPENAI_MODEL;
 
 const SYSTEM = `You are a Kubernetes SRE Reflection Agent.
 After a remediation attempt concludes (success or failure), you analyze what happened, identify the true root cause, extract a reusable lesson, and — when a clear pattern exists — propose a rule that should prevent the same mistake in the future.
@@ -70,22 +73,22 @@ Note: confidence is 0.0–1.0 — how certain you are about the root cause given
     const t0 = Date.now();
 
     try {
-      const stream = await client.chat.completions.create({
-        model:          MODEL,
-        temperature:    0.1,
-        stream:         true,
-        stream_options: { include_usage: true },
-        messages: [
-          { role: 'system', content: SYSTEM },
-          { role: 'user',   content: prompt },
-        ],
-      });
-
-      let raw = '', usage = null;
-      for await (const chunk of stream) {
-        raw += chunk.choices[0]?.delta?.content ?? '';
-        if (chunk.usage) usage = chunk.usage;
-      }
+      // Routed through the same circuit breaker Planner/Guardian/Investigator use, so a
+      // degraded LLM endpoint trips the breaker for Reflection too instead of Reflection
+      // continuing to hammer it on its own schedule.
+      const { raw, usage } = await runLLMCall(
+        () => client.chat.completions.create({
+          model:          MODEL,
+          temperature:    0.1,
+          stream:         true,
+          stream_options: { include_usage: true },
+          messages: [
+            { role: 'system', content: SYSTEM },
+            { role: 'user',   content: prompt },
+          ],
+        }),
+        { requiredFields: ['rootCause', 'lessonsLearned'] }
+      );
 
       tokenStore.record('reflection', usage);
       console.log(`[REFLECTION] Done in ${Date.now() - t0}ms${usage ? `  tokens=${usage.total_tokens}` : ''}`);

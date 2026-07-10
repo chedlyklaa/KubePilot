@@ -15,11 +15,23 @@ export default function UsersPage() {
   const [viewUser, setViewUser]   = useState(null)   // userId being viewed in profile modal
   const [form, setForm]           = useState({ name: '', email: '', password: '', role: 'developer' })
   const [formErr, setFormErr]     = useState('')
+  const [clusters, setClusters]   = useState([])
+  const [issueCert, setIssueCert] = useState(false)
+  const [certContext, setCertContext] = useState('')
 
   const load = () => apiFetch('/api/users').then(r => r.json()).then(d => { setUsers(d); setLoading(false) })
   useEffect(() => { load() }, [])
+  useEffect(() => {
+    apiFetch('/api/kube/contexts').then(r => r.json())
+      .then(d => setClusters((d.contexts ?? []).filter(c => c.isMonitored)))
+      .catch(() => {})
+  }, [])
 
-  function openCreate() { setEditing(null); setForm({ name: '', email: '', password: '', role: 'developer' }); setFormErr(''); setShowForm(true) }
+  function openCreate() {
+    setEditing(null); setForm({ name: '', email: '', password: '', role: 'developer' }); setFormErr('')
+    setIssueCert(false); setCertContext(clusters[0]?.name ?? '')
+    setShowForm(true)
+  }
   function openEdit(u)  { setEditing(u);    setForm({ name: u.name, email: u.email, password: '', role: u.role }); setFormErr(''); setShowForm(true) }
 
   async function saveUser(e) {
@@ -31,7 +43,24 @@ export default function UsersPage() {
       : { name: form.name, email: form.email, password: form.password, role: form.role }
     const res = await apiFetch(url, { method, body })
     if (!res.ok) { const d = await res.json(); setFormErr(d.error); return }
+    const created = await res.json()
     notify('success', editing ? `Updated ${form.name}` : `Created ${form.name}`)
+
+    if (!editing && issueCert && certContext) {
+      try {
+        const certRes = await apiFetch(`/api/rbac/users/${created.id}/certificate`, { method: 'POST', body: { context: certContext } })
+        if (!certRes.ok) { const d = await certRes.json().catch(() => ({})); notify('error', d.error || 'Failed to issue certificate'); }
+        else {
+          const blob = await certRes.blob()
+          const url2 = URL.createObjectURL(blob)
+          const a = document.createElement('a')
+          a.href = url2; a.download = `kubeconfig-${created.email}.yaml`; a.click()
+          URL.revokeObjectURL(url2)
+          notify('success', `Certificate issued for ${created.name} — kubeconfig downloaded`)
+        }
+      } catch (err) { notify('error', err.message) }
+    }
+
     setShowForm(false); load()
   }
 
@@ -106,6 +135,20 @@ export default function UsersPage() {
                   <option value="admin">Admin</option>
                 </select>
               </div>
+              {!editing && (
+                <div className="field">
+                  <label>
+                    <input type="checkbox" checked={issueCert} onChange={e => setIssueCert(e.target.checked)} />
+                    {' '}Also generate a downloadable kubeconfig certificate
+                  </label>
+                  {issueCert && (
+                    <select value={certContext} onChange={e => setCertContext(e.target.value)} style={{ marginTop: 6 }}>
+                      {clusters.length === 0 && <option value="">No monitored clusters</option>}
+                      {clusters.map(c => <option key={c.name} value={c.name}>{c.config?.name ?? c.name}</option>)}
+                    </select>
+                  )}
+                </div>
+              )}
               {formErr && <div className="login-error">{formErr}</div>}
               <div className="modal-actions">
                 <button type="button" className="btn-secondary" onClick={() => setShowForm(false)}>Cancel</button>

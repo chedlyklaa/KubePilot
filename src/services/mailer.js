@@ -4,17 +4,42 @@ const nodemailer = require('nodemailer');
 
 const DASHBOARD_URL = process.env.DASHBOARD_URL || 'http://localhost:5173';
 
+// Admin-configured email channel (Notification Settings UI) takes priority;
+// EMAIL_* env vars are the fallback for deployments that haven't configured it there yet.
 async function _getSmtpConfig() {
   try {
     const { NotificationChannelConfig } = require('../db/models');
     const { decrypt } = require('./notifications/crypto');
     const doc = await NotificationChannelConfig.findOne({ type: 'email', enabled: true }).lean();
-    if (!doc?.config) throw new Error('Email channel not configured or disabled');
-    const config = decrypt(doc.config);
-    if (!config.smtpHost || !config.smtpUser || !config.smtpPass) throw new Error('Incomplete SMTP config');
-    return config;
-  } catch (err) {
-    throw Object.assign(new Error('Cannot load email config: ' + err.message), { status: 503 });
+    if (doc?.config) {
+      const config = decrypt(doc.config);
+      if (config.smtpHost && config.smtpUser && config.smtpPass) return config;
+    }
+  } catch { /* fall through to env vars below */ }
+
+  if (process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+    return {
+      smtpHost: process.env.EMAIL_HOST,
+      smtpPort: process.env.EMAIL_PORT,
+      smtpUser: process.env.EMAIL_USER,
+      smtpPass: process.env.EMAIL_PASS,
+      smtpFrom: process.env.EMAIL_FROM,
+    };
+  }
+
+  throw Object.assign(
+    new Error('Email is not configured on this server — set it up in Notification Settings or EMAIL_* env vars'),
+    { status: 503 }
+  );
+}
+
+// Whether either config source (DB channel or env vars) is usable right now.
+async function isConfigured() {
+  try {
+    await _getSmtpConfig();
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -99,4 +124,31 @@ async function sendPasswordResetEmail(email, token) {
   });
 }
 
-module.exports = { sendWelcomeEmail, sendPasswordResetEmail };
+async function sendOtp(email, name, otp) {
+  const body = `
+  <div style="padding:24px">
+    <p style="color:#374151;font-size:14px;line-height:1.6;margin:0 0 12px">Hi ${name},</p>
+    <p style="color:#374151;font-size:14px;line-height:1.6;margin:0 0 16px">Someone requested a password change for your KubePilot account. Use the code below to confirm:</p>
+    <div style="font-size:34px;font-weight:800;letter-spacing:9px;text-align:center;
+                padding:20px 16px;background:#f1f5f9;border-radius:8px;margin:0 0 16px;color:#4f46e5">
+      ${otp}
+    </div>
+    <p style="color:#9ca3af;font-size:12px;margin:0">This code expires in <strong>10 minutes</strong>. If you did not request this, ignore this email — your password will not change.</p>
+  </div>
+  <div style="padding:0 24px 24px;text-align:center">
+    <a href="${DASHBOARD_URL}" target="_blank"
+       style="display:inline-block;padding:11px 28px;background:#4f46e5;color:#fff;
+              font-size:14px;font-weight:600;text-decoration:none;border-radius:8px">
+      Open Dashboard →
+    </a>
+  </div>`;
+
+  await _send({
+    to:      email,
+    subject: 'KubePilot — Password Change Verification Code',
+    html:    _baseLayout('Security Verification', body),
+    text:    `Hi ${name},\n\nYour KubePilot password change code is: ${otp}\n\nExpires in 10 minutes.\n\nIf you did not request this, ignore this email.`,
+  });
+}
+
+module.exports = { isConfigured, sendWelcomeEmail, sendPasswordResetEmail, sendOtp };

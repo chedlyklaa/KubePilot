@@ -2,95 +2,13 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useNotify } from '../contexts/NotifyContext'
 import { apiFetch } from '../lib/api'
+import ScopeEditor from '../components/ScopeEditor'
 
 const KIND_LABEL = { User: 'User', Group: 'Group', ServiceAccount: 'SA' }
 const KIND_COLOR = { User: 'role-admin', Group: 'role-user', ServiceAccount: 'role-viewer' }
 
 const ADMIN_TABS  = ['Bindings', 'Roles', 'Service Accounts', 'Audit', 'Teams', 'User Permissions']
 const VIEWER_TABS = ['Bindings', 'Roles', 'Service Accounts', 'Audit']
-
-const PERM_ROLES = ['viewer', 'editor', 'admin']
-const EMPTY_SCOPE = { cluster: '', namespace: '*', role: 'viewer' }
-
-function _updateScopeAt(arr, i, field, val) {
-  const next = [...arr]; next[i] = { ...next[i], [field]: val }; return next
-}
-
-function NsCombo({ value, onChange, options }) {
-  const [open, setOpen] = useState(false)
-  const [editing, setEditing] = useState(false)
-  const [text, setText] = useState('')
-  const filtered = options.filter(ns => !text || ns.toLowerCase().includes(text.toLowerCase()))
-  function pick(val) { onChange(val); setText(''); setEditing(false); setOpen(false) }
-  return (
-    <div className="tp-ns-combo">
-      <input value={editing ? text : (value || '')}
-        onChange={e => { setText(e.target.value); setEditing(true); if (!open) setOpen(true) }}
-        onFocus={() => { setOpen(true); setEditing(true); setText(value === '*' ? '' : (value || '')) }}
-        onBlur={() => {
-          setTimeout(() => {
-            setOpen(false)
-            if (editing) { onChange(text || '*'); setEditing(false) }
-          }, 150)
-        }}
-        placeholder="* = all" />
-      {open && (
-        <div className="tp-ns-dropdown">
-          <div className={`tp-ns-option${value === '*' ? ' tp-ns-active' : ''}`} onMouseDown={e => e.preventDefault()} onClick={() => pick('*')}>* (all namespaces)</div>
-          {filtered.map(ns => (
-            <div key={ns} className={`tp-ns-option${value === ns ? ' tp-ns-active' : ''}`}
-              onMouseDown={e => e.preventDefault()} onClick={() => pick(ns)}>{ns}</div>
-          ))}
-          {filtered.length === 0 && text && <div className="tp-ns-option tp-ns-empty">Use "{text}"</div>}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function ScopeEditor({ scopes, setScopes, clusters }) {
-  const [nsCache, setNsCache] = useState({})
-  function fetchNs(cluster) {
-    if (!cluster || cluster === '*' || nsCache[cluster]) return
-    apiFetch(`/api/rbac/namespaces?context=${encodeURIComponent(cluster)}`)
-      .then(r => r.json())
-      .then(ns => { if (Array.isArray(ns)) setNsCache(c => ({ ...c, [cluster]: ns })) })
-      .catch(() => {})
-  }
-  const scopedClusters = scopes.map(s => s.cluster).filter(c => c && c !== '*').join(',')
-  useEffect(() => {
-    scopes.forEach(s => { if (s.cluster && s.cluster !== '*') fetchNs(s.cluster) })
-  }, [scopedClusters])  // eslint-disable-line react-hooks/exhaustive-deps
-  function onClusterChange(i, val) {
-    const next = [...scopes]; next[i] = { ...next[i], cluster: val, namespace: '*' }; setScopes(next)
-    if (val && val !== '*') fetchNs(val)
-  }
-  return (
-    <div className="tp-scopes">
-      {scopes.length > 0 && (
-        <div className="tp-scope-labels">
-          <span>Cluster</span><span>Namespace</span><span>Role</span><span />
-        </div>
-      )}
-      {scopes.map((s, i) => (
-        <div key={i} className="tp-scope-row">
-          <select value={s.cluster} onChange={e => onClusterChange(i, e.target.value)}>
-            <option value="">— cluster —</option>
-            <option value="*">* (all)</option>
-            {clusters.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-          <NsCombo value={s.namespace} options={nsCache[s.cluster] ?? []}
-            onChange={val => setScopes(_updateScopeAt(scopes, i, 'namespace', val))} />
-          <select value={s.role} onChange={e => setScopes(_updateScopeAt(scopes, i, 'role', e.target.value))}>
-            {PERM_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
-          </select>
-          <button type="button" className="tp-scope-remove" onClick={() => setScopes(scopes.filter((_, j) => j !== i))}>×</button>
-        </div>
-      ))}
-      <button type="button" className="tp-scope-add" onClick={() => setScopes([...scopes, { ...EMPTY_SCOPE }])}>+ Add scope</button>
-    </div>
-  )
-}
 
 const ROLE_YAML_TEMPLATE = (name, ns) =>
 `apiVersion: rbac.authorization.k8s.io/v1
@@ -117,6 +35,9 @@ export default function RbacPage() {
 
   const [overview,   setOverview]   = useState(null)
   const [audit,      setAudit]      = useState(null)
+
+  // Sync system users from K8s RoleBindings/ClusterRoleBindings
+  const [syncBusy,   setSyncBusy]   = useState(false)
 
   // Apply YAML modal
   const [showApply,  setShowApply]  = useState(false)
@@ -223,6 +144,25 @@ export default function RbacPage() {
       }
     } catch (err) { setApplyErr(err.message) }
     finally { setApplyBusy(false) }
+  }
+
+  // ── Sync system user permissions from K8s bindings ────────────────────────
+
+  async function syncFromK8s() {
+    if (!context) return
+    setSyncBusy(true)
+    try {
+      const r = await apiFetch('/api/rbac/sync-from-k8s', { method: 'POST', body: { context } })
+      const d = await r.json()
+      if (d.error) { notify('error', d.error); return }
+      const parts = []
+      if (d.updated.length)   parts.push(`${d.updated.length} user(s) updated`)
+      if (d.cleared.length)   parts.push(`${d.cleared.length} user(s) had revoked access removed`)
+      if (d.unmatched.length) parts.push(`${d.unmatched.length} K8s subject(s) had no matching system account`)
+      notify('success', parts.length ? `Synced from ${d.cluster}: ${parts.join(', ')}` : `Synced from ${d.cluster}: no changes`)
+      if (tab === 5) loadTeams() // refresh User Permissions tab if currently viewing it
+    } catch (err) { notify('error', err.message) }
+    finally { setSyncBusy(false) }
   }
 
   // ── Delete resource ───────────────────────────────────────────────────────
@@ -527,6 +467,21 @@ export default function RbacPage() {
     setSelUser(null); loadTeams()
   }
 
+  // ── Client certificate (direct kubectl access) for the currently selected cluster ─
+  async function issueCertificate(u) {
+    if (!context) { notify('error', 'Select a cluster first'); return }
+    try {
+      const r = await apiFetch(`/api/rbac/users/${u._id}/certificate`, { method: 'POST', body: { context } })
+      if (!r.ok) { const d = await r.json().catch(() => ({})); notify('error', d.error || 'Failed to issue certificate'); return }
+      const blob = await r.blob()
+      const url  = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = `kubeconfig-${u.email}.yaml`; a.click()
+      URL.revokeObjectURL(url)
+      notify('success', `Certificate issued for ${u.name} — kubeconfig downloaded`)
+    } catch (err) { notify('error', err.message) }
+  }
+
   function renderTeams() {
     return (<>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
@@ -588,7 +543,14 @@ export default function RbacPage() {
                   <td><span className={`role-badge role-${u.role}`}>{u.role}</span></td>
                   <td>{g ? g.name : <span className="text-dim">—</span>}</td>
                   <td className="text-dim">{u.role === 'admin' ? 'full access' : `${ownCount} own + ${groupCount} from team`}</td>
-                  <td>{u.role !== 'admin' && <button className="btn-sm" onClick={() => openUserPerms(u)}>Edit</button>}</td>
+                  <td className="action-btns">
+                    {u.role !== 'admin' && <button className="btn-sm" onClick={() => openUserPerms(u)}>Edit</button>}
+                    <button className="btn-sm" disabled={!context}
+                      title="Issue a client certificate + kubeconfig for this user on the currently selected cluster, based on their current permissions"
+                      onClick={() => issueCertificate(u)}>
+                      Certificate
+                    </button>
+                  </td>
                 </tr>
               )
             })}
@@ -612,6 +574,12 @@ export default function RbacPage() {
           {isAdmin && (
             <button className="btn-primary-sm" onClick={() => { setYamlDraft(ROLE_YAML_TEMPLATE('my-role', nsFilter === '_all' ? 'default' : nsFilter)); setApplyOut(''); setApplyErr(''); setShowApply(true) }}>
               + Apply YAML
+            </button>
+          )}
+          {isAdmin && (
+            <button className="btn-sm" onClick={syncFromK8s} disabled={syncBusy || !context}
+              title="Read RoleBindings/ClusterRoleBindings from this cluster and update system user permissions to match">
+              {syncBusy ? 'Syncing…' : '⟳ Sync Users from K8s'}
             </button>
           )}
           <button className="btn-refresh" onClick={load} disabled={loading} title="Refresh">

@@ -1,10 +1,12 @@
 'use strict';
 
-let seq = 0;
-const silences  = new Map(); // id → { id, key, until, reason, createdBy, createdAt }
-const listeners = new Set();
+const { SilenceRule }           = require('../db/models');
+const { createPubSub }          = require('./pubsub');
+const { restoreActiveRecords }  = require('./restoreActiveRecords');
 
-function _notify(ev) { listeners.forEach(fn => fn(ev)); }
+let seq = 0;
+const silences = new Map(); // id → { id, key, until, reason, createdBy, createdAt }
+const { notify, subscribe } = createPubSub();
 
 // Auto-cleanup expired entries every minute
 setInterval(() => {
@@ -12,7 +14,7 @@ setInterval(() => {
   for (const [id, s] of silences) {
     if (s.until <= now) {
       silences.delete(id);
-      _notify({ type: 'expired', id });
+      notify({ type: 'expired', id });
     }
   }
 }, 60_000);
@@ -37,14 +39,13 @@ async function add(key, durationMs, reason, createdBy) {
   silences.set(id, entry);
 
   try {
-    const { SilenceRule } = require('../db/models');
     await SilenceRule.deleteMany({ key });
     await SilenceRule.create({ key, until: new Date(until), reason: entry.reason, createdBy });
   } catch (err) {
     console.error('[SilenceStore] DB save failed:', err.message);
   }
 
-  _notify({ type: 'added', silence: entry });
+  notify({ type: 'added', silence: entry });
   console.log(`[SilenceStore] Silenced "${key}" for ${Math.round(durationMs / 60000)}m (until ${new Date(until).toISOString()})`);
   return entry;
 }
@@ -65,13 +66,12 @@ async function remove(id) {
   silences.delete(id);
 
   try {
-    const { SilenceRule } = require('../db/models');
     await SilenceRule.deleteMany({ key: entry.key });
   } catch (err) {
     console.error('[SilenceStore] DB delete failed:', err.message);
   }
 
-  _notify({ type: 'removed', id });
+  notify({ type: 'removed', id });
   return true;
 }
 
@@ -80,25 +80,24 @@ function getAll() {
   return [...silences.values()].filter(s => s.until > now);
 }
 
-function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
-
 // ── Restore active silences from MongoDB on startup ───────────────────────────
 async function init() {
   try {
-    const { SilenceRule } = require('../db/models');
-    const docs = await SilenceRule.find({ until: { $gt: new Date() } });
-    for (const doc of docs) {
-      const id = String(++seq);
-      silences.set(id, {
+    const restored = await restoreActiveRecords(
+      SilenceRule,
+      { until: { $gt: new Date() } },
+      () => String(++seq),
+      (doc, id) => ({
         id,
         key:       doc.key,
         until:     doc.until.getTime(),
         reason:    doc.reason ?? '',
         createdBy: doc.createdBy ?? {},
         createdAt: doc.createdAt?.toISOString() ?? new Date().toISOString(),
-      });
-    }
-    if (docs.length) console.log(`[SilenceStore] Restored ${docs.length} active silence(s)`);
+      })
+    );
+    for (const [id, entry] of restored) silences.set(id, entry);
+    if (restored.length) console.log(`[SilenceStore] Restored ${restored.length} active silence(s)`);
   } catch (err) {
     console.error('[SilenceStore] Failed to restore silences:', err.message);
   }

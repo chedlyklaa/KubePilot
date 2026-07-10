@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Autonomous Multi-Cluster AKS Agent
 
 AI-powered autonomous management system for Azure Kubernetes Service (AKS) clusters.
@@ -125,12 +124,13 @@ kubectl get nodes
 
 # Future Components
 
-- Prometheus integration
-- Chaos Mesh benchmark scenarios
 - Redis shared memory
 - PostgreSQL audit storage
-- Approval API
 - Grafana dashboards
+
+Already implemented (see `chaos/`, `src/api/`): Prometheus integration, Chaos Mesh
+benchmark scenarios (pod-kill, cpu-stress, memory-stress, network-delay), and the
+Approval API.
 
 ---
 

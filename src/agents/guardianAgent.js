@@ -3,17 +3,19 @@ require('dotenv').config({ override: true });
 const OpenAI     = require('openai');
 const tokenStore     = require('../api/tokenStore');
 const { runLLMCall } = require('../resilience/llmCircuitBreaker');
+const { loadConfig } = require('../config');
 
 // ── Build an independent LLM client for the guardian ─────────────────────────
 // Uses GUARDIAN_* env vars when set, falls back to the main OPENAI_* credentials
 // so the system stays operational even if only one API key is configured.
-const GUARDIAN_API_KEY  = process.env.GUARDIAN_API_KEY  || process.env.OPENAI_API_KEY;
-const GUARDIAN_BASE_URL = process.env.GUARDIAN_BASE_URL || process.env.OPENAI_BASE_URL;
-const GUARDIAN_MODEL    = process.env.GUARDIAN_MODEL    || process.env.OPENAI_MODEL;
+const _config = loadConfig();
+const GUARDIAN_API_KEY  = _config.GUARDIAN_API_KEY  || _config.OPENAI_API_KEY;
+const GUARDIAN_BASE_URL = _config.GUARDIAN_BASE_URL || _config.OPENAI_BASE_URL;
+const GUARDIAN_MODEL    = _config.GUARDIAN_MODEL    || _config.OPENAI_MODEL;
 
 const guardianLlm = new OpenAI({ apiKey: GUARDIAN_API_KEY, baseURL: GUARDIAN_BASE_URL });
 
-const usingDedicated = !!(process.env.GUARDIAN_API_KEY && process.env.GUARDIAN_MODEL);
+const usingDedicated = !!(_config.GUARDIAN_API_KEY && _config.GUARDIAN_MODEL);
 console.log(`[GUARDIAN] LLM: ${usingDedicated ? `dedicated (${GUARDIAN_MODEL})` : `shared fallback (${GUARDIAN_MODEL})`}`);
 
 // ── Guardian system prompt ────────────────────────────────────────────────────

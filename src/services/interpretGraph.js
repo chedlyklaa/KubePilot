@@ -8,6 +8,7 @@ const { StringOutputParser } = require('@langchain/core/output_parsers');
 const { SystemMessage }      = require('@langchain/core/messages');
 const { z }                  = require('zod');
 const kubectl                = require('../tools/kubectl');
+const { loadConfig }         = require('../config');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Zod output schema — shared by both LLM1 and LLM2
@@ -51,10 +52,11 @@ const InterpretOutputSchema = z.discriminatedUnion('complete', [
 // maxRetries: 0 because we handle retries ourselves via withRetry().
 // ─────────────────────────────────────────────────────────────────────────────
 function makeLLM() {
+  const config = loadConfig();
   return new ChatOpenAI({
-    model:       process.env.OPENAI_MODEL,
-    apiKey:      process.env.OPENAI_API_KEY,
-    configuration: { baseURL: process.env.OPENAI_BASE_URL },
+    model:       config.OPENAI_MODEL,
+    apiKey:      config.OPENAI_API_KEY,
+    configuration: { baseURL: config.OPENAI_BASE_URL },
     temperature: 0.1,
     maxRetries:  0,
   });

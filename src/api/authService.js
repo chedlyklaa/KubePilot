@@ -21,15 +21,21 @@ setInterval(() => {
   for (const [tok, entry] of resetTokens) { if (now > entry.expiresAt) resetTokens.delete(tok); }
 }, 15 * 60 * 1000).unref(); // .unref() so this timer doesn't prevent process exit
 
-// Seed default users on first start
+// Seed default users on first start.
+// Passwords are randomly generated per-install rather than hardcoded — a fixed default
+// password is a well-known attack vector against any deployment that forgets to change it.
 async function seedUsers() {
   const count = await User.countDocuments();
   if (count === 0) {
+    const adminPassword = crypto.randomBytes(9).toString('hex');
+    const devPassword   = crypto.randomBytes(9).toString('hex');
     await User.insertMany([
-      { email: 'admin@admin.com',         password: await bcrypt.hash('admin', SALT_ROUNDS),     name: 'Admin',     role: 'admin' },
-      { email: 'developer@developer.com', password: await bcrypt.hash('developer', SALT_ROUNDS), name: 'Developer', role: 'developer' },
+      { email: 'admin@admin.com',         password: await bcrypt.hash(adminPassword, SALT_ROUNDS), name: 'Admin',     role: 'admin' },
+      { email: 'developer@developer.com', password: await bcrypt.hash(devPassword, SALT_ROUNDS),   name: 'Developer', role: 'developer' },
     ]);
-    console.log('[Auth] Default users seeded');
+    console.log('[Auth] Default users seeded — change these passwords immediately after first login:');
+    console.log(`[Auth]   admin@admin.com         : ${adminPassword}`);
+    console.log(`[Auth]   developer@developer.com : ${devPassword}`);
   }
 }
 

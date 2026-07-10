@@ -1,3 +1,0 @@
-{"timestamp":"2026-05-07T08:16:26.054Z","cluster":"dev-cluster","issue":"CrashLoopBackOff","action":"restart_pod","risk":0.2}
-{"timestamp":"2026-05-07T08:16:26.112Z","cluster":"staging-cluster","issue":"CrashLoopBackOff","action":"restart_pod","risk":0.2}
-{"timestamp":"2026-05-07T08:16:26.113Z","cluster":"prod-cluster","issue":"CrashLoopBackOff","action":"restart_pod","risk":0.2}

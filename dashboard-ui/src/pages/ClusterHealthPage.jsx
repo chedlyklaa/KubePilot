@@ -1,6 +1,13 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { apiFetch } from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
+import { useFilters } from '../hooks/useFilters'
+import { fmtBytes, RestartCount } from '../components/health/atoms'
+import ClusterManager from '../components/health/ClusterManager'
+import CollapsibleSection from '../components/health/CollapsibleSection'
+import AlertsTable from '../components/health/AlertsTable'
+import NodeHealthView from '../components/health/NodeHealthView'
+import PrometheusPodsTable from '../components/health/PrometheusPodsTable'
 
 const ERRORS_REFRESH_MS  = 30_000
 const METRICS_REFRESH_MS = 30_000
@@ -19,14 +26,6 @@ const PHASE_OPTS = [
 const EMPTY_FILTERS = { phases: [], namespaces: [], clusters: [], hasRestarts: false, hasGpu: false }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function fmtBytes(b) {
-  if (b == null) return null
-  if (b < 1024)      return `${b} B`
-  if (b < 1024 ** 2) return `${(b / 1024).toFixed(0)} Ki`
-  if (b < 1024 ** 3) return `${(b / 1024 ** 2).toFixed(0)} Mi`
-  return                    `${(b / 1024 ** 3).toFixed(2)} Gi`
-}
-
 function fmtAge(t) {
   if (!t) return '—'
   const s = Math.floor((Date.now() - new Date(t)) / 1000)
@@ -74,12 +73,6 @@ function MemBar({ usedBytes, limitBytes, rawLabel }) {
       </div>
     </div>
   )
-}
-
-function RestartCount({ n }) {
-  if (n === 0) return <span className="hcell-dim">—</span>
-  const cls = n > 15 ? 'rc-high' : n > 5 ? 'rc-med' : 'rc-low'
-  return <span className={`rc ${cls}`}>{n}</span>
 }
 
 function ClusterStats({ pods }) {
@@ -140,677 +133,6 @@ function PrometheusNotice({ onDismiss }) {
   )
 }
 
-const ALERT_LABELS = {
-  OOMKilled:       'OOM Killed',
-  HighRestarts:    'High Restarts',
-  CPUThrottling:   'CPU Throttling',
-  MemNearLimit:    'Memory Near Limit',
-  ImagePullFailed: 'Image Pull Failed',
-  NodePressure:    'Node Pressure',
-}
-const ALERT_SUGGESTIONS = {
-  increase_memory:    { icon: '↑',  label: 'Increase memory limit'                      },
-  increase_cpu_limit: { icon: '⚡', label: 'Increase CPU limit or requests'              },
-  investigate_logs:   { icon: '📋', label: 'Check pod logs for crash cause'              },
-  fix_image:          { icon: '📦', label: 'Fix image reference or pull credentials'     },
-  check_node:         { icon: '🖥',  label: 'Inspect node resources'                     },
-  check_config:       { icon: '⚙',  label: 'Check entrypoint, env vars or security context' },
-  check_image:        { icon: '🔎', label: 'Binary not found — verify image entrypoint'  },
-}
-
-// "my-deploy-6c8fb8d957-xk2p9" → "my-deploy"
-function podToWorkload(name) {
-  if (!name) return name
-  const parts = name.split('-')
-  return parts.length > 2 ? parts.slice(0, -2).join('-') : name
-}
-
-function MiniBar({ pct, cls }) {
-  return (
-    <div className="alert-mbar">
-      <div className="alert-mbar-track">
-        <div className={`alert-mbar-fill ${cls}`} style={{ width: `${Math.min(100, pct ?? 0)}%` }} />
-      </div>
-    </div>
-  )
-}
-
-function AlertCard({ alert: e }) {
-  const icon    = e.severity === 'critical' ? '🔴' : '🟠'
-  const memCls  = e.memPct > 95 ? 'mf-danger' : e.memPct > 85 ? 'mf-warn' : 'mf-ok'
-  const sug     = e.suggestion ? ALERT_SUGGESTIONS[e.suggestion] : null
-  const workload = e.pod ? podToWorkload(e.pod) : null
-  const hasDetails = e.container || e.exitCode != null ||
-    (e.restartRate != null && e.restartRate > 0) || e.cpuMillicores != null
-
-  return (
-    <div className={`alert-card alert-card-${e.severity}`}>
-
-      {/* Row 1 — type label + count/rate badge */}
-      <div className="alert-card-top">
-        <span className="alert-icon">{icon}</span>
-        <span className="alert-type-label">{ALERT_LABELS[e.type] ?? e.type}</span>
-        {e.type === 'HighRestarts' && (
-          <span className="alert-count-badge">
-            {e.count} restarts
-            {e.restartRate > 0 && <span className="restart-rate"> · ~{e.restartRate}/hr</span>}
-          </span>
-        )}
-        {e.type === 'CPUThrottling'   && <span className="alert-count-badge">{e.throttlePct}% throttled</span>}
-        {e.type === 'MemNearLimit'    && <span className="alert-count-badge">{e.memPct}% of limit</span>}
-        {e.type === 'NodePressure'    && <span className="alert-count-badge">{e.condition}</span>}
-        {e.type === 'ImagePullFailed' && <span className="alert-count-badge">{e.reason}</span>}
-      </div>
-
-      {/* Row 2 — workload name (short) + full pod hash */}
-      {e.node && <div className="alert-target"><span className="alert-node mono-small">{e.node}</span></div>}
-      {e.namespace && e.pod && (
-        <div className="alert-target">
-          <span className="alert-ns">{e.namespace}</span>
-          <span className="alert-sep"> / </span>
-          <span className="alert-workload">{workload}</span>
-          {workload !== e.pod && (
-            <span className="alert-pod-hash mono-small"> ···{e.pod.slice(-8)}</span>
-          )}
-        </div>
-      )}
-
-      {/* Row 3 — detail chips: container · exit code · restart rate · CPU */}
-      {hasDetails && (
-        <div className="alert-details">
-          {e.container && (
-            <span className="adet"><span className="adet-lbl">ctr</span>{e.container}</span>
-          )}
-          {e.exitCode != null && (
-            <span className={`adet${e.exitCode !== 0 ? ' adet-exit-bad' : ''}`}>
-              <span className="adet-lbl">exit</span>{e.exitCode}
-            </span>
-          )}
-          {e.restartRate > 0 && (
-            <span className="adet"><span className="adet-lbl">rate</span>~{e.restartRate}/hr</span>
-          )}
-          {e.cpuMillicores != null && (
-            <span className="adet"><span className="adet-lbl">cpu</span>{e.cpuMillicores}m</span>
-          )}
-        </div>
-      )}
-
-      {/* Row 4 — memory bar + last exit reason */}
-      <div className="alert-metrics">
-        {e.memUsedMi != null && e.memLimitMi != null && (
-          <div className="alert-metric-row">
-            <span className="alert-metric-lbl">mem</span>
-            <MiniBar pct={e.memPct} cls={memCls} />
-            <span className="alert-metric-val">
-              {e.memUsedMi}Mi / {e.memLimitMi}Mi
-              <span className={`alert-pct${e.memPct > 85 ? ' pct-danger' : ''}`}> ({e.memPct}%)</span>
-            </span>
-          </div>
-        )}
-        {e.type === 'CPUThrottling' && e.throttlePct != null && (
-          <div className="alert-metric-row">
-            <span className="alert-metric-lbl">throttle</span>
-            <MiniBar pct={e.throttlePct} cls="mf-danger" />
-            <span className="alert-metric-val">
-              <span className="alert-pct pct-danger">{e.throttlePct}%</span>
-            </span>
-          </div>
-        )}
-        {e.lastTermReason && e.lastTermReason !== 'Completed' && (
-          <div className="alert-metric-row">
-            <span className="alert-metric-lbl">last exit</span>
-            <span className={`alert-term-tag ${e.lastTermReason === 'OOMKilled' ? 'term-oom' : 'term-err'}`}>
-              {e.lastTermReason}
-            </span>
-          </div>
-        )}
-      </div>
-
-      {/* Row 5 — suggestion */}
-      {sug && (
-        <div className="alert-suggestion">
-          <span className="sug-icon">{sug.icon}</span>
-          <span>{sug.label}</span>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function ErrorsPanel({ errors }) {
-  const [collapsed, setCollapsed] = useState(false)
-  if (!errors?.length) return null
-  const critCount = errors.filter(e => e.severity === 'critical').length
-  const highCount = errors.filter(e => e.severity === 'high').length
-  return (
-    <div className="errors-panel">
-      <div className="errors-panel-header" onClick={() => setCollapsed(c => !c)}>
-        <span className="errors-panel-title">⚠ Prometheus Alerts</span>
-        <div className="ep-summary">
-          {critCount > 0 && <span className="ep-badge ep-crit">🔴 {critCount} critical</span>}
-          {highCount > 0 && <span className="ep-badge ep-high">🟠 {highCount} high</span>}
-          <span className="ep-badge ep-total">{errors.length} total</span>
-        </div>
-        <span className="ep-toggle">{collapsed ? '▼' : '▲'}</span>
-      </div>
-      {!collapsed && (
-        <div className="errors-panel-list">
-          {errors.map((e, i) => (
-            <AlertCard key={`${e.type}-${e.namespace}-${e.pod ?? e.node}-${i}`} alert={e} />
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ── ClusterManager modal ─────────────────────────────────────────────────────
-function ClusterManager({ onClose, onSaved }) {
-  const [contexts,   setContexts]   = useState([])
-  const [selections, setSelections] = useState({})
-  const [loading,    setLoading]    = useState(true)
-  const [saving,     setSaving]     = useState(false)
-  const [error,      setError]      = useState(null)
-
-  useEffect(() => {
-    apiFetch('/api/kube/contexts')
-      .then(r => r.json())
-      .then(data => {
-        setContexts(data.contexts ?? [])
-        const init = {}
-        for (const ctx of data.contexts ?? []) {
-          init[ctx.name] = {
-            enabled:     ctx.isMonitored,
-            displayName: ctx.config?.name ?? ctx.name,
-            tier:        ctx.config?.tier ?? 'dev',
-          }
-        }
-        setSelections(init)
-      })
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false))
-  }, [])
-
-  function update(ctxName, patch) {
-    setSelections(p => ({ ...p, [ctxName]: { ...p[ctxName], ...patch } }))
-  }
-
-  async function handleSave() {
-    setSaving(true); setError(null)
-    try {
-      const clusters = Object.entries(selections)
-        .filter(([, v]) => v.enabled)
-        .map(([ctx, v]) => ({ name: v.displayName || ctx, context: ctx, tier: v.tier }))
-      const r = await apiFetch('/api/kube/clusters', {
-        method: 'PUT',
-        body: { clusters },
-      })
-      if (!r.ok) { const d = await r.json().catch(() => ({})); setError(d.error || 'Save failed'); return }
-      onSaved()
-      onClose()
-    } catch (err) { setError(err.message) }
-    finally { setSaving(false) }
-  }
-
-  const enabledCount = Object.values(selections).filter(v => v.enabled).length
-
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="cluster-mgr" onClick={e => e.stopPropagation()}>
-
-        <div className="cluster-mgr-header">
-          <span className="cluster-mgr-title">⚙ Manage Monitored Clusters</span>
-          <button className="modal-close" onClick={onClose}>✕</button>
-        </div>
-
-        <div className="cluster-mgr-body">
-          {loading && <div className="cm-info">Discovering kubectl contexts…</div>}
-          {error   && <div className="cm-error">{error}</div>}
-          {!loading && contexts.length === 0 && (
-            <div className="cm-info">No kubectl contexts found.</div>
-          )}
-
-          {!loading && contexts.length > 0 && (
-            <table className="cm-table">
-              <thead>
-                <tr>
-                  <th className="cm-th cm-th-check"></th>
-                  <th className="cm-th">Context</th>
-                  <th className="cm-th">Display Name</th>
-                  <th className="cm-th">Tier</th>
-                </tr>
-              </thead>
-              <tbody>
-                {contexts.map(ctx => {
-                  const sel = selections[ctx.name] ?? { enabled: false, displayName: ctx.name, tier: 'dev' }
-                  return (
-                    <tr key={ctx.name} className={`cm-row${sel.enabled ? ' cm-row-on' : ''}`}>
-                      <td className="cm-td cm-th-check">
-                        <input type="checkbox" className="cm-check"
-                          checked={sel.enabled}
-                          onChange={e => update(ctx.name, { enabled: e.target.checked })} />
-                      </td>
-                      <td className="cm-td">
-                        <span className="cm-ctx-name">{ctx.name}</span>
-                        {ctx.isCurrent && <span className="cm-current-badge">current</span>}
-                      </td>
-                      <td className="cm-td">
-                        <input className="cm-name-input" value={sel.displayName}
-                          disabled={!sel.enabled}
-                          onChange={e => update(ctx.name, { displayName: e.target.value })}
-                          placeholder={ctx.name} />
-                      </td>
-                      <td className="cm-td">
-                        <select className="cm-tier-select" value={sel.tier}
-                          disabled={!sel.enabled}
-                          onChange={e => update(ctx.name, { tier: e.target.value })}>
-                          <option value="dev">dev</option>
-                          <option value="staging">staging</option>
-                          <option value="production">production</option>
-                        </select>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          )}
-
-          <div className="cm-notice">
-            ✓ Changes apply automatically — no restart needed. The dashboard refreshes
-            immediately and the agent pipeline picks up new clusters within one cycle.
-          </div>
-        </div>
-
-        <div className="cluster-mgr-footer">
-          <span className="cm-count">{enabledCount} cluster{enabledCount !== 1 ? 's' : ''} selected</span>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn-secondary" onClick={onClose}>Cancel</button>
-            <button className="btn" onClick={handleSave} disabled={saving || loading}>
-              {saving ? 'Saving…' : 'Save Changes'}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ── CollapsibleSection ────────────────────────────────────────────────────────
-function CollapsibleSection({ title, badges, defaultOpen = true, children }) {
-  const [open, setOpen] = useState(defaultOpen)
-  return (
-    <div className={`col-section${open ? ' col-section-open' : ''}`}>
-      <div className="col-section-header" onClick={() => setOpen(o => !o)}>
-        <span className={`hc-chevron${open ? ' hc-chevron-open' : ''}`}>▶</span>
-        <span className="col-section-title">{title}</span>
-        <div className="col-section-badges">{badges}</div>
-      </div>
-      {open && <div className="col-section-body">{children}</div>}
-    </div>
-  )
-}
-
-// ── AlertRow ─────────────────────────────────────────────────────────────────
-function AlertRow({ alert: e }) {
-  const icon     = e.severity === 'critical' ? '🔴' : '🟠'
-  const workload = e.pod ? podToWorkload(e.pod) : null
-  const memCls   = e.memPct > 95 ? 'mf-danger' : e.memPct > 85 ? 'mf-warn' : 'mf-ok'
-  const sug      = e.suggestion ? ALERT_SUGGESTIONS[e.suggestion] : null
-
-  return (
-    <tr className={`at-row at-${e.severity}`}>
-
-      <td className="at-td at-td-sev">
-        <span title={e.severity}>{icon}</span>
-      </td>
-
-      <td className="at-td">
-        <span className="at-type-label">{ALERT_LABELS[e.type] ?? e.type}</span>
-      </td>
-
-      <td className="at-td at-td-target">
-        {e.node && <span className="at-workload mono-small">{e.node}</span>}
-        {e.namespace && e.pod && (
-          <>
-            <div>
-              <span className="at-ns">{e.namespace}</span>
-              <span className="at-sep"> / </span>
-              <span className="at-workload">{workload}</span>
-            </div>
-            {workload !== e.pod && (
-              <div className="at-pod-hash mono-small">···{e.pod.slice(-10)}</div>
-            )}
-          </>
-        )}
-      </td>
-
-      <td className="at-td at-td-ctr">
-        {e.container && <div className="at-ctr-name">{e.container}</div>}
-        {e.exitCode != null && (
-          <span className={`at-exit${e.exitCode !== 0 ? ' at-exit-bad' : ''}`}>exit {e.exitCode}</span>
-        )}
-        {!e.container && e.exitCode == null && <span className="hcell-dim">—</span>}
-      </td>
-
-      <td className="at-td at-td-mem">
-        {e.memUsedMi != null && e.memLimitMi != null ? (
-          <div className="at-mem-wrap">
-            <MiniBar pct={e.memPct} cls={memCls} />
-            <span className="at-mem-text">
-              {e.memUsedMi}Mi / {e.memLimitMi}Mi
-              <span className={`at-mem-pct${e.memPct > 85 ? ' pct-danger' : ''}`}> ({e.memPct}%)</span>
-            </span>
-          </div>
-        ) : e.type === 'CPUThrottling' && e.throttlePct != null ? (
-          <div className="at-mem-wrap">
-            <MiniBar pct={e.throttlePct} cls="mf-danger" />
-            <span className="at-mem-text pct-danger">{e.throttlePct}% throttled</span>
-          </div>
-        ) : (
-          <span className="hcell-dim">—</span>
-        )}
-      </td>
-
-      <td className="at-td at-td-rate">
-        {e.type === 'HighRestarts' ? (
-          <>
-            <span className="at-restart-count">{e.count}</span>
-            {e.restartRate > 0 && <div className="at-restart-rate">~{e.restartRate}/hr</div>}
-          </>
-        ) : (
-          <span className="hcell-dim">—</span>
-        )}
-      </td>
-
-      <td className="at-td">
-        {e.lastTermReason && e.lastTermReason !== 'Completed'
-          ? <span className={`alert-term-tag ${e.lastTermReason === 'OOMKilled' ? 'term-oom' : 'term-err'}`}>{e.lastTermReason}</span>
-          : e.condition
-          ? <span className="alert-term-tag term-err">{e.condition}</span>
-          : e.reason
-          ? <span className="alert-term-tag term-err">{e.reason}</span>
-          : <span className="hcell-dim">—</span>}
-      </td>
-
-      <td className="at-td at-td-action">
-        {sug
-          ? <span className="at-suggestion">{sug.icon} {sug.label}</span>
-          : <span className="hcell-dim">—</span>}
-      </td>
-    </tr>
-  )
-}
-
-// ── AlertsTable ───────────────────────────────────────────────────────────────
-function AlertsTable({ errors }) {
-  if (!errors?.length) return (
-    <div className="alerts-empty">
-      <span style={{ fontSize: 28 }}>✓</span>
-      <span>No Prometheus alerts — all pods healthy</span>
-    </div>
-  )
-  return (
-    <div className="alerts-table-wrap">
-      <table className="alerts-table">
-        <thead>
-          <tr>
-            <th className="at-th at-th-sev"></th>
-            <th className="at-th">Type</th>
-            <th className="at-th">Target</th>
-            <th className="at-th">Container / Exit</th>
-            <th className="at-th" style={{ minWidth: 170 }}>Memory / CPU</th>
-            <th className="at-th">Restarts</th>
-            <th className="at-th">Last Exit</th>
-            <th className="at-th">Suggested Action</th>
-          </tr>
-        </thead>
-        <tbody>
-          {errors.map((e, i) => (
-            <AlertRow key={`${e.type}-${e.namespace}-${e.pod ?? e.node}-${i}`} alert={e} />
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-// ── Node Health view ──────────────────────────────────────────────────────────
-const NODE_COND_LABEL = {
-  MemoryPressure:    { label: 'Mem Pressure',  cls: 'nc-cond-warn'   },
-  DiskPressure:      { label: 'Disk Pressure', cls: 'nc-cond-warn'   },
-  PIDPressure:       { label: 'PID Pressure',  cls: 'nc-cond-warn'   },
-  NetworkUnavailable:{ label: 'Net Unavail',   cls: 'nc-cond-danger' },
-}
-
-function ConditionTags({ conditions }) {
-  const tags = []
-  for (const [k, active] of Object.entries(conditions ?? {})) {
-    if (k === 'Ready' || !active) continue
-    const c = NODE_COND_LABEL[k] ?? { label: k, cls: 'nc-cond-warn' }
-    tags.push(<span key={k} className={`nc-cond-tag ${c.cls}`}>{c.label}</span>)
-  }
-  return tags.length ? <div className="nc-cond-wrap">{tags}</div> : <span className="hcell-dim">—</span>
-}
-
-function PctBar({ pct, warnAt = 70, dangerAt = 90 }) {
-  if (pct == null) return <span className="hcell-dim">—</span>
-  const cls = pct >= dangerAt ? 'mf-danger' : pct >= warnAt ? 'mf-warn' : 'mf-ok'
-  return (
-    <div className="nh-pct-wrap">
-      <div className="mbar-track nh-pct-track">
-        <div className={`mbar-fill ${cls}`} style={{ width: `${Math.min(pct, 100)}%` }} />
-      </div>
-      <span className={`nh-pct-val${pct >= dangerAt ? ' pct-danger' : pct >= warnAt ? ' pct-warn' : ''}`}>{pct}%</span>
-    </div>
-  )
-}
-
-function NodeHealthView({ nodeClusters, loading }) {
-  const [search, setSearch] = useState('')
-  const q = search.trim().toLowerCase()
-
-  if (loading) return <div className="page-loading" style={{ marginTop: 16 }}>Loading node data…</div>
-  if (!nodeClusters?.length) return (
-    <div className="alerts-empty"><span style={{ fontSize: 28 }}>🖥</span><span>No node data available</span></div>
-  )
-
-  return (
-    <div className="nh-section">
-      <div className="prom-pods-header" style={{ marginBottom: 12 }}>
-        <div className="prom-pods-title">
-          Node Health
-          {nodeClusters.map(c => (
-            <span key={c.clusterName} className="prom-pods-count">
-              {c.clusterName}: {c.nodes.length} nodes
-            </span>
-          ))}
-        </div>
-        <div className="prom-pods-search-wrap">
-          <span className="health-search-icon">⌕</span>
-          <input className="health-search" placeholder="Filter nodes…"
-            value={search} onChange={e => setSearch(e.target.value)} />
-          {search && <button className="health-search-clear" onClick={() => setSearch('')}>✕</button>}
-        </div>
-      </div>
-
-      {nodeClusters.map(cluster => {
-        const visible       = q ? cluster.nodes.filter(n => n.name.includes(q)) : cluster.nodes
-        const notReadyCount = visible.filter(n => !n.isReady).length
-        const issueCount    = visible.filter(n => n.issues?.length > 0).length
-        if (!cluster.connected) return (
-          <div key={cluster.clusterName} className="health-error">⚠ {cluster.clusterName}: {cluster.error}</div>
-        )
-        return (
-          <div key={cluster.clusterName} className="nh-cluster-block">
-            <div className="nh-cluster-header">
-              <span className="hc-name">{cluster.clusterName}</span>
-              <span className={`tier-badge tier-${cluster.tier}`}>{cluster.tier}</span>
-              {notReadyCount > 0 && <span className="prom-pods-errbadge">{notReadyCount} NotReady</span>}
-              {issueCount    > 0 && <span className="prom-pods-oombadge">{issueCount} with issues</span>}
-            </div>
-            <div className="prom-pods-table-wrap">
-              <table className="prom-pods-table">
-                <thead>
-                  <tr>
-                    <th>Node</th><th>Status</th><th>Role</th>
-                    <th>CPU</th><th>Memory</th><th>Disk</th>
-                    <th>Conditions</th><th>Issues</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visible.map(node => (
-                    <tr key={node.name} className={`prom-pod-row${node.issues?.length > 0 ? ' prom-pod-row-err' : ''}`}>
-                      <td className="prom-pod-name mono-small" title={node.name}>
-                        {node.name.length > 38 ? node.name.slice(0, 36) + '…' : node.name}
-                      </td>
-                      <td>
-                        {node.isReady
-                          ? <span className="phase-b pb-running">Ready</span>
-                          : <span className="phase-b pb-failed">NotReady</span>}
-                      </td>
-                      <td>
-                        {node.isControlPlane
-                          ? <span className="nc-role-cp">control-plane</span>
-                          : <span className="hcell-dim">worker</span>}
-                      </td>
-                      <td><PctBar pct={node.cpuUsagePct} warnAt={70} dangerAt={90} /></td>
-                      <td><PctBar pct={node.memUsedPct}  warnAt={75} dangerAt={90} /></td>
-                      <td><PctBar pct={node.diskUsedPct} warnAt={80} dangerAt={95} /></td>
-                      <td><ConditionTags conditions={node.conditions} /></td>
-                      <td>
-                        {node.issues?.length
-                          ? <div className="prom-err-types">{node.issues.map((iss, i) => (
-                              <span key={i} className="prom-err-badge">{iss.type.replace('Node','')}</span>
-                            ))}</div>
-                          : <span className="prom-ok">✓</span>}
-                      </td>
-                    </tr>
-                  ))}
-                  {visible.length === 0 && (
-                    <tr><td colSpan={8} className="nc-history-empty">No nodes match "{search}"</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-// ── Prometheus all-pods metrics table ─────────────────────────────────────────
-function CpuBar({ cores }) {
-  if (cores == null) return <span className="hcell-dim">—</span>
-  const pct = Math.min(100, cores * 100)
-  const cls = pct > 80 ? 'mf-danger' : pct > 50 ? 'mf-warn' : 'mf-ok'
-  return (
-    <div className="prom-cpu-wrap">
-      <span className="prom-cpu-val">{cores < 0.001 ? '<0.001' : cores.toFixed(3)}</span>
-      <div className="mbar-track prom-cpu-track">
-        <div className={`mbar-fill ${cls}`} style={{ width: `${pct.toFixed(1)}%` }} />
-      </div>
-    </div>
-  )
-}
-
-function OomBadge({ oomKilled }) {
-  return oomKilled
-    ? <span className="prom-oom-yes" title="OOMKilled detected">OOM</span>
-    : <span className="prom-oom-no">—</span>
-}
-
-function ErrorTypeBadges({ types }) {
-  if (!types?.length) return <span className="prom-ok">✓</span>
-  return (
-    <div className="prom-err-types">
-      {types.map(t => (
-        <span key={t} className="prom-err-badge">{ALERT_LABELS[t] ?? t}</span>
-      ))}
-    </div>
-  )
-}
-
-function ClusterBadge({ name }) {
-  if (!name || name === 'default') return <span className="hcell-dim">—</span>
-  return <span className="prom-cluster-badge">{name}</span>
-}
-
-function PrometheusPodsTable({ pods, loading }) {
-  const [search, setSearch] = useState('')
-  const q = search.trim().toLowerCase()
-  const visible = q
-    ? pods.filter(p =>
-        p.pod.includes(q) ||
-        p.namespace.includes(q) ||
-        (p.cluster ?? '').includes(q)
-      )
-    : pods
-
-  if (loading) return <div className="page-loading" style={{ marginTop: 16 }}>Loading Prometheus metrics…</div>
-
-  if (!pods.length) return (
-    <div className="alerts-empty" style={{ marginTop: 16 }}>
-      <span style={{ fontSize: 24 }}>📊</span>
-      <span>No pod metrics found in Prometheus</span>
-    </div>
-  )
-
-  return (
-    <div className="prom-pods-section">
-      <div className="prom-pods-search-row">
-        <div className="prom-pods-search-wrap">
-          <span className="health-search-icon">⌕</span>
-          <input className="health-search" placeholder="Filter by pod, namespace or cluster…"
-            value={search} onChange={e => setSearch(e.target.value)} />
-          {search && <button className="health-search-clear" onClick={() => setSearch('')}>✕</button>}
-        </div>
-      </div>
-
-      <div className="prom-pods-table-wrap">
-        <table className="prom-pods-table">
-          <thead>
-            <tr>
-              <th>Cluster</th>
-              <th>Namespace</th>
-              <th>Pod</th>
-              <th>CPU (cores)</th>
-              <th>Memory</th>
-              <th>Restarts</th>
-              <th>OOM</th>
-              <th>Issues</th>
-            </tr>
-          </thead>
-          <tbody>
-            {visible.map(p => (
-              <tr key={p.key} className={`prom-pod-row${p.errorTypes.length > 0 ? ' prom-pod-row-err' : ''}`}>
-                <td><ClusterBadge name={p.cluster} /></td>
-                <td><span className="ns-tag">{p.namespace}</span></td>
-                <td className="prom-pod-name mono-small" title={p.pod}>
-                  {p.pod.length > 42 ? p.pod.slice(0, 40) + '…' : p.pod}
-                </td>
-                <td><CpuBar cores={p.cpuCores} /></td>
-                <td>
-                  {p.memBytes != null
-                    ? <span className="hcell-mono">{fmtBytes(p.memBytes)}</span>
-                    : <span className="hcell-dim">—</span>}
-                </td>
-                <td><RestartCount n={p.restarts ?? 0} /></td>
-                <td><OomBadge oomKilled={p.oomKilled} /></td>
-                <td><ErrorTypeBadges types={p.errorTypes} /></td>
-              </tr>
-            ))}
-            {visible.length === 0 && (
-              <tr><td colSpan={8} className="nc-history-empty">No pods match "{search}"</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  )
-}
-
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function ClusterHealthPage() {
   const [data,              setData]              = useState(null)
@@ -819,7 +141,7 @@ export default function ClusterHealthPage() {
   const [countdown,         setCountdown]         = useState(REFRESH_INTERVAL)
   const [lastSync,          setLastSync]          = useState(null)
   const [search,            setSearch]            = useState('')
-  const [filters,           setFilters]           = useState(EMPTY_FILTERS)
+  const { filters, setFilters, toggle, activeCount } = useFilters(EMPTY_FILTERS)
   const [drawerOpen,        setDrawerOpen]        = useState(false)
   const [noticeDismiss,     setNoticeDismiss]     = useState(false)
   const [promNoticeDismiss, setPromNoticeDismiss] = useState(false)
@@ -855,8 +177,11 @@ export default function ClusterHealthPage() {
     return () => clearInterval(t)
   }, [])
 
-  // Fetch Prometheus error alerts + all-pods metrics
+  // Fetch Prometheus error alerts + all-pods metrics — only while the Alerts tab is
+  // active. (Pod polling above stays unconditional: it feeds the status summary bar,
+  // which is visible on every tab, not just the Pods view.)
   useEffect(() => {
+    if (activeView !== 'alerts') return
     const fetchErrors = async () => {
       try {
         const res = await apiFetch('/api/metrics/errors')
@@ -867,9 +192,10 @@ export default function ClusterHealthPage() {
     fetchErrors()
     const iv = setInterval(fetchErrors, ERRORS_REFRESH_MS)
     return () => clearInterval(iv)
-  }, [])
+  }, [activeView])
 
   useEffect(() => {
+    if (activeView !== 'alerts') return
     const fetchPromPods = async () => {
       setPromPodsLoading(true)
       try {
@@ -882,9 +208,11 @@ export default function ClusterHealthPage() {
     fetchPromPods()
     const iv = setInterval(fetchPromPods, METRICS_REFRESH_MS)
     return () => clearInterval(iv)
-  }, [])
+  }, [activeView])
 
+  // Fetch node health — only while the Nodes tab is active.
   useEffect(() => {
+    if (activeView !== 'nodes') return
     const fetchNodes = async () => {
       setNodesLoading(true)
       try {
@@ -897,7 +225,7 @@ export default function ClusterHealthPage() {
     fetchNodes()
     const iv = setInterval(fetchNodes, NODES_REFRESH_MS)
     return () => clearInterval(iv)
-  }, [])
+  }, [activeView])
 
   // derived
   const allPods       = useMemo(() => data?.clusters.flatMap(c => c.pods) ?? [], [data])
@@ -936,15 +264,6 @@ export default function ClusterHealthPage() {
   const totalVisible = filtered.reduce((s, c) => s + c.visible.length, 0)
   const totalPods    = allPods.length
   const hasActive    = q.length > 0 || Object.values(filters).some(v => Array.isArray(v) ? v.length > 0 : v)
-
-  const activeCount =
-    (filters.phases.length     > 0 ? 1 : 0) +
-    (filters.namespaces.length > 0 ? 1 : 0) +
-    (filters.clusters.length   > 0 ? 1 : 0) +
-    (filters.hasRestarts ? 1 : 0) + (filters.hasGpu ? 1 : 0)
-
-  const toggle = key => val =>
-    setFilters(f => ({ ...f, [key]: f[key].includes(val) ? f[key].filter(x => x !== val) : [...f[key], val] }))
 
   const toggleCluster = name =>
     setExpandedClusters(p => ({ ...p, [name]: !p[name] }))

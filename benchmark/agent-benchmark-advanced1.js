@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // =============================================================================
-// agent-benchmark-advanced.js — Extended agent benchmark
+// agent-benchmark-advanced1.js — Extended agent benchmark
 //
 // Includes all tests from agent-benchmark.js PLUS:
 //   - Cascading failures (db dependency)

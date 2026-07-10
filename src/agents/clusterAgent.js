@@ -5,7 +5,7 @@ const kubectl             = require('../tools/kubectl');
 const PodAnalyzer         = require('./podAnalyzer');
 const NodeAnalyzer        = require('./nodeAnalyzer');
 const EventAnalyzer       = require('./eventAnalyzer');
-const CorrelationEngine   = require('./correlationEngine');
+const NodeHotspotCorrelator = require('./nodeHotspotCorrelator');
 const ClusterAnalyzer     = require('./clusterAnalyzer');
 const GuardianAgent       = require('./guardianAgent');
 const PlannerAgent        = require('./plannerAgent');
@@ -155,15 +155,15 @@ class ClusterAgent {
     const events = eventsJson ? EventAnalyzer.extractEvents(eventsJson) : [];
     if (events.length) console.log(`[${this.name}] ${events.length} warning event(s)`);
 
-    // ── Correlation: pod failures → node root causes ───────────────────────
-    const correlation = CorrelationEngine.correlate(allPodIssues, allNodeIssues, podsJson ?? { items: [] }, events);
+    // ── Correlation: pod failures → node root causes (spatial hotspot detection) ──
+    const correlation = NodeHotspotCorrelator.correlate(allPodIssues, allNodeIssues, podsJson ?? { items: [] }, events);
     if (correlation.hotNodes.length) {
       console.log(`[${this.name}] [CORRELATION] ${correlation.hotNodes.length} hot node(s): ${correlation.hotNodes.map(h => h.nodeName).join(', ')}`);
     }
 
     // ── Annotate pod issues with their node name ──────────────────────────
     const annotatedPodIssues = podsJson
-      ? CorrelationEngine.annotatePodIssues(allPodIssues, podsJson)
+      ? NodeHotspotCorrelator.annotatePodIssues(allPodIssues, podsJson)
       : allPodIssues;
 
     // ── Cluster-level analysis ─────────────────────────────────────────────
@@ -818,8 +818,9 @@ class ClusterAgent {
     //     This is the single most valuable signal for CrashLoopBackOff diagnosis.
     if (pod) {
       tasks.push(
-        kubectl.runCommand(
-          `kubectl --context=${this.context} logs --previous ${pod} -n ${ns} --tail=80`
+        this._runSafeCommand(
+          `kubectl --context=${this.context} logs --previous ${pod} -n ${ns} --tail=80`,
+          { readOnly: true }
         )
         .then(out => { result.previousLogs = out.trim() || null; })
         .catch(() => {}) // no previous state on first crash — not an error
@@ -831,7 +832,10 @@ class ClusterAgent {
     const logLen = (existingLogs ?? '').trim().length;
     if (pod && logLen < 80) {
       tasks.push(
-        kubectl.describePod(pod, ns, this.context)
+        this._runSafeCommand(
+          `kubectl --context=${this.context} describe pod ${pod} -n ${ns}`,
+          { readOnly: true }
+        )
           .then(raw => {
             const idx = raw.indexOf('\nEvents:');
             result.describeEvents = idx !== -1
@@ -847,8 +851,9 @@ class ClusterAgent {
     const ROLLBACK_CODES = new Set([126, 127]);
     if (dep && (issue.exitCode == null || ROLLBACK_CODES.has(issue.exitCode))) {
       tasks.push(
-        kubectl.runCommand(
-          `kubectl --context=${this.context} rollout history deployment/${dep} -n ${ns}`
+        this._runSafeCommand(
+          `kubectl --context=${this.context} rollout history deployment/${dep} -n ${ns}`,
+          { readOnly: true }
         )
         .then(out => { result.rolloutHistory = out.trim() || null; })
         .catch(() => {})
@@ -894,11 +899,13 @@ class ClusterAgent {
 
   // ── Execute a kubectl command after sanitization ──────────────────────────
   // All direct kubectl.runCommand() calls go through here so the PolicyEngine
-  // sanitizer and the dryRunMode flag are always applied.
-  async _runSafeCommand(cmd) {
+  // sanitizer is always applied. Mutating commands are also gated by dryRunMode;
+  // pass { readOnly: true } for evidence-gathering reads so dry-run mode doesn't
+  // fake out reads that don't change cluster state.
+  async _runSafeCommand(cmd, { readOnly = false } = {}) {
     const { safe, command, reason } = this.policyEngine.sanitizeCommand(cmd);
     if (!safe) throw new Error(`Command blocked by policy sanitizer: ${reason}`);
-    if (this.policyEngine.dryRunMode) {
+    if (this.policyEngine.dryRunMode && !readOnly) {
       console.log(`[${this.name}] [DRY-RUN] would execute: ${command}`);
       return '(dry-run)';
     }
@@ -944,9 +951,10 @@ class ClusterAgent {
         if (!controller) throw new Error('increase_memory requires a controller');
         let currentLimitMi = 128;
         try {
-          const raw = await kubectl.runCommand(
+          const raw = await this._runSafeCommand(
             `kubectl --context=${this.context} get ${resourceType}/${controller} -n ${ns}` +
-            ` -o jsonpath={.spec.template.spec.containers[0].resources.limits.memory}`
+            ` -o jsonpath={.spec.template.spec.containers[0].resources.limits.memory}`,
+            { readOnly: true }
           );
           if (raw.trim()) currentLimitMi = _parseMiB(raw.trim());
         } catch { /* use fallback 128Mi */ }
@@ -1164,13 +1172,15 @@ class ClusterAgent {
 
     switch (action) {
       case 'cordon_node':
-        await kubectl.cordonNode(nodeName, this.context);
+        await this._runSafeCommand(`kubectl --context=${this.context} cordon ${nodeName}`);
         break;
       case 'uncordon_node':
-        await kubectl.uncordonNode(nodeName, this.context);
+        await this._runSafeCommand(`kubectl --context=${this.context} uncordon ${nodeName}`);
         break;
       case 'drain_node':
-        await kubectl.drainNode(nodeName, this.context, { deleteEmptyDir: false, gracePeriod: 60 });
+        await this._runSafeCommand(
+          `kubectl --context=${this.context} drain ${nodeName} --ignore-daemonsets --timeout=60s`
+        );
         break;
       default:
         console.warn(`[${this.name}] Unknown node action: ${action}`);

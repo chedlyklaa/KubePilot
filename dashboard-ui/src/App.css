@@ -3106,6 +3106,11 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
 
 /* ── Learned Rules ──────────────────────────────────────────────────────── */
 .ag-rules-count       { font-size: 12px; font-weight: 600; background: var(--primary-dim); color: var(--primary); border-radius: 10px; padding: 1px 8px; margin-left: 6px; }
+.ag-rules-filter-row  { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+.ag-rules-search-input{ flex: 1; min-width: 220px; padding: 7px 12px; border-radius: 7px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font-size: 12px; outline: none; }
+.ag-rules-search-input:focus { border-color: var(--primary); }
+.ag-rules-filter-row select { padding: 7px 10px; border-radius: 7px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font-size: 12px; outline: none; cursor: pointer; }
+.ag-rules-filter-row select:focus { border-color: var(--primary); }
 .ag-rules-empty       { display: flex; align-items: center; gap: 12px; padding: 24px; background: var(--surface); border: 1px dashed var(--border); border-radius: 10px; color: var(--text-dim); font-size: 13px; }
 .ag-rules-empty-icon  { font-size: 28px; opacity: .4; flex-shrink: 0; }
 .ag-rules-list        { display: flex; flex-direction: column; gap: 10px; }

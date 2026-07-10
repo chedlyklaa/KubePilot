@@ -1,26 +1,53 @@
 // Escalation store — in-memory active escalations + MongoDB persistence.
 // Lifecycle: pending → acknowledged → in_progress → fixed | not_fixed | need_help
 
-const notifEngine = require('../services/notifications/engine');
+'use strict';
+
+const notifEngine             = require('../services/notifications/engine');
+const permissionService       = require('../services/permissionService');
+const notificationStore       = require('./notificationStore');
+const { EscalationHistory, User } = require('../db/models');
+const { createPubSub }        = require('./pubsub');
+const { restoreActiveRecords } = require('./restoreActiveRecords');
+
+// Who should be notified about an escalation on this cluster/namespace: admins always,
+// developers only if they actually have access to the affected resource. Falls back to
+// admins-only on any lookup failure — an escalation should never go completely unseen.
+// `deps` is an injectable seam for tests (pass fake getEligibleRecipients/getAdminIds) —
+// defaults to the real permissionService lookup + real admin query in production.
+async function _getEscalationTargets(cluster, namespace, deps = {}) {
+  const getEligibleRecipients = deps.getEligibleRecipients ?? permissionService.getEligibleRecipients;
+  const getAdminIds           = deps.getAdminIds ?? _getAdminIds;
+  try {
+    return await getEligibleRecipients(cluster, namespace, 'read-only');
+  } catch (err) {
+    console.error('[EscalationStore] Failed to resolve notification targets, falling back to admins:', err.message);
+    return getAdminIds();
+  }
+}
 
 let seq = 0;
 const escalations = new Map();
-const listeners   = new Set();
+const { notify: _notify, subscribe } = createPubSub();
 
-function _notify(event)    { listeners.forEach(fn => fn(event)); }
 function _safe(entry)      { const { mongoId, resolve, ...rest } = entry; return rest; }
 function _sanitize(issue)  { const { logs, env, secrets, ...safe } = issue ?? {}; return safe; }
 
 async function _getAdminIds() {
   try {
-    const { User } = require('../db/models');
     const admins = await User.find({ role: 'admin', active: true }).select('_id');
     return admins.map(a => a._id.toString());
   } catch { return []; }
 }
 
 // ── Escalate (called by agent) ────────────────────────────────────────────────
-async function escalate(issueKey, issue, history, rca = null) {
+// `deps` is an injectable seam for tests — see _getEscalationTargets above; also
+// accepts deps.EscalationHistoryModel and deps.notifEngine to fake out Mongo/notification
+// delivery without mocking require() (unreliable for CJS modules under Vitest).
+async function escalate(issueKey, issue, history, rca = null, deps = {}) {
+  const EscalationHistoryModel = deps.EscalationHistoryModel ?? EscalationHistory;
+  const notifier               = deps.notifEngine ?? notifEngine;
+
   // Deduplication: if an active escalation already exists for this issueKey,
   // don't create a new record. Instead:
   //   - still pending  → leave it, nothing to do
@@ -51,8 +78,7 @@ async function escalate(issueKey, issue, history, rca = null) {
     if (rca) existing.rca = rca;
 
     try {
-      const { EscalationHistory } = require('../db/models');
-      if (existing.mongoId) await EscalationHistory.findByIdAndUpdate(existing.mongoId, {
+      if (existing.mongoId) await EscalationHistoryModel.findByIdAndUpdate(existing.mongoId, {
         status:        'pending',
         attempts:      existing.attempts,
         failedHistory: updatedHistory,
@@ -70,20 +96,22 @@ async function escalate(issueKey, issue, history, rca = null) {
     const lastNotif = existing._lastTeamsNotif ?? 0;
     if (now - lastNotif >= 30 * 60 * 1000) {
       const reRcaSummary = existing.rca?.suspected_cause ? `\n\nRoot Cause: ${existing.rca.suspected_cause} (confidence: ${existing.rca.confidence ?? '?'})` : '';
-      notifEngine.emit({
+      const reCluster    = existing.cluster || issue?.clusterName || '';
+      const reNamespace  = existing.issue?.namespace ?? issue?.namespace;
+      _getEscalationTargets(reCluster, reNamespace, deps).then(targetUserIds => notifier.emit({
         severity: 'CRITICAL',
         category: 'Incidents',
         title:    `Re-Escalated: ${issueKey}`,
         message:  `Agent failed again after ${existing.attempts} total attempt(s). Manual intervention still required.${reRcaSummary}`,
-        namespace: existing.issue?.namespace ?? issue?.namespace,
+        namespace: reNamespace,
         source:   `ClusterAgent/${existing.issue?.clusterName ?? issue?.clusterName ?? '—'}`,
         metadata: { issueKey, attempts: existing.attempts, type: existing.issue?.type ?? issue?.type, rca: existing.rca ?? null },
-      }).then(() => {
+        targetUserIds,
+      })).then(() => {
         existing._lastTeamsNotif = Date.now();
         try {
-          const { EscalationHistory } = require('../db/models');
           if (existing.mongoId)
-            EscalationHistory.findByIdAndUpdate(existing.mongoId, { lastTeamsNotif: new Date() }).catch(() => {});
+            EscalationHistoryModel.findByIdAndUpdate(existing.mongoId, { lastTeamsNotif: new Date() }).catch(() => {});
         } catch {}
       }).catch(() => {});
     }
@@ -110,8 +138,7 @@ async function escalate(issueKey, issue, history, rca = null) {
   };
 
   try {
-    const { EscalationHistory } = require('../db/models');
-    const doc = await EscalationHistory.create({
+    const doc = await EscalationHistoryModel.create({
       issueKey,
       issue:         entry.issue,
       cluster,
@@ -130,7 +157,7 @@ async function escalate(issueKey, issue, history, rca = null) {
   _notify({ type: 'added', escalation: _safe(entry) });
 
   const rcaSummary = rca?.suspected_cause ? `\n\nRoot Cause Analysis:\n• Suspected cause: ${rca.suspected_cause}\n• Confidence: ${rca.confidence ?? '?'}\n• Risk: ${rca.risk_level ?? '?'}\n• Focus: ${rca.recommended_focus ?? '—'}` : '';
-  notifEngine.emit({
+  _getEscalationTargets(cluster, issue?.namespace, deps).then(targetUserIds => notifier.emit({
     severity: 'CRITICAL',
     category: 'Incidents',
     title:    `Escalation: ${issueKey}`,
@@ -138,7 +165,8 @@ async function escalate(issueKey, issue, history, rca = null) {
     namespace: issue?.namespace,
     source:   `ClusterAgent/${issue?.clusterName ?? '—'}`,
     metadata: { issueKey, attempts: history.length, type: issue?.type, rca: rca ?? null },
-  }).then(() => {
+    targetUserIds,
+  })).then(() => {
     entry._lastTeamsNotif = Date.now();
   }).catch(() => {});
 
@@ -157,7 +185,6 @@ async function acknowledge(id, user) {
   entry.assignedAt     = entry.acknowledgedAt;
 
   try {
-    const { EscalationHistory } = require('../db/models');
     if (entry.mongoId) await EscalationHistory.findByIdAndUpdate(entry.mongoId, {
       status:          'acknowledged',
       acknowledgedBy:  entry.acknowledgedBy,
@@ -178,13 +205,11 @@ async function updateState(id, state, user) {
   const entry = escalations.get(id);
   if (!entry) return false;
 
-  const prev = entry.status;
   entry.status         = state;
   entry.stateUpdatedAt = new Date().toISOString();
   entry.stateUpdatedBy = { name: user.name, email: user.email, role: user.role };
 
   try {
-    const { EscalationHistory } = require('../db/models');
     if (entry.mongoId) await EscalationHistory.findByIdAndUpdate(entry.mongoId, {
       status:         state,
       stateUpdatedAt: new Date(),
@@ -196,10 +221,9 @@ async function updateState(id, state, user) {
 
   // Notify admins when state is "fixed" or "need_help"
   if (state === 'fixed' || state === 'need_help') {
-    const notif  = require('./notificationStore');
     const adminIds = await _getAdminIds();
     const labels   = { fixed: '✓ marked as Fixed', need_help: '⚠ needs Help' };
-    await notif.send(adminIds, {
+    await notificationStore.send(adminIds, {
       type:    state === 'fixed' ? 'success' : 'warn',
       message: `${user.name} ${labels[state]}: ${entry.issueKey}`,
       data:    { escalationId: id, issueKey: entry.issueKey },
@@ -229,7 +253,6 @@ async function assign(id, assignedTo, assignedBy) {
   entry.reassignRequested = false; // reset request after admin acts
 
   try {
-    const { EscalationHistory } = require('../db/models');
     if (entry.mongoId) await EscalationHistory.findByIdAndUpdate(entry.mongoId, {
       assignedTo:          assignedTo,
       assignedAt:          new Date(),
@@ -240,10 +263,8 @@ async function assign(id, assignedTo, assignedBy) {
     console.error('[EscalationStore] DB update failed:', err.message);
   }
 
-  const notif = require('./notificationStore');
-
   // Notify new assignee (in-app)
-  await notif.send([assignedTo.userId], {
+  await notificationStore.send([assignedTo.userId], {
     type:    'warn',
     message: `📌 You have been assigned to handle: ${entry.issueKey}`,
     data:    { escalationId: id, issueKey: entry.issueKey, assignedBy: { name: assignedBy.name } },
@@ -251,7 +272,7 @@ async function assign(id, assignedTo, assignedBy) {
 
   // Notify old assignee if different (in-app)
   if (oldAssignee?.userId && oldAssignee.userId !== assignedTo.userId) {
-    await notif.send([oldAssignee.userId], {
+    await notificationStore.send([oldAssignee.userId], {
       type:    'info',
       message: `↩ You have been removed from: ${entry.issueKey} (reassigned by ${assignedBy.name})`,
       data:    { escalationId: id, issueKey: entry.issueKey },
@@ -284,7 +305,6 @@ async function requestReassign(id, user) {
   entry.reassignRequestedBy  = { name: user.name, email: user.email };
 
   try {
-    const { EscalationHistory } = require('../db/models');
     if (entry.mongoId) await EscalationHistory.findByIdAndUpdate(entry.mongoId, {
       reassignRequested:   true,
       reassignRequestedAt: new Date(),
@@ -294,9 +314,8 @@ async function requestReassign(id, user) {
     console.error('[EscalationStore] DB update failed:', err.message);
   }
 
-  const notif    = require('./notificationStore');
   const adminIds = await _getAdminIds();
-  await notif.send(adminIds, {
+  await notificationStore.send(adminIds, {
     type:    'warn',
     message: `🔄 ${user.name} is requesting reassignment for: ${entry.issueKey}`,
     data:    { escalationId: id, issueKey: entry.issueKey, requestedBy: { name: user.name, email: user.email } },
@@ -311,7 +330,6 @@ async function remove(id) {
   if (!entry) return false;
 
   try {
-    const { EscalationHistory } = require('../db/models');
     if (entry.mongoId) await EscalationHistory.findByIdAndDelete(entry.mongoId);
   } catch (err) {
     console.error('[EscalationStore] DB delete failed:', err.message);
@@ -322,19 +340,17 @@ async function remove(id) {
   return true;
 }
 
-function getAll()      { return [...escalations.values()].map(_safe); }
-function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
+function getAll() { return [...escalations.values()].map(_safe); }
 
 // ── Restore active escalations from MongoDB on startup ────────────────────────
 async function init() {
   try {
-    const { EscalationHistory } = require('../db/models');
     // Exclude terminal statuses — fixed and not_fixed are done, no need to resurface them.
-    const docs = await EscalationHistory.find({ status: { $nin: ['fixed', 'not_fixed'] } }).sort({ escalatedAt: 1 });
-
-    for (const doc of docs) {
-      const id = String(++seq);
-      escalations.set(id, {
+    const restored = await restoreActiveRecords(
+      EscalationHistory,
+      { status: { $nin: ['fixed', 'not_fixed'] } },
+      () => String(++seq),
+      (doc, id) => ({
         id,
         issueKey:            doc.issueKey,
         issue:               doc.issue ?? {},
@@ -347,7 +363,7 @@ async function init() {
         createdAt:           (doc.escalatedAt ?? doc.createdAt)?.toISOString(),
         assignedTo:          doc.assignedTo          ?? null,
         assignedAt:          doc.assignedAt?.toISOString()          ?? null,
-        acknowledgedBy:      doc.acknowledgedBy       ?? null,   // C5: was missing
+        acknowledgedBy:      doc.acknowledgedBy       ?? null,
         acknowledgedAt:      doc.acknowledgedAt?.toISOString()       ?? null,
         reassignRequested:   doc.reassignRequested    ?? false,
         reassignRequestedBy: doc.reassignRequestedBy  ?? null,
@@ -355,11 +371,15 @@ async function init() {
         stateUpdatedBy:      doc.stateUpdatedBy       ?? null,
         mongoId:             doc._id.toString(),
         _lastTeamsNotif:     doc.lastTeamsNotif?.getTime()      ?? 0,
-      });
-    }
+      })
+    );
 
-    if (docs.length > 0)
-      console.log(`[EscalationStore] Restored ${docs.length} active escalation(s) from MongoDB`);
+    // restoreActiveRecords doesn't sort — preserve the original escalatedAt-ascending order.
+    restored.sort(([, a], [, b]) => new Date(a.createdAt ?? 0) - new Date(b.createdAt ?? 0));
+    for (const [id, entry] of restored) escalations.set(id, entry);
+
+    if (restored.length > 0)
+      console.log(`[EscalationStore] Restored ${restored.length} active escalation(s) from MongoDB`);
   } catch (err) {
     console.error('[EscalationStore] Failed to restore escalations:', err.message);
   }

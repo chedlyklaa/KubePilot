@@ -1,11 +1,15 @@
-const TIMEOUT_MS    = 10 * 60 * 1000;
-const notifEngine   = require('../services/notifications/engine');
+'use strict';
+
+const notifEngine         = require('../services/notifications/engine');
+const { ApprovalHistory } = require('../db/models');
+const overrideStore       = require('./overrideStore');
+const { createPubSub }    = require('./pubsub');
+
+const TIMEOUT_MS = 10 * 60 * 1000;
 
 let seq = 0;
-const pending   = new Map();
-const listeners = new Set();
-
-function notify(event) { listeners.forEach(fn => fn(event)); }
+const pending = new Map();
+const { notify, subscribe } = createPubSub();
 
 function requestApproval(payload) {
   const id = String(++seq);
@@ -50,7 +54,6 @@ async function _settle(id, approved, user, overrideData = {}, decision = null) {
 
 async function _saveHistory(entry, decision, user, overrideData = {}) {
   try {
-    const { ApprovalHistory } = require('../db/models');
     const doc = {
       issueKey:    entry.payload.issueKey,
       issue:       entry.payload.issue,
@@ -68,7 +71,6 @@ async function _saveHistory(entry, decision, user, overrideData = {}) {
   }
   // Make override feedback available to ReflectionAgent when the episode is later stored
   if (decision === 'denied' && (overrideData.overrideReasons?.length || overrideData.preferredAction)) {
-    const overrideStore = require('./overrideStore');
     overrideStore.set(entry.payload.issueKey, overrideData);
   }
 }
@@ -80,7 +82,5 @@ const silence = (id, user)                      => _settle(id, false, user, {}, 
 function getPending() {
   return [...pending.values()].map(({ id, payload, createdAt }) => ({ id, payload, createdAt }));
 }
-
-function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
 module.exports = { requestApproval, approve, deny, silence, getPending, subscribe };

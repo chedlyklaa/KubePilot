@@ -47,9 +47,8 @@ function PasswordSection({ emailAvailable, userId }) {
       else                       body.otp             = form.otp
 
       const r = await apiFetch('/api/profile', {
-        method:  'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify(body),
+        method: 'PUT',
+        body:   body,
       })
       if (r.ok) {
         notify('success', 'Password changed successfully')
@@ -226,9 +225,8 @@ export default function ProfilePage() {
     setSaving(true)
     try {
       const r = await apiFetch('/api/profile', {
-        method:  'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ name: form.name.trim() }),
+        method: 'PUT',
+        body:   { name: form.name.trim() },
       })
       if (r.ok) {
         const d = await r.json()
