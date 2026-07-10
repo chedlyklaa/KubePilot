@@ -73,6 +73,14 @@ async function testConnection(config) {
     auth: { user: config.smtpUser, pass: config.smtpPass },
   });
   await transport.verify();
+
+  await send({
+    severity: 'INFO',
+    category: 'System',
+    title:    'KubePilot — Test Connection',
+    message:  'This is a test email confirming your SMTP settings are configured correctly.',
+    source:   'KubePilot Notification Center',
+  }, config);
 }
 
 module.exports = { send, testConnection };
