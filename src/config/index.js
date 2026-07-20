@@ -55,10 +55,13 @@ const EnvSchema = z.object({
   PROMETHEUS_NAMESPACE: z.string().default('monitoring'),
 
   // Feature flags
-  CAPACITY_FORECAST_ENABLED:  boolFlag(false),
-  CHANGE_CORRELATION_ENABLED: boolFlag(false),
-  FALLBACK_ENABLED:           boolFlag(true),
-  POLICY_DRY_RUN:             boolFlag(false),
+  CAPACITY_FORECAST_ENABLED:   boolFlag(false),
+  CHANGE_CORRELATION_ENABLED:  boolFlag(false),
+  RBAC_DRIFT_ENABLED:          boolFlag(false),
+  CONNECTIVITY_ALERTS_ENABLED: boolFlag(false),
+  POLICY_AWARENESS_ENABLED:    boolFlag(false),
+  FALLBACK_ENABLED:            boolFlag(true),
+  POLICY_DRY_RUN:              boolFlag(false),
 
   // Optional integrations — no default, feature is just unavailable if unset
   QDRANT_URL:         z.string().url().optional(),

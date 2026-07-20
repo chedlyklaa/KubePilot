@@ -3,11 +3,12 @@ const express = require('express');
 const profileService = require('../../services/profileService');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 const { asyncHandler } = require('../middleware/asyncHandler');
+const { authLimiter } = require('../middleware/rateLimit');
 
 const router = express.Router();
 
 // Request OTP for password change via email
-router.post('/api/profile/request-otp', requireAuth, asyncHandler(async (req, res) => {
+router.post('/api/profile/request-otp', authLimiter, requireAuth, asyncHandler(async (req, res) => {
   res.json(await profileService.requestOtp(req.user));
 }));
 

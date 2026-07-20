@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { apiFetch } from '../lib/api'
+import { useMonitoredClusters } from '../hooks/useMonitoredClusters'
+import { PercentBar as Bar } from '../components/QuotaBar'
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   ReferenceLine,
@@ -145,23 +147,8 @@ function fmtEta(h) {
   return `${(h / 168).toFixed(1)}w`
 }
 
-// ── Bar component ─────────────────────────────────────────────────────────
-function Bar({ value, label, size = 'md' }) {
-  const v = value ?? 0
-  const color = v >= 90 ? 'var(--danger)' : v >= 75 ? 'var(--warn)' : 'var(--success)'
-  return (
-    <div className={`cp-bar cp-bar-${size}`}>
-      <div className="cp-bar-track">
-        <div className="cp-bar-fill" style={{ width: `${Math.min(100, v)}%`, background: color }} />
-      </div>
-      <span className="cp-bar-label">{label ?? `${v}%`}</span>
-    </div>
-  )
-}
-
 export default function CapacityPage() {
-  const [clusters, setClusters]             = useState([])
-  const [selectedCluster, setSelectedCluster] = useState('')
+  const { clusters, selected: selectedCluster, setSelected: setSelectedCluster } = useMonitoredClusters()
   const [data, setData]                     = useState(null)
   const [loading, setLoading]               = useState(false)
   const [podFilter, setPodFilter]           = useState('all')
@@ -237,14 +224,6 @@ export default function CapacityPage() {
     }
   }, [])
 
-  useEffect(() => {
-    apiFetch('/api/kube/contexts').then(r => r.json()).then(d => {
-      const list = d.contexts ?? []
-      setClusters(list)
-      if (list.length > 0) setSelectedCluster(list[0].name)
-    }).catch(() => {})
-  }, [])
-
   const load = useCallback(async (cluster) => {
     if (!cluster) return
     setLoading(true)
@@ -314,7 +293,7 @@ export default function CapacityPage() {
         </div>
         <div className="cp-controls">
           <select value={selectedCluster} onChange={e => setSelectedCluster(e.target.value)}>
-            {clusters.map(c => <option key={c.name} value={c.name}>{c.config?.name ?? c.name}</option>)}
+            {clusters.map(c => <option key={c.name} value={c.config?.name ?? c.name}>{c.config?.name ?? c.name}</option>)}
           </select>
           <button className="btn-primary" onClick={() => load(selectedCluster)} disabled={loading}>
             {loading ? 'Loading…' : 'Refresh'}

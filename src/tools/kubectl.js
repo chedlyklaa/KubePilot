@@ -1,6 +1,7 @@
 // src/tools/kubectl.js
 
 const { execFile } = require('child_process');
+const sessionManager = require('../services/sessionManager');
 
 // Split a command string into an argument array, respecting double-quoted segments.
 // Shell metacharacters (; | $ ` etc.) become harmless literal characters with execFile.
@@ -16,15 +17,29 @@ function _parseArgs(command) {
   });
 }
 
-function runCommand(command, { timeoutMs = 60_000, impersonateAs = null } = {}) {
+// Every kubectl.js helper below builds its command string with `--context=X` — that
+// context name is looked up here against sessionManager on every call (cheap: an
+// in-memory cache hit unless a credential was just rotated). If a per-cluster
+// credential exists, KUBECONFIG is pointed at its materialized temp file for just this
+// child process; otherwise env is left untouched and kubectl falls back to the
+// server's shared kubeconfig file, exactly as before this existed — that fallback is
+// what keeps every pre-existing cluster (context already in the shared file) working
+// unchanged.
+async function runCommand(command, { timeoutMs = 60_000, impersonateAs = null } = {}) {
+  const args = _parseArgs(command);
+  if (impersonateAs) {
+    args.unshift(`--as=${impersonateAs}`);
+  }
+
+  const ctxArg  = args.find(a => a.startsWith('--context='));
+  const context = ctxArg ? ctxArg.slice('--context='.length) : null;
+  const kubeconfigPath = context ? await sessionManager.getKubeconfigPath(context) : null;
+  const env = kubeconfigPath ? { ...process.env, KUBECONFIG: kubeconfigPath } : process.env;
+
   return new Promise((resolve, reject) => {
-    const args = _parseArgs(command);
-    if (impersonateAs) {
-      args.unshift(`--as=${impersonateAs}`);
-    }
     const child = execFile(
       'kubectl', args,
-      { maxBuffer: 10 * 1024 * 1024, timeout: timeoutMs },
+      { maxBuffer: 10 * 1024 * 1024, timeout: timeoutMs, env },
       (error, stdout, stderr) => {
         if (error) {
           const msg = stderr?.trim() || error.message || 'Unknown kubectl error';
@@ -281,7 +296,12 @@ async function getRawKubeconfig(context) {
 // than a jsonpath filter expression, since _parseArgs' tokenizer isn't built to survive
 // jsonpath's own quoting/bracket syntax.
 async function getClusterConnectionInfo(context) {
-  const out = await runCommand('kubectl config view --raw -o json');
+  // Doesn't go through the `--context=` sniffing in runCommand (this reads the whole
+  // config, not one context), so a credential-backed cluster needs its kubeconfig
+  // pointed at explicitly here rather than relying on the KUBECONFIG env fallback.
+  const kubeconfigPath = await sessionManager.getKubeconfigPath(context);
+  const flag = kubeconfigPath ? `--kubeconfig="${kubeconfigPath}"` : '';
+  const out = await runCommand(`kubectl ${flag} config view --raw -o json`.trim());
   const cfg = JSON.parse(out);
   const ctxEntry = (cfg.contexts ?? []).find(c => c.name === context);
   if (!ctxEntry) throw new Error(`Context "${context}" not found in kubeconfig`);
@@ -405,6 +425,13 @@ module.exports = {
   deleteNetworkResource,
   getPersistentVolumes,
   getPersistentVolumeClaims,
+  getResourceQuotas,
+  getPodDisruptionBudgets,
+  getHPAs,
+  patchHPA,
+  isMetricsServerAvailable,
+  getCRDs,
+  getNamespacesFull,
 };
 
 async function getPersistentVolumes(context) {
@@ -414,5 +441,72 @@ async function getPersistentVolumes(context) {
 
 async function getPersistentVolumeClaims(context) {
   const out = await runCommand(`kubectl --context="${context}" get pvc -A -o json`);
+  return JSON.parse(out).items ?? [];
+}
+
+// ── Policy objects (read-only) — used by PolicyEngine to check headroom/blast-radius
+// before approving an action, not just after it fails ────────────────────────────
+
+async function getResourceQuotas(namespace, context) {
+  const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
+  const out = await runCommand(`kubectl --context="${context}" get resourcequota ${nsFlag} -o json`);
+  return JSON.parse(out).items ?? [];
+}
+
+async function getPodDisruptionBudgets(namespace, context) {
+  const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
+  const out = await runCommand(`kubectl --context="${context}" get pdb ${nsFlag} -o json`);
+  return JSON.parse(out).items ?? [];
+}
+
+// ── Autoscaling ──────────────────────────────────────────────────────────────
+
+async function getHPAs(namespace, context) {
+  const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
+  const out = await runCommand(`kubectl --context="${context}" get hpa ${nsFlag} -o json`);
+  return JSON.parse(out).items ?? [];
+}
+
+// Uses --patch-file (like applyManifest uses -f) rather than an inline -p JSON string —
+// _parseArgs' tokenizer isn't built to survive escaped quotes inside a quoted argument.
+async function patchHPA(name, namespace, { minReplicas, maxReplicas }, context) {
+  const os   = require('os');
+  const path = require('path');
+  const fs   = require('fs');
+  const spec = {};
+  if (minReplicas != null) spec.minReplicas = minReplicas;
+  if (maxReplicas != null) spec.maxReplicas = maxReplicas;
+
+  const tmp = path.join(os.tmpdir(), `kp-hpa-patch-${Date.now()}.json`);
+  fs.writeFileSync(tmp, JSON.stringify({ spec }), 'utf8');
+  try {
+    return await runCommand(`kubectl --context="${context}" patch hpa "${name}" -n ${namespace} --type=merge --patch-file="${tmp}"`);
+  } finally {
+    try { fs.unlinkSync(tmp); } catch {}
+  }
+}
+
+// Cheap discovery probe — HPAs silently do nothing if the metrics API isn't being
+// served, which is a common, otherwise-invisible failure mode.
+async function isMetricsServerAvailable(context) {
+  try {
+    await runCommand(`kubectl --context="${context}" get --raw /apis/metrics.k8s.io/v1beta1`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ── CRDs / namespace metadata ─────────────────────────────────────────────────
+
+async function getCRDs(context) {
+  const out = await runCommand(`kubectl --context="${context}" get crd -o json`);
+  return JSON.parse(out).items ?? [];
+}
+
+// Full namespace objects (unlike getNamespaces, which only returns name strings) —
+// needed for reading Pod Security Admission labels off each namespace.
+async function getNamespacesFull(context) {
+  const out = await runCommand(`kubectl --context="${context}" get namespace -o json`);
   return JSON.parse(out).items ?? [];
 }

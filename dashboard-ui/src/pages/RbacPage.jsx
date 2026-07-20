@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { useNotify } from '../contexts/NotifyContext'
 import { apiFetch } from '../lib/api'
 import ScopeEditor from '../components/ScopeEditor'
+import ConfirmDialog from '../components/ConfirmDialog'
 
 const KIND_LABEL = { User: 'User', Group: 'Group', ServiceAccount: 'SA' }
 const KIND_COLOR = { User: 'role-admin', Group: 'role-user', ServiceAccount: 'role-viewer' }
@@ -50,6 +51,9 @@ export default function RbacPage() {
   const [delTarget,  setDelTarget]  = useState(null)
   const [delBusy,    setDelBusy]    = useState(false)
 
+  // Team delete confirm
+  const [confirmDeleteGroup, setConfirmDeleteGroup] = useState(null)
+
   // Audit filter
   const [auditSearch, setAuditSearch] = useState('')
   const [showDangerOnly, setShowDangerOnly] = useState(false)
@@ -80,14 +84,18 @@ export default function RbacPage() {
   }
   useEffect(() => { loadTeams() }, [isAdmin])
 
-  // Load clusters from the kube/contexts endpoint
+  // Load clusters from the kube/contexts endpoint — only ones KubePilot actually
+  // monitors (an unmanaged context has no RBAC data reachable through these routes
+  // anyway), defaulting to whichever context is currently active in kubectl rather
+  // than just the first one in the list.
   useEffect(() => {
     apiFetch('/api/kube/contexts')
       .then(r => r.json())
       .then(d => {
-        const list = d.contexts ?? []
+        const list = (d.contexts ?? []).filter(c => c.isMonitored)
         setClusters(list)
-        if (list.length > 0) setContext(list[0].name)
+        const current = list.find(c => c.isCurrent)
+        setContext((current ?? list[0])?.name ?? '')
       })
       .catch(() => {})
   }, [])
@@ -176,9 +184,9 @@ export default function RbacPage() {
         body: { ...delTarget, context },
       })
       const d = await r.json()
-      if (d.error) alert(d.error)
+      if (d.error) notify('error', d.error)
       else { setDelTarget(null); load() }
-    } catch (err) { alert(err.message) }
+    } catch (err) { notify('error', err.message) }
     finally { setDelBusy(false) }
   }
 
@@ -248,7 +256,15 @@ export default function RbacPage() {
     if (filtered.length === 0) return <div className="empty-state">No bindings found{nsFilter !== '_all' ? ` in ${nsFilter}` : ''}</div>
     return (
       <div className="table-wrap">
-        <table className="data-table">
+        <table className="data-table data-table-responsive rbac-bindings-table">
+          <colgroup>
+            <col style={{ width: '24%' }} />
+            <col style={{ width: '9%' }} />
+            <col style={{ width: '13%' }} />
+            <col style={{ width: '18%' }} />
+            <col style={{ width: isAdmin ? '26%' : '36%' }} />
+            {isAdmin && <col style={{ width: '10%' }} />}
+          </colgroup>
           <thead>
             <tr>
               <th>Name</th><th>Scope</th><th>Namespace</th>
@@ -258,15 +274,15 @@ export default function RbacPage() {
           </thead>
           <tbody>
             {filtered.map(b => (
-              <tr key={`${b.kind}/${b.name}`} className={b.dangerous ? 'rbac-row-danger' : ''}>
-                <td className="mono-small">{b.name}{b.managed && <span className="rbac-kp-badge">⎈ KubePilot</span>}{b.dangerous && <span className="rbac-danger-badge">⚠ privileged</span>}</td>
-                <td><span className={`rbac-scope-badge rbac-scope-${b.scope}`}>{b.scope}</span></td>
-                <td className="text-dim">{b.namespace}</td>
-                <td>
+              <tr key={`${b.kind}/${b.namespace}/${b.name}`} className={b.dangerous ? 'rbac-row-danger' : ''}>
+                <td data-label="Name" className="mono-small">{b.name}{b.managed && <span className="rbac-kp-badge">⎈ KubePilot</span>}{b.dangerous && <span className="rbac-danger-badge">⚠ privileged</span>}</td>
+                <td data-label="Scope"><span className={`rbac-scope-badge rbac-scope-${b.scope}`}>{b.scope}</span></td>
+                <td data-label="Namespace" className="text-dim">{b.namespace}</td>
+                <td data-label="Role / ClusterRole">
                   <span className="rbac-role-name">{b.role}</span>
                   <span className="text-dim" style={{ marginLeft: 5, fontSize: 10 }}>{b.roleKind}</span>
                 </td>
-                <td>
+                <td data-label="Subjects">
                   <div className="rbac-subjects">
                     {b.subjects.slice(0, 3).map((s, i) => (
                       <span key={i} className={`role-badge ${KIND_COLOR[s.kind] ?? ''}`}>
@@ -277,7 +293,7 @@ export default function RbacPage() {
                   </div>
                 </td>
                 {isAdmin && (
-                  <td>
+                  <td data-label="Actions">
                     <button className="btn-danger-xs" onClick={() => setDelTarget({ kind: b.kind, name: b.name, namespace: b.scope === 'namespace' ? b.namespace : null })}>
                       Delete
                     </button>
@@ -309,7 +325,7 @@ export default function RbacPage() {
           </thead>
           <tbody>
             {roles.map(r => (
-              <tr key={`${r._type}/${r.metadata.name}`}>
+              <tr key={`${r._type}/${r.metadata.namespace ?? 'cluster'}/${r.metadata.name}`}>
                 <td className="mono-small">{r.metadata.name}</td>
                 <td><span className={`rbac-scope-badge rbac-scope-${r._type === 'ClusterRole' ? 'cluster' : 'namespace'}`}>{r._type}</span></td>
                 <td className="text-dim">{r.metadata.namespace ?? '(cluster-wide)'}</td>
@@ -345,7 +361,7 @@ export default function RbacPage() {
           </thead>
           <tbody>
             {sas.map(sa => (
-              <tr key={sa.metadata.name}>
+              <tr key={`${sa.metadata.namespace}/${sa.metadata.name}`}>
                 <td className="mono-small">{sa.metadata.name}</td>
                 <td className="text-dim">{sa.metadata.namespace}</td>
                 <td style={{ textAlign: 'center' }}>{sa.secrets?.length ?? 0}</td>
@@ -437,7 +453,6 @@ export default function RbacPage() {
     setShowGroupForm(false); loadTeams()
   }
   async function deleteGroup(g) {
-    if (!confirm(`Delete team "${g.name}"? Members will be unlinked.`)) return
     await apiFetch(`/api/groups/${g._id}`, { method: 'DELETE' })
     notify('success', `Deleted ${g.name}`); loadTeams()
   }
@@ -498,7 +513,7 @@ export default function RbacPage() {
               </div>
               <div className="action-btns">
                 <button className="btn-sm" onClick={() => openEditGroup(g)}>Edit</button>
-                <button className="btn-sm btn-danger" onClick={() => deleteGroup(g)}>Delete</button>
+                <button className="btn-sm btn-danger" onClick={() => setConfirmDeleteGroup(g)}>Delete</button>
               </div>
             </div>
             <div className="tp-card-section">
@@ -628,10 +643,16 @@ export default function RbacPage() {
       </div>
 
       {/* ── Content ────────────────────────────────────────────────────── */}
+      {/* key={tab}: every tab's render function returns the same top-level shape
+          (div.table-wrap > table.data-table) with a different row-key scheme, so
+          without a key change here React tries to diff/reuse that DOM across tab
+          switches instead of fully replacing it — which is what let content from
+          one tab visually linger into another. Forcing a fresh subtree per tab
+          eliminates that regardless of the two row-key fixes above. */}
       {loading
         ? <div className="page-loading">Loading RBAC data…</div>
         : (overview || audit)
-          ? tabContent[tab]()
+          ? <div key={tab}>{tabContent[tab]()}</div>
           : !error && <div className="empty-state">Select a cluster to view RBAC data</div>
       }
 
@@ -667,27 +688,25 @@ export default function RbacPage() {
 
       {/* ── Delete confirm modal ───────────────────────────────────────── */}
       {delTarget && (
-        <div className="modal-backdrop" onClick={() => setDelTarget(null)}>
-          <div className="modal-box" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <span>Confirm Delete</span>
-              <button className="modal-close" onClick={() => setDelTarget(null)}>✕</button>
-            </div>
-            <div className="modal-body">
-              <p style={{ margin: 0, fontSize: 13, color: 'var(--text)' }}>
-                Delete <strong className="mono-small">{delTarget.kind}/{delTarget.name}</strong>
-                {delTarget.namespace && <> in namespace <strong>{delTarget.namespace}</strong></>}?
-                This action cannot be undone.
-              </p>
-            </div>
-            <div className="modal-footer">
-              <button className="btn-cancel" onClick={() => setDelTarget(null)}>Cancel</button>
-              <button className="btn-danger-sm" onClick={confirmDelete} disabled={delBusy}>
-                {delBusy ? 'Deleting…' : 'Delete'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmDialog
+          title="Confirm delete"
+          message={`Delete ${delTarget.kind}/${delTarget.name}${delTarget.namespace ? ` in namespace ${delTarget.namespace}` : ''}? This action cannot be undone.`}
+          confirmLabel={delBusy ? 'Deleting…' : 'Delete'}
+          confirmDisabled={delBusy}
+          onConfirm={confirmDelete}
+          onCancel={() => setDelTarget(null)}
+        />
+      )}
+
+      {/* ── Team delete confirm ─────────────────────────────────────────── */}
+      {confirmDeleteGroup && (
+        <ConfirmDialog
+          title="Delete team?"
+          message={`Delete team "${confirmDeleteGroup.name}"? Members will be unlinked.`}
+          confirmLabel="Delete"
+          onConfirm={() => { deleteGroup(confirmDeleteGroup); setConfirmDeleteGroup(null) }}
+          onCancel={() => setConfirmDeleteGroup(null)}
+        />
       )}
 
       {/* ── Group form modal ────────────────────────────────────────── */}

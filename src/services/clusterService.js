@@ -3,6 +3,7 @@ const fs      = require('fs');
 const yaml    = require('js-yaml');
 const kubectl = require('../tools/kubectl');
 const metricsCollector = require('../monitoring/metricsCollector');
+const { ClusterCredential } = require('../db/models');
 
 const GPU_RESOURCES = ['nvidia.com/gpu', 'amd.com/gpu', 'intel.com/gpu', 'gpu.intel.com/i915'];
 const VALID_TIERS   = new Set(['dev', 'staging', 'production']);
@@ -92,6 +93,10 @@ class ClusterService {
   }
 
   // ── Kubectl contexts ────────────────────────────────────────────────────────
+  // Merges two sources: real contexts already in the server's shared kubeconfig file,
+  // and credential-backed clusters uploaded via /api/kube/clusters/upload — those have
+  // no entry in the shared file at all (sessionManager materializes their kubeconfig
+  // on demand), so `kubectl config get-contexts` alone would never surface them.
   async getContexts(configPath) {
     const namesRaw = await kubectl.runCommand('kubectl config get-contexts -o name');
     const names    = namesRaw.split('\n').map(s => s.trim()).filter(Boolean);
@@ -102,12 +107,32 @@ class ClusterService {
     const monitored    = this.readConfig(configPath);
     const monitoredMap = Object.fromEntries(monitored.map(c => [c.context, c]));
 
-    return names.map(n => ({
-      name:        n,
-      isCurrent:   n === currentCtx,
-      isMonitored: !!monitoredMap[n],
-      config:      monitoredMap[n] ?? null,
+    const detected = names.map(n => ({
+      name:             n,
+      isCurrent:        n === currentCtx,
+      isMonitored:      !!monitoredMap[n],
+      config:           monitoredMap[n] ?? null,
+      credentialBacked: false,
     }));
+
+    const detectedNames = new Set(detected.map(d => d.name));
+    let uploaded = [];
+    try {
+      const creds = await ClusterCredential.find().select('context').lean();
+      uploaded = creds
+        .filter(c => !detectedNames.has(c.context))
+        .map(c => ({
+          name:             c.context,
+          isCurrent:        false,
+          isMonitored:      !!monitoredMap[c.context],
+          config:           monitoredMap[c.context] ?? null,
+          credentialBacked: true,
+        }));
+    } catch (err) {
+      console.warn('[ClusterService] Failed to load uploaded credentials:', err.message);
+    }
+
+    return [...detected, ...uploaded];
   }
 
   // ── Pod health ─────────────────────────────────────────────────────────────

@@ -23,6 +23,9 @@ const capacityRoutes      = require('./routes/capacity.routes');
 const profileRoutes       = require('./routes/profile.routes');
 const agentsRoutes        = require('./routes/agents.routes');
 const auditRoutes         = require('./routes/audit.routes');
+const autoscalingRoutes   = require('./routes/autoscaling.routes');
+const extensionsRoutes    = require('./routes/extensions.routes');
+const policiesRoutes      = require('./routes/policies.routes');
 
 function createServer(port = 3001) {
   const app = express();
@@ -47,6 +50,9 @@ function createServer(port = 3001) {
   app.use(profileRoutes);
   app.use(agentsRoutes);
   app.use(auditRoutes);
+  app.use(autoscalingRoutes);
+  app.use(extensionsRoutes);
+  app.use(policiesRoutes);
 
   app.listen(port, () => console.log(`[API] Dashboard server on http://localhost:${port}`));
 }

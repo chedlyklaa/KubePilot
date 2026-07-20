@@ -6,8 +6,9 @@ const authService = require('../api/authService');
 const mailer      = require('./mailer');
 
 const SALT_ROUNDS = 10;
+const OTP_MAX_ATTEMPTS = 5;
 
-// OTP store: userId → { otp, expiresAt, issuedAt }
+// OTP store: userId → { otp, expiresAt, issuedAt, attempts }
 // Centralised here instead of inlined in server.js
 const otpStore = new Map();
 setInterval(() => {
@@ -32,7 +33,7 @@ class ProfileService {
 
     const otp = String(Math.floor(100000 + Math.random() * 900000));
     await mailer.sendOtp(user.email, user.name, otp);
-    otpStore.set(user.id, { otp, expiresAt: Date.now() + 10 * 60 * 1000, issuedAt: Date.now() });
+    otpStore.set(user.id, { otp, expiresAt: Date.now() + 10 * 60 * 1000, issuedAt: Date.now(), attempts: 0 });
     return { sent: true };
   }
 
@@ -96,8 +97,16 @@ class ProfileService {
           throw Object.assign(new Error('Current password is incorrect'), { status: 400 });
       } else {
         const stored = otpStore.get(userId);
-        if (!stored || Date.now() > stored.expiresAt || stored.otp !== String(otp))
+        if (!stored || Date.now() > stored.expiresAt)
           throw Object.assign(new Error('Invalid or expired verification code'), { status: 400 });
+        if (stored.attempts >= OTP_MAX_ATTEMPTS) {
+          otpStore.delete(userId);
+          throw Object.assign(new Error('Too many incorrect attempts. Request a new verification code.'), { status: 429 });
+        }
+        if (stored.otp !== String(otp)) {
+          stored.attempts += 1;
+          throw Object.assign(new Error('Invalid or expired verification code'), { status: 400 });
+        }
         otpStore.delete(userId);
       }
       upd.password = await bcrypt.hash(password, SALT_ROUNDS);

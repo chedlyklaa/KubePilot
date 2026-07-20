@@ -1,4 +1,10 @@
-require('dotenv').config();
+// override: true — otherwise a variable already sitting in the shell's environment
+// (e.g. a leftover `$env:OPENAI_API_KEY = "..."` from an earlier debugging session)
+// silently wins over .env. This is the FIRST env load in the process and loadConfig()
+// below caches its result for the process's entire lifetime, so getting this right
+// here is what actually matters — a later override:true elsewhere (e.g. llmClient.js)
+// is too late, since by then loadConfig() has already frozen the (possibly stale) config.
+require('dotenv').config({ override: true });
 require('./src/api/logStore');
 
 // ─── Validate environment up front — fails loudly here instead of at request time ───
@@ -16,6 +22,12 @@ const { seedUsers }      = require('./src/api/authService');
 const { createServer }   = require('./src/api/server');
 const escalationStore    = require('./src/api/escalationStore');
 const silenceStore       = require('./src/api/silenceStore');
+const sessionManager     = require('./src/services/sessionManager');
+
+// Sweep any per-cluster kubeconfig files orphaned by a previous crash before anything
+// starts using the runtime directory — this is the real cleanup guarantee, not the
+// shutdown handlers (which never fire on SIGKILL or a hard crash).
+sessionManager.initRuntimeDir();
 
 // ─── Auto port-forward: Prometheus ──────────────────────────────────────────
 // Spawns kubectl port-forward in the background so PROMETHEUS_URL=http://localhost:9090

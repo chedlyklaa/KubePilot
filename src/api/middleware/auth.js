@@ -1,9 +1,16 @@
 'use strict';
 const authService        = require('../authService');
 const permissionService  = require('../../services/permissionService');
+const sseTicketStore     = require('../sseTicketStore');
 
+// EventSource requests can't set an Authorization header, so SSE streams pass a
+// short-lived, single-use ticket (?ticket=...) minted via POST /api/auth/sse-ticket
+// instead of the real token — see sseTicketStore.js for why.
 function getToken(req) {
-  return req.headers.authorization?.replace('Bearer ', '') || req.query.token || null;
+  const bearer = req.headers.authorization?.replace('Bearer ', '');
+  if (bearer) return bearer;
+  if (req.query.ticket) return sseTicketStore.consume(req.query.ticket);
+  return null;
 }
 
 function requireAuth(req, res, next) {
