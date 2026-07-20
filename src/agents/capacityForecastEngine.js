@@ -240,12 +240,14 @@ class CapacityForecastEngine {
     this._running     = false; // prevents concurrent forecast runs
     this._lastAlerted    = new Map(); // key → timestamp of last notification
     this._lastAlertLevel = new Map(); // key → last alert level (for recovery detection)
+    this._hpasByCluster  = new Map(); // cluster → latest HPA list, to suppress alerts autoscaling already covers
   }
 
   // ── Called from ClusterAgent.run() — non-blocking, fire-and-forget ──────────
-  async snapshotAndForecast({ cluster, allNodeMetrics, allPodMetrics }) {
+  async snapshotAndForecast({ cluster, allNodeMetrics, allPodMetrics, hpas }) {
     if (process.env.CAPACITY_FORECAST_ENABLED !== 'true') return;
     _initModels();
+    if (hpas) this._hpasByCluster.set(cluster, hpas);
 
     this._cycleCount++;
 
@@ -443,8 +445,24 @@ class CapacityForecastEngine {
     return { forecast, allForecasts };
   }
 
+  // Namespace has an HPA that isn't maxed out yet — a CPU-pressure forecast there is
+  // exactly what that HPA already exists to handle on its own, without a human.
+  // Memory-only pressure isn't covered here: HPA's default metric is CPU, and inferring
+  // whether a given HPA also reacts to memory would need per-HPA metric introspection
+  // this doesn't attempt — safer to still alert than to silently assume coverage.
+  _hpaCoversPressure(cluster, namespace, resource) {
+    if (resource !== 'cpu' || !namespace) return false;
+    const hpas = this._hpasByCluster.get(cluster) ?? [];
+    return hpas.some(h => h.namespace === namespace && (h.currentReplicas ?? 0) < (h.maxReplicas ?? 0));
+  }
+
   // ── Rate-limited notification ──────────────────────────────────────────────────
   _maybeNotify(fc, notifEngine) {
+    if (this._hpaCoversPressure(fc.cluster, fc.namespace, fc.resource)) {
+      console.log(`[CAPACITY] Suppressing ${fc.alertLevel} alert for ${fc.target} — an HPA in "${fc.namespace}" still has headroom to scale`);
+      return;
+    }
+
     const cooldownMs = parseInt(process.env.FORECAST_ALERT_COOLDOWN_MS ?? '14400000', 10);
     const key        = `${fc.cluster}:${fc.target}:${fc.resource}`;
     const lastAt     = this._lastAlerted.get(key) ?? 0;

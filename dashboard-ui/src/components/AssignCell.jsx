@@ -35,7 +35,15 @@ export default function AssignCell({ record, users, onAssigned }) {
 
   if (!editing) {
     return (
-      <div className="assign-cell" onClick={startEdit} title="Click to reassign">
+      <div
+        className="assign-cell"
+        role="button"
+        tabIndex={0}
+        aria-label={record.assignedTo ? `Reassign, currently ${record.assignedTo.name}` : 'Assign'}
+        onClick={startEdit}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startEdit() } }}
+        title="Click to reassign"
+      >
         {record.assignedTo
           ? <><span className="fw-500">{record.assignedTo.name}</span> <span className={`role-badge role-${record.assignedTo.role}`}>{record.assignedTo.role}</span> <span className="assign-edit-hint">✎</span></>
           : <span className="assign-placeholder">+ Assign</span>

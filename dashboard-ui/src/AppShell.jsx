@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAuth } from './contexts/AuthContext'
 import { NotifyCtx } from './contexts/NotifyContext'
-import { sseUrl, apiFetch } from './lib/api'
+import { openSSE, apiFetch } from './lib/api'
 import Toasts from './components/Toasts'
 import SignOutModal from './components/SignOutModal'
 import ThemeToggle from './components/ThemeToggle'
@@ -18,6 +18,7 @@ import NotificationsSettingsPage from './pages/NotificationsSettingsPage'
 import RbacPage from './pages/RbacPage'
 import CapacityPage from './pages/CapacityPage'
 import AgentsPage from './pages/AgentsPage'
+import PoliciesPage from './pages/PoliciesPage'
 
 export default function AppShell() {
   const { user, logout }            = useAuth()
@@ -54,15 +55,19 @@ export default function AppShell() {
   }, [])
 
   useEffect(() => {
-    const es = new EventSource(sseUrl('/api/notifications/stream'))
-    es.onmessage = e => {
-      const ev = JSON.parse(e.data)
-      if (ev.type === 'notification') {
-        setNotifCount(n => n + 1)
-        notify(ev.notification.type, ev.notification.message)
+    let es, cancelled = false
+    openSSE('/api/notifications/stream').then(s => {
+      if (cancelled) { s.close(); return }
+      es = s
+      es.onmessage = e => {
+        const ev = JSON.parse(e.data)
+        if (ev.type === 'notification') {
+          setNotifCount(n => n + 1)
+          notify(ev.notification.type, ev.notification.message)
+        }
       }
-    }
-    return () => es.close()
+    })
+    return () => { cancelled = true; es?.close() }
   }, [notify])
 
   // Keep the dashboard badge accurate on every page — DashboardPage only updates
@@ -154,6 +159,11 @@ export default function AppShell() {
                       <span className="dropdown-item-icon">⎈</span> Agent Management
                     </button>
                   )}
+                  {user.role === 'admin' && (
+                    <button className="dropdown-item" onClick={() => navigate('policies')}>
+                      <span className="dropdown-item-icon">🛡</span> Policies
+                    </button>
+                  )}
                   <div className="dropdown-divider" />
                   <button className="dropdown-item dropdown-item-danger" onClick={() => { setShowSignOut(true); setShowUserMenu(false) }}>
                     <span className="dropdown-item-icon">⏻</span> Sign Out
@@ -179,6 +189,7 @@ export default function AppShell() {
         {page === 'rbac'                                  && <RbacPage />}
         {page === 'capacity'                              && <CapacityPage />}
         {page === 'agents'        && user.role === 'admin' && <AgentsPage />}
+        {page === 'policies'      && user.role === 'admin' && <PoliciesPage />}
       </div>
     </NotifyCtx.Provider>
   )

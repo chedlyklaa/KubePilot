@@ -86,20 +86,20 @@ export default function PrometheusPodsTable({ pods, loading }) {
           <tbody>
             {visible.map(p => (
               <tr key={p.key} className={`prom-pod-row${p.errorTypes.length > 0 ? ' prom-pod-row-err' : ''}`}>
-                <td><ClusterBadge name={p.cluster} /></td>
-                <td><span className="ns-tag">{p.namespace}</span></td>
-                <td className="prom-pod-name mono-small" title={p.pod}>
+                <td data-label="Cluster"><ClusterBadge name={p.cluster} /></td>
+                <td data-label="Namespace"><span className="ns-tag">{p.namespace}</span></td>
+                <td data-label="Pod" className="prom-pod-name mono-small" title={p.pod}>
                   {p.pod.length > 42 ? p.pod.slice(0, 40) + '…' : p.pod}
                 </td>
-                <td><CpuBar cores={p.cpuCores} /></td>
-                <td>
+                <td data-label="CPU (cores)"><CpuBar cores={p.cpuCores} /></td>
+                <td data-label="Memory">
                   {p.memBytes != null
                     ? <span className="hcell-mono">{fmtBytes(p.memBytes)}</span>
                     : <span className="hcell-dim">—</span>}
                 </td>
-                <td><RestartCount n={p.restarts ?? 0} /></td>
-                <td><OomBadge oomKilled={p.oomKilled} /></td>
-                <td><ErrorTypeBadges types={p.errorTypes} /></td>
+                <td data-label="Restarts"><RestartCount n={p.restarts ?? 0} /></td>
+                <td data-label="OOM"><OomBadge oomKilled={p.oomKilled} /></td>
+                <td data-label="Issues"><ErrorTypeBadges types={p.errorTypes} /></td>
               </tr>
             ))}
             {visible.length === 0 && (

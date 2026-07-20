@@ -13,6 +13,8 @@ const ReflectionAgent     = require('./reflectionAgent');
 const InvestigatorAgent          = require('./investigatorAgent');
 const ChangeCorrelationEngine    = require('./changeCorrelationEngine');
 const CapacityForecastEngine     = require('./capacityForecastEngine');
+const RbacDriftEngine            = require('./rbacDriftEngine');
+const ConnectivityAlertEngine    = require('./connectivityAlertEngine');
 const approvalStore       = require('../api/approvalStore');
 const escalationStore     = require('../api/escalationStore');
 const episodicMemory      = require('../memory/episodicMemory');
@@ -38,6 +40,41 @@ function _parseMiB(str) {
   if (/Ki$/i.test(str)) return Math.round(num / 1024);
   if (/k$/i.test(str))  return Math.round(num / 1000);
   return Math.round(num / (1024 * 1024)); // assume raw bytes
+}
+
+// Returns false when a namespace's ResourceQuota has (almost) no memory headroom left
+// (>=98% used), true when there's room, null when there's no data to judge from (quota
+// awareness disabled/failed, or no quota configured for this namespace at all) —
+// PolicyEngine only blocks on an explicit false, never on an unknown.
+function _hasMemoryHeadroom(namespace, resourceQuotas) {
+  if (!resourceQuotas) return null;
+  const nsQuotas = resourceQuotas.filter(q => q.metadata?.namespace === namespace);
+  if (!nsQuotas.length) return null;
+
+  for (const q of nsQuotas) {
+    const hard = q.status?.hard ?? {};
+    const used = q.status?.used ?? {};
+    for (const key of ['requests.memory', 'limits.memory', 'memory']) {
+      if (hard[key] == null || used[key] == null) continue;
+      const hardMiB = _parseMiB(hard[key]);
+      const usedMiB = _parseMiB(used[key]);
+      if (!hardMiB) continue;
+      if (usedMiB / hardMiB >= 0.98) return false;
+    }
+  }
+  return true;
+}
+
+// PodDisruptionBudgets in the given namespaces that currently allow zero further
+// disruptions — draining a node hosting pods covered by one of these is exactly the
+// kind of action Kubernetes itself would reject (or worse, force past a safety margin
+// someone configured on purpose). This is a namespace-level approximation, not full
+// label-selector matching against the actual affected pods — coarser, but safe: it can
+// only ever be MORE cautious than necessary, never less.
+function _findZeroDisruptionPDBs(namespaces, pdbs) {
+  if (!pdbs || !namespaces?.length) return [];
+  const nsSet = new Set(namespaces);
+  return pdbs.filter(p => nsSet.has(p.metadata?.namespace) && (p.status?.disruptionsAllowed ?? 1) === 0);
 }
 
 const HIGH_RISK_ACTIONS = new Set(['increase_memory', 'drain_node']);
@@ -103,19 +140,31 @@ class ClusterAgent {
     console.log(`${'='.repeat(50)}`);
 
     // ── Fetch pods, nodes, events, and node metrics in parallel ───────────
-    let podsJson       = null;
-    let nodesJson      = null;
-    let eventsJson     = null;
-    let allNodeMetrics = null;
-    let allPodMetrics  = null;
+    let podsJson          = null;
+    let nodesJson         = null;
+    let eventsJson        = null;
+    let allNodeMetrics    = null;
+    let allPodMetrics     = null;
+    let resourceQuotas = null; // array, not {items:[...]} — getResourceQuotas() already unwraps it
+    let pdbs           = null; // array, not {items:[...]} — getPodDisruptionBudgets() already unwraps it
 
-    const [podsResult, nodesResult, eventsResult, nodeMetricsResult, podMetricsResult] = await Promise.allSettled([
+    // Opt-in: two extra cluster-wide reads every cycle, only worth the cost if
+    // PolicyEngine is actually going to use them (see Rule 9 / Rule N6 below).
+    const policyAware = process.env.POLICY_AWARENESS_ENABLED === 'true';
+
+    const fetches = [
       kubectl.getPods('*', this.context, true),
       kubectl.getNodes(this.context),
       kubectl.getEvents(this.context),
       metricsCollector.collectAllNodesMetrics(),
       metricsCollector.collectAllPodsMetrics(),
-    ]);
+    ];
+    if (policyAware) {
+      fetches.push(kubectl.getResourceQuotas('*', this.context), kubectl.getPodDisruptionBudgets('*', this.context));
+    }
+
+    const [podsResult, nodesResult, eventsResult, nodeMetricsResult, podMetricsResult, quotasResult, pdbsResult] =
+      await Promise.allSettled(fetches);
 
     if (podsResult.status  === 'fulfilled') podsJson       = podsResult.value;
     else console.error(`[${this.name}] kubectl get pods failed: ${podsResult.reason?.message}`);
@@ -128,6 +177,26 @@ class ClusterAgent {
 
     if (nodeMetricsResult.status === 'fulfilled') allNodeMetrics = nodeMetricsResult.value;
     if (podMetricsResult.status  === 'fulfilled') allPodMetrics  = podMetricsResult.value;
+
+    if (policyAware) {
+      if (quotasResult?.status === 'fulfilled') resourceQuotas = quotasResult.value;
+      else if (quotasResult)   console.warn(`[${this.name}] kubectl get resourcequota failed: ${quotasResult.reason?.message}`);
+
+      if (pdbsResult?.status === 'fulfilled') pdbs = pdbsResult.value;
+      else if (pdbsResult)     console.warn(`[${this.name}] kubectl get pdb failed: ${pdbsResult.reason?.message}`);
+    }
+
+    // ── Connectivity check (fire-and-forget) ──────────────────────────────
+    // pods+nodes+events all failing together is a much stronger "can't reach this
+    // cluster at all" signal than any single one failing on its own (which is more
+    // often a narrow RBAC gap on one resource type).
+    if (process.env.CONNECTIVITY_ALERTS_ENABLED === 'true') {
+      const unreachable = podsResult.status === 'rejected'
+        && nodesResult.status === 'rejected'
+        && eventsResult.status === 'rejected';
+      ConnectivityAlertEngine.check(this.name, unreachable)
+        .catch(err => console.warn(`[${this.name}] [CONNECTIVITY] Non-blocking error: ${err.message}`));
+    }
 
     // ── Pod issue extraction (unchanged) ──────────────────────────────────
     const allPodIssues = [];
@@ -191,7 +260,7 @@ class ClusterAgent {
     // ── Handle node issues first (higher priority when node causes pod failures)
     for (const nodeIssue of allNodeIssues) {
       await this._handleNodeIssue(nodeIssue, {
-        allNodeMetrics, correlation, events, nodeMap,
+        allNodeMetrics, correlation, events, nodeMap, pdbs,
         affectedPods: correlation.issuesByNode[nodeIssue.nodeName] ?? [],
       });
     }
@@ -215,7 +284,7 @@ class ClusterAgent {
         return { issue, ctx: {
           nodeIssues: podNodeIssues, nodeMetrics: podNodeMetrics, events,
           correlationFindings: corrFindings, clusterFindings: clusterIssues,
-          eventsJson: eventsJson ?? { items: [] }, cycleStartedAt,
+          eventsJson: eventsJson ?? { items: [] }, cycleStartedAt, resourceQuotas,
         }};
       });
 
@@ -224,11 +293,30 @@ class ClusterAgent {
 
     // ── Capacity Forecasting (fire-and-forget — never delays remediation) ─────
     if (process.env.CAPACITY_FORECAST_ENABLED === 'true') {
+      // HPA state lets the forecast engine skip alerting on CPU pressure a namespace's
+      // own autoscaler still has headroom to handle by itself — see
+      // capacityForecastEngine.js's _hpaCoversPressure(). Best-effort: a failed fetch
+      // just means no suppression this cycle, never blocks the forecast itself.
+      const hpas = await kubectl.getHPAs('*', this.context)
+        .then(items => items.map(h => ({
+          namespace:       h.metadata?.namespace,
+          currentReplicas: h.status?.currentReplicas ?? 0,
+          maxReplicas:     h.spec?.maxReplicas ?? 0,
+        })))
+        .catch(() => null);
+
       CapacityForecastEngine.snapshotAndForecast({
         cluster:        this.name,
         allNodeMetrics: allNodeMetrics ?? {},
         allPodMetrics:  allPodMetrics  ?? {},
+        hpas,
       }).catch(err => console.warn(`[${this.name}] [CAPACITY] Non-blocking error: ${err.message}`));
+    }
+
+    // ── RBAC drift reconciliation (fire-and-forget — never delays remediation) ──
+    if (process.env.RBAC_DRIFT_ENABLED === 'true') {
+      RbacDriftEngine.checkDrift({ cluster: this.name, context: this.context })
+        .catch(err => console.warn(`[${this.name}] [RBAC-DRIFT] Non-blocking error: ${err.message}`));
     }
 
     console.log(`[${this.name}] Cycle complete\n`);
@@ -526,6 +614,7 @@ class ClusterAgent {
       oomKilled:         issue.oomKilled  ?? false,
       attemptHistory:    this.episodeTimelines.get(key)?.timeline ?? [],
       recentDeployment:  !!changeCorrelation,
+      hasMemoryHeadroom: _hasMemoryHeadroom(issue.namespace ?? 'default', nodeCtx.resourceQuotas),
     };
 
     const policyResult = this.policyEngine.validate(policyPlan, policyCtx);
@@ -1022,7 +1111,7 @@ class ClusterAgent {
   }
 
   // ── Node issue pipeline ────────────────────────────────────────────────────
-  async _handleNodeIssue(nodeIssue, { allNodeMetrics, correlation, events, nodeMap, affectedPods }) {
+  async _handleNodeIssue(nodeIssue, { allNodeMetrics, correlation, events, nodeMap, affectedPods, pdbs }) {
     const key  = `node:${nodeIssue.type}:${nodeIssue.nodeName}`;
 
     const last = this.cooldowns.get(key);
@@ -1063,9 +1152,14 @@ class ClusterAgent {
     console.log(`[${this.name}] [NODE-PLANNER] action=${diagnosis.action}  risk=${diagnosis.risk}  cause=${diagnosis.rootCause}`);
 
     // Policy gate
+    const affectedNamespaces = [...new Set(affectedPods.map(p => p.namespace).filter(Boolean))];
     const policyResult = this.policyEngine.validateNodeAction(
       { action: diagnosis.action, target: { nodeName: nodeIssue.nodeName }, risk: diagnosis.risk },
-      { cluster: this.name, tier: this.tier, isControlPlane: nodeIssue.isControlPlane, drainAttempts, affectedPods: affectedPods.length }
+      {
+        cluster: this.name, tier: this.tier, isControlPlane: nodeIssue.isControlPlane,
+        drainAttempts, affectedPods: affectedPods.length,
+        blockingPDBs: _findZeroDisruptionPDBs(affectedNamespaces, pdbs),
+      }
     );
     console.log(`[${this.name}] [NODE-POLICY] status=${policyResult.status}  action=${policyResult.action}`);
     policyResult.warnings.forEach(w => console.warn(`[${this.name}] [NODE-POLICY] ⚠ ${w}`));

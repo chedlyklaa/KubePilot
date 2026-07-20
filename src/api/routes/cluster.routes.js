@@ -3,6 +3,7 @@ const express = require('express');
 const clusterService = require('../../services/clusterService');
 const provisionService = require('../../services/provisionService');
 const kubectl = require('../../tools/kubectl');
+const sessionManager = require('../../services/sessionManager');
 const auditLogger = require('../../audit/logger');
 const { User } = require('../../db/models');
 const { CONFIG_PATH, getClusters } = require('../../config/clusterConfig');
@@ -48,6 +49,84 @@ router.get('/api/kube/clusters/:name/kubeconfig', requireAuth, requireAdmin, asy
   res.setHeader('Content-Disposition', `attachment; filename="kubeconfig-${cluster.name}.yaml"`);
   res.setHeader('Content-Type', 'application/yaml');
   res.send(kubeconfig);
+}));
+
+// ── Test a kubeconfig's connectivity without saving anything (admin only) ───
+// Lets the UI give immediate feedback while the admin is still filling in the form.
+// Not a substitute for the check inside storeCredential() below — that one is the
+// actual guarantee, this one is just faster feedback before committing.
+router.post('/api/kube/clusters/test-credential', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
+  const { kubeconfig } = req.body;
+  if (!kubeconfig?.trim()) return res.status(400).json({ error: 'kubeconfig is required' });
+  try {
+    await sessionManager.testConnection(kubeconfig);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+}));
+
+// ── Upload/rotate a cluster's own kubeconfig (admin only) ───────────────────
+// Hybrid path alongside the existing shared-kubeconfig model: this cluster's
+// credential is stored encrypted and isolated (see services/sessionManager.js),
+// never merged into the server's shared kubeconfig file. Registers/updates the
+// cluster in clusters.yaml so the existing hot-reload (clusterConfig.onChange →
+// orchestrator._reconcileAgents) picks it up automatically — no restart needed.
+router.post('/api/kube/clusters/upload', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
+  const { name, kubeconfig, tier } = req.body;
+  if (!name?.trim() || !kubeconfig?.trim())
+    return res.status(400).json({ error: 'name and kubeconfig are required' });
+
+  const trimmedName = name.trim();
+  let context;
+  try {
+    context = await sessionManager.storeCredential({
+      name: trimmedName, rawKubeconfig: kubeconfig, uploadedBy: req.user.email,
+    });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  const clusters = getClusters().filter(c => c.name !== trimmedName);
+  clusters.push({ name: trimmedName, context, tier: tier ?? 'dev', namespaces: ['*'] });
+  clusterService.validateAndSaveConfig(CONFIG_PATH, clusters);
+
+  auditLogger.log({
+    cluster:  trimmedName,
+    agent:    'admin-console',
+    action:   'upload_cluster_credential',
+    decision: 'allowed',
+    status:   'success',
+    metadata: { requestedBy: req.user.email, context },
+  });
+
+  res.json({ ok: true, context });
+}));
+
+// ── Delete an uploaded cluster's credential (admin only) ─────────────────────
+// Unlike unmonitoring via PUT /api/kube/clusters (which only removes the clusters.yaml
+// entry), this actually deletes the encrypted secret from the database and its cached
+// temp kubeconfig file — the only way to fully remove an uploaded cluster's credential.
+// Only applies to credential-backed clusters; there's nothing to delete for clusters
+// that reference the server's shared kubeconfig file (unmonitor those via Save Changes).
+router.delete('/api/kube/clusters/credential/:context', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
+  const { context } = req.params;
+
+  await sessionManager.deleteCredential(context);
+
+  const clusters = getClusters().filter(c => c.context !== context);
+  clusterService.validateAndSaveConfig(CONFIG_PATH, clusters);
+
+  auditLogger.log({
+    cluster:  context,
+    agent:    'admin-console',
+    action:   'delete_cluster_credential',
+    decision: 'allowed',
+    status:   'success',
+    metadata: { requestedBy: req.user.email, context },
+  });
+
+  res.json({ ok: true });
 }));
 
 // ── Cluster provisioning (admin or users with canProvision flag) ────────────

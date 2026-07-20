@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useNotify } from '../contexts/NotifyContext'
-import { apiFetch, sseUrl } from '../lib/api'
+import { apiFetch, openSSE } from '../lib/api'
 import { STATE_LABEL } from '../constants'
 import EscalationRow from '../components/EscalationRow'
 import FilterDrawer, { FilterSection, FilterChips, FilterUserList, FilterDateRange } from '../components/FilterDrawer'
@@ -35,22 +35,26 @@ export default function EscalationsPage() {
   }, [user.role])
 
   useEffect(() => {
-    const es = new EventSource(sseUrl('/api/escalations/stream'))
-    es.onmessage = e => {
-      const ev = JSON.parse(e.data)
-      if (ev.type === 'init') {
-        escSseReady.current = true
-        setEscalations(ev.escalations)
+    let es, cancelled = false
+    openSSE('/api/escalations/stream').then(s => {
+      if (cancelled) { s.close(); return }
+      es = s
+      es.onmessage = e => {
+        const ev = JSON.parse(e.data)
+        if (ev.type === 'init') {
+          escSseReady.current = true
+          setEscalations(ev.escalations)
+        }
+        else if (ev.type === 'added')    { setEscalations(p => [...p, ev.escalation]); notify('error', `New escalation: ${ev.escalation.issueKey}`) }
+        else if (ev.type === 'updated')  setEscalations(p => {
+          // Upsert: if the item arrived before our init (reconnect scenario), add it
+          const exists = p.some(x => x.id === ev.escalation.id)
+          return exists ? p.map(x => x.id === ev.escalation.id ? ev.escalation : x) : [...p, ev.escalation]
+        })
+        else if (ev.type === 'resolved') setEscalations(p => p.filter(x => x.id !== ev.id))
       }
-      else if (ev.type === 'added')    { setEscalations(p => [...p, ev.escalation]); notify('error', `New escalation: ${ev.escalation.issueKey}`) }
-      else if (ev.type === 'updated')  setEscalations(p => {
-        // Upsert: if the item arrived before our init (reconnect scenario), add it
-        const exists = p.some(x => x.id === ev.escalation.id)
-        return exists ? p.map(x => x.id === ev.escalation.id ? ev.escalation : x) : [...p, ev.escalation]
-      })
-      else if (ev.type === 'resolved') setEscalations(p => p.filter(x => x.id !== ev.id))
-    }
-    return () => es.close()
+    })
+    return () => { cancelled = true; es?.close() }
   }, [notify])
 
   const remove   = useCallback(id => setEscalations(p => p.filter(x => x.id !== id)), [])

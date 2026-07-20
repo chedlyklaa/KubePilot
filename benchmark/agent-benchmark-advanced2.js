@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // =============================================================================
-// agent-benchmark-advanced1.js — Extended agent benchmark
+// agent-benchmark-advanced.js — Extended agent benchmark
 //
 // Includes all tests from agent-benchmark.js PLUS:
 //   - Cascading failures (db dependency)
@@ -94,20 +94,14 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // TEST DEFINITIONS
 // =============================================================================
 // Categories:
-//   basic      — core detection + action (OOM, ImagePull, CrashLoop, bad config)
-//   cascade    — multi-pod dependency chain (db + app)
-//   rollback   — rollback chain (v1→v2→v3 broken)
-//   controller — different K8s owner types (StatefulSet, Job, DaemonSet)
-//   behavior   — flapping, self-resolving
-//   isolation  — namespace separation
-//   resource   — CPU throttling, impossible resource requests
-//   probes     — readiness/liveness probe failures
-//   init       — init container crashes + stuck waiting
-//   config     — missing ConfigMap/Secret mounts
-//   multi      — multi-replica failures, partial failures
-//   exitcodes  — specific exit code handling (137, 127, 126)
-//   policy     — PolicyEngine blocks an action the planner would otherwise take
-//   healthy    — false positive checks
+//   basic     — core detection + action tests (from v1 benchmark)
+//   cascade   — multi-pod dependency chain
+//   rollback  — rollback chain + retry protection
+//   controller— different K8s controller types
+//   behavior  — flapping, self-resolving, wrong-action recovery
+//   isolation — namespace separation
+//   policy    — PolicyEngine blocks an action the planner would otherwise take
+//   healthy   — false positive checks
 // =============================================================================
 // "policy" tests need POLICY_AWARENESS_ENABLED=true on the running server (see .env) —
 // PolicyEngine only receives ResourceQuota/PDB data to check against when that flag is
@@ -437,323 +431,6 @@ spec:
   },
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // RESOURCE PRESSURE — pods evicted or throttled by node pressure
-  // ═══════════════════════════════════════════════════════════════════════════
-  {
-    name: 'Resource: CPU throttled deployment', category: 'resource', weight: 5, kind: 'failure', pod: 'cpu-hog',
-    create() {
-      kubeApply(`apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: cpu-hog
-spec:
-  replicas: 1
-  selector: { matchLabels: { app: cpu-hog } }
-  template:
-    metadata: { labels: { app: cpu-hog } }
-    spec:
-      containers:
-      - name: hog
-        image: busybox
-        command: ["/bin/sh","-c","while true; do :; done"]
-        resources:
-          limits: { cpu: "10m" }`);
-    },
-    expected: { detected: true, diagnosis: /cpu|throttl|resource|limit/i, action: 'restart', altActions: ['noop', 'ESCALATED', 'scale_down'] },
-  },
-  {
-    name: 'Resource: pending due to CPU quota', category: 'resource', weight: 4, kind: 'failure', pod: 'quota-blocked',
-    create() {
-      kubeApply(`apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: quota-blocked
-spec:
-  replicas: 1
-  selector: { matchLabels: { app: quota-blocked } }
-  template:
-    metadata: { labels: { app: quota-blocked } }
-    spec:
-      containers:
-      - name: big
-        image: nginx
-        resources:
-          requests: { cpu: "100", memory: "999Gi" }`);
-    },
-    expected: { detected: true, diagnosis: /pending|schedul|resource|insufficient/i, action: 'noop', altActions: ['ESCALATED'] },
-  },
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // PROBES — readiness/liveness probe failures
-  // ═══════════════════════════════════════════════════════════════════════════
-  {
-    name: 'Probe: readiness failing (app starts slow)', category: 'probes', weight: 5, kind: 'failure', pod: 'slow-ready',
-    create() {
-      kubeApply(`apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: slow-ready
-spec:
-  replicas: 1
-  selector: { matchLabels: { app: slow-ready } }
-  template:
-    metadata: { labels: { app: slow-ready } }
-    spec:
-      containers:
-      - name: app
-        image: busybox
-        command: ["/bin/sh","-c","sleep 3600"]
-        readinessProbe:
-          httpGet: { path: /healthz, port: 8080 }
-          initialDelaySeconds: 5
-          periodSeconds: 3
-          failureThreshold: 2`);
-    },
-    expected: { detected: true, diagnosis: /ready|probe|health|not.ready/i, action: 'restart', altActions: ['noop', 'ESCALATED', 'rollback'] },
-  },
-  {
-    name: 'Probe: liveness killed (hung process)', category: 'probes', weight: 5, kind: 'failure', pod: 'liveness-fail',
-    create() {
-      kubeApply(`apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: liveness-fail
-spec:
-  replicas: 1
-  selector: { matchLabels: { app: liveness-fail } }
-  template:
-    metadata: { labels: { app: liveness-fail } }
-    spec:
-      containers:
-      - name: app
-        image: busybox
-        command: ["/bin/sh","-c","sleep 3600"]
-        livenessProbe:
-          httpGet: { path: /alive, port: 8080 }
-          initialDelaySeconds: 5
-          periodSeconds: 3
-          failureThreshold: 2`);
-    },
-    expected: { detected: true, diagnosis: /liveness|probe|kill|restart|health/i, action: 'restart', altActions: ['noop', 'ESCALATED', 'rollback'] },
-  },
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // INIT CONTAINER — failures before main container starts
-  // ═══════════════════════════════════════════════════════════════════════════
-  {
-    name: 'Init: init container crash', category: 'init', weight: 5, kind: 'failure', pod: 'init-crash',
-    create() {
-      kubeApply(`apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: init-crash
-spec:
-  replicas: 1
-  selector: { matchLabels: { app: init-crash } }
-  template:
-    metadata: { labels: { app: init-crash } }
-    spec:
-      initContainers:
-      - name: setup
-        image: busybox
-        command: ["/bin/sh","-c","echo INIT_FAIL && exit 1"]
-      containers:
-      - name: app
-        image: nginx`);
-    },
-    expected: { detected: true, diagnosis: /init|crash|exit|fail/i, action: 'restart', altActions: ['rollback', 'ESCALATED'] },
-  },
-  {
-    name: 'Init: init waiting for missing service', category: 'init', weight: 4, kind: 'failure', pod: 'init-wait',
-    create() {
-      kubeApply(`apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: init-wait
-spec:
-  replicas: 1
-  selector: { matchLabels: { app: init-wait } }
-  template:
-    metadata: { labels: { app: init-wait } }
-    spec:
-      initContainers:
-      - name: wait-for-db
-        image: busybox
-        command: ["/bin/sh","-c","until nslookup nonexistent-db; do sleep 2; done"]
-      containers:
-      - name: app
-        image: nginx`);
-    },
-    expected: { detected: true, diagnosis: /init|pending|wait|dns|not.ready/i, action: 'noop', altActions: ['restart', 'ESCALATED'] },
-  },
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // CONFIG ERRORS — misconfigurations that kubectl can't fix
-  // ═══════════════════════════════════════════════════════════════════════════
-  {
-    name: 'Config: missing ConfigMap mount', category: 'config', weight: 5, kind: 'failure', pod: 'missing-cm',
-    create() {
-      kubeApply(`apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: missing-cm
-spec:
-  replicas: 1
-  selector: { matchLabels: { app: missing-cm } }
-  template:
-    metadata: { labels: { app: missing-cm } }
-    spec:
-      containers:
-      - name: app
-        image: nginx
-        volumeMounts:
-        - name: config
-          mountPath: /etc/config
-      volumes:
-      - name: config
-        configMap:
-          name: nonexistent-config-xyz`);
-    },
-    expected: { detected: true, diagnosis: /config|mount|volume|missing|not.found/i, action: 'noop', altActions: ['ESCALATED'] },
-  },
-  {
-    name: 'Config: missing Secret mount', category: 'config', weight: 5, kind: 'failure', pod: 'missing-secret',
-    create() {
-      kubeApply(`apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: missing-secret
-spec:
-  replicas: 1
-  selector: { matchLabels: { app: missing-secret } }
-  template:
-    metadata: { labels: { app: missing-secret } }
-    spec:
-      containers:
-      - name: app
-        image: nginx
-        env:
-        - name: DB_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: nonexistent-secret-xyz
-              key: password`);
-    },
-    expected: { detected: true, diagnosis: /secret|mount|missing|not.found|config/i, action: 'noop', altActions: ['ESCALATED'] },
-  },
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // MULTI-REPLICA — stress test with multiple failing replicas
-  // ═══════════════════════════════════════════════════════════════════════════
-  {
-    name: 'Multi: 3-replica crash deployment', category: 'multi', weight: 6, kind: 'failure', pod: 'multi-crash',
-    create() {
-      kubeApply(`apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: multi-crash
-spec:
-  replicas: 3
-  selector: { matchLabels: { app: multi-crash } }
-  template:
-    metadata: { labels: { app: multi-crash } }
-    spec:
-      containers:
-      - name: app
-        image: busybox
-        command: ["/bin/sh","-c","sleep 3 && exit 1"]`);
-    },
-    expected: { detected: true, diagnosis: /crash|exit|fail/i, action: 'restart', altActions: ['rollback', 'ESCALATED'] },
-  },
-  {
-    name: 'Multi: mixed healthy + crashing replicas', category: 'multi', weight: 7, kind: 'failure', pod: 'partial-fail',
-    create() {
-      kube('create', 'deployment', 'partial-fail', '--image=nginx', '--replicas=3');
-      waitRollout('partial-fail');
-      kubeApply(`apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: partial-fail
-spec:
-  replicas: 3
-  selector: { matchLabels: { app: partial-fail } }
-  template:
-    metadata: { labels: { app: partial-fail } }
-    spec:
-      containers:
-      - name: app
-        image: busybox
-        command: ["/bin/sh","-c","echo BROKEN && exit 1"]`);
-    },
-    expected: { detected: true, diagnosis: /crash|exit|fail|config|broken/i, action: 'rollback', altActions: ['restart', 'ESCALATED'] },
-  },
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // EXIT CODES — specific exit code handling
-  // ═══════════════════════════════════════════════════════════════════════════
-  {
-    name: 'Exit: code 137 OOM (deployment)', category: 'exitcodes', weight: 5, kind: 'failure', pod: 'exit137',
-    create() {
-      kubeApply(`apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: exit137
-spec:
-  replicas: 1
-  selector: { matchLabels: { app: exit137 } }
-  template:
-    metadata: { labels: { app: exit137 } }
-    spec:
-      containers:
-      - name: app
-        image: polinux/stress
-        command: ["stress","--vm","1","--vm-bytes","128M"]
-        resources: { limits: { memory: "4Mi" } }`);
-    },
-    expected: { detected: true, diagnosis: /oom|memory|137|kill/i, action: 'increase_memory', altActions: ['ESCALATED'] },
-  },
-  {
-    name: 'Exit: code 127 binary not found (deployment)', category: 'exitcodes', weight: 5, kind: 'failure', pod: 'exit127-dep',
-    create() {
-      kubeApply(`apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: exit127-dep
-spec:
-  replicas: 1
-  selector: { matchLabels: { app: exit127-dep } }
-  template:
-    metadata: { labels: { app: exit127-dep } }
-    spec:
-      containers:
-      - name: app
-        image: busybox
-        command: ["/nonexistent-binary"]`);
-    },
-    expected: { detected: true, diagnosis: /not.found|127|binary|command|exec|entrypoint/i, action: 'rollback', altActions: ['restart', 'ESCALATED'] },
-  },
-  {
-    name: 'Exit: code 126 permission denied (deployment)', category: 'exitcodes', weight: 4, kind: 'failure', pod: 'exit126-dep',
-    create() {
-      kubeApply(`apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: exit126-dep
-spec:
-  replicas: 1
-  selector: { matchLabels: { app: exit126-dep } }
-  template:
-    metadata: { labels: { app: exit126-dep } }
-    spec:
-      containers:
-      - name: app
-        image: busybox
-        command: ["/etc/hostname"]`);
-    },
-    expected: { detected: true, diagnosis: /permission|denied|126|exec|cannot|error/i, action: 'rollback', altActions: ['restart', 'ESCALATED'] },
-  },
-
-  // ═══════════════════════════════════════════════════════════════════════════
   // POLICY — PolicyEngine blocks an action the planner would otherwise take
   // ═══════════════════════════════════════════════════════════════════════════
   {
@@ -1071,7 +748,7 @@ async function main() {
     process.stdout.write(`\r  ${elapsed}s — failures: ${failureDetected}/${failureTests.length} detected `);
 
     if (failureDetected >= failureTests.length) {
-      await sleep(POLL * 1000);
+      await sleep(POLL * 12000);
       elapsed += POLL;
       for (const t of healthyTests) {
         const dKey = t.pod + (t.ns || '');

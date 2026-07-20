@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { apiFetch, sseUrl } from '../lib/api'
+import { apiFetch, openSSE } from '../lib/api'
 import { fmtDT } from '../utils/format'
 
 export default function NotificationPanel({ onClose, bellRef }) {
@@ -30,12 +30,16 @@ export default function NotificationPanel({ onClose, bellRef }) {
 
   // Subscribe to live notifications
   useEffect(() => {
-    const es = new EventSource(sseUrl('/api/notifications/stream'))
-    es.onmessage = e => {
-      const ev = JSON.parse(e.data)
-      if (ev.type === 'notification') setNotifs(p => [ev.notification, ...p])
-    }
-    return () => es.close()
+    let es, cancelled = false
+    openSSE('/api/notifications/stream').then(s => {
+      if (cancelled) { s.close(); return }
+      es = s
+      es.onmessage = e => {
+        const ev = JSON.parse(e.data)
+        if (ev.type === 'notification') setNotifs(p => [ev.notification, ...p])
+      }
+    })
+    return () => { cancelled = true; es?.close() }
   }, [])
 
   async function markAll() {

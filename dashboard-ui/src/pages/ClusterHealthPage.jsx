@@ -8,6 +8,8 @@ import CollapsibleSection from '../components/health/CollapsibleSection'
 import AlertsTable from '../components/health/AlertsTable'
 import NodeHealthView from '../components/health/NodeHealthView'
 import PrometheusPodsTable from '../components/health/PrometheusPodsTable'
+import AutoscalingPage from './AutoscalingPage'
+import ExtensionsPage from './ExtensionsPage'
 
 const ERRORS_REFRESH_MS  = 30_000
 const METRICS_REFRESH_MS = 30_000
@@ -342,6 +344,14 @@ export default function ClusterHealthPage() {
             <span className="hvtab-count hvtab-count-crit">!</span>
           )}
         </button>
+        <button className={`hvtab${activeView === 'autoscaling' ? ' hvtab-active' : ''}`}
+          onClick={() => setActiveView('autoscaling')}>
+          📈 Autoscaling
+        </button>
+        <button className={`hvtab${activeView === 'extensions' ? ' hvtab-active' : ''}`}
+          onClick={() => setActiveView('extensions')}>
+          🧩 Extensions
+        </button>
       </div>
 
       {/* ── Pods view ── */}
@@ -425,10 +435,21 @@ export default function ClusterHealthPage() {
             <div key={cluster.name} className={`hc-block${isOpen ? ' hc-block-open' : ''}`}>
 
               {/* Clickable header — always visible */}
-              <div className="hc-header hc-header-clickable" onClick={() => toggleCluster(cluster.name)}>
+              <div
+                className="hc-header hc-header-clickable"
+                role="button"
+                tabIndex={0}
+                aria-expanded={isOpen}
+                onClick={() => toggleCluster(cluster.name)}
+                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCluster(cluster.name) } }}
+              >
                 <div className="hc-header-left">
                   <span className={`hc-chevron${isOpen ? ' hc-chevron-open' : ''}`}>▶</span>
-                  <span className={`cluster-dot ${cluster.connected ? 'dot-ok' : 'dot-err'}`} />
+                  <span
+                    className={`cluster-dot ${cluster.connected ? 'dot-ok' : 'dot-err'}`}
+                    aria-label={cluster.connected ? 'Connected' : 'Disconnected'}
+                    role="img"
+                  />
                   <span className="hc-name">{cluster.name}</span>
                   <span className={`tier-badge tier-${cluster.tier}`}>{cluster.tier}</span>
                   <span className="hcell-dim hc-ctx">{cluster.context}</span>
@@ -584,6 +605,11 @@ export default function ClusterHealthPage() {
       {activeView === 'nodes' && (
         <NodeHealthView nodeClusters={nodeClusters} loading={nodesLoading} />
       )}
+
+      {/* ── Autoscaling / Extensions views — full pages embedded as tabs, each owns its
+          own cluster selector and data fetching (only fetches while its tab is active) ── */}
+      {activeView === 'autoscaling' && <AutoscalingPage embedded />}
+      {activeView === 'extensions'  && <ExtensionsPage embedded />}
 
     </div>
   )

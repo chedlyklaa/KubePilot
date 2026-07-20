@@ -4,6 +4,7 @@ import { useNotify } from '../contexts/NotifyContext'
 import { apiFetch } from '../lib/api'
 import { fmtDT } from '../utils/format'
 import UserProfileModal from '../components/UserProfileModal'
+import ConfirmDialog from '../components/ConfirmDialog'
 
 export default function UsersPage() {
   const { user: me }              = useAuth()
@@ -18,6 +19,7 @@ export default function UsersPage() {
   const [clusters, setClusters]   = useState([])
   const [issueCert, setIssueCert] = useState(false)
   const [certContext, setCertContext] = useState('')
+  const [confirmDelete, setConfirmDelete] = useState(null) // user pending delete confirmation
 
   const load = () => apiFetch('/api/users').then(r => r.json()).then(d => { setUsers(d); setLoading(false) })
   useEffect(() => { load() }, [])
@@ -29,7 +31,10 @@ export default function UsersPage() {
 
   function openCreate() {
     setEditing(null); setForm({ name: '', email: '', password: '', role: 'developer' }); setFormErr('')
-    setIssueCert(false); setCertContext(clusters[0]?.name ?? '')
+    // Default to whichever cluster is currently active in kubectl, not just the first
+    // one in the list — falls back to the first monitored cluster if none is current.
+    const current = clusters.find(c => c.isCurrent)
+    setIssueCert(false); setCertContext((current ?? clusters[0])?.name ?? '')
     setShowForm(true)
   }
   function openEdit(u)  { setEditing(u);    setForm({ name: u.name, email: u.email, password: '', role: u.role }); setFormErr(''); setShowForm(true) }
@@ -71,7 +76,6 @@ export default function UsersPage() {
   }
 
   async function deleteUser(u) {
-    if (!confirm(`Delete ${u.name}?`)) return
     const res = await apiFetch(`/api/users/${u._id}`, { method: 'DELETE' })
     if (!res.ok) { const d = await res.json(); notify('error', d.error); return }
     notify('success', `Deleted ${u.name}`); load()
@@ -88,24 +92,24 @@ export default function UsersPage() {
       </div>
 
       <div className="table-wrap">
-        <table className="data-table">
+        <table className="data-table data-table-responsive">
           <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
           <tbody>
             {users.map(u => (
               <tr key={u._id} className={!u.active ? 'row-inactive' : ''}>
-                <td className="fw-500">{u.name}{u._id === me.id && <span className="you-badge">you</span>}</td>
-                <td className="text-dim">{u.email}</td>
-                <td><span className={`role-badge role-${u.role}`}>{u.role}</span></td>
-                <td><span className={`status-pill ${u.active ? 'active' : 'inactive'}`}>{u.active ? 'Active' : 'Inactive'}</span></td>
-                <td className="text-dim">{fmtDT(u.createdAt)}</td>
-                <td>
+                <td data-label="Name" className="fw-500">{u.name}{u._id === me.id && <span className="you-badge">you</span>}</td>
+                <td data-label="Email" className="text-dim">{u.email}</td>
+                <td data-label="Role"><span className={`role-badge role-${u.role}`}>{u.role}</span></td>
+                <td data-label="Status"><span className={`status-pill ${u.active ? 'active' : 'inactive'}`}>{u.active ? 'Active' : 'Inactive'}</span></td>
+                <td data-label="Created" className="text-dim">{fmtDT(u.createdAt)}</td>
+                <td data-label="Actions">
                   <div className="action-btns">
                     <button className="btn-sm btn-view" onClick={() => setViewUser(u._id)}>View</button>
                     <button className="btn-sm" onClick={() => openEdit(u)}>Edit</button>
                     <button className={`btn-sm ${u.active ? 'btn-warn' : 'btn-success'}`} onClick={() => toggleActive(u)} disabled={u._id === me.id}>
                       {u.active ? 'Deactivate' : 'Activate'}
                     </button>
-                    <button className="btn-sm btn-danger" onClick={() => deleteUser(u)} disabled={u._id === me.id}>Delete</button>
+                    <button className="btn-sm btn-danger" onClick={() => setConfirmDelete(u)} disabled={u._id === me.id}>Delete</button>
                   </div>
                 </td>
               </tr>
@@ -157,6 +161,16 @@ export default function UsersPage() {
             </form>
           </div>
         </div>
+      )}
+
+      {confirmDelete && (
+        <ConfirmDialog
+          title="Delete user?"
+          message={`Delete ${confirmDelete.name}? This cannot be undone.`}
+          confirmLabel="Delete"
+          onConfirm={() => { deleteUser(confirmDelete); setConfirmDelete(null) }}
+          onCancel={() => setConfirmDelete(null)}
+        />
       )}
     </div>
   )

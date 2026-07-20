@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useNotify } from '../contexts/NotifyContext'
-import { sseUrl, apiFetch } from '../lib/api'
+import { openSSE, apiFetch } from '../lib/api'
 import { LOG_LEVELS } from '../constants'
 import { LogRow } from '../components/Row'
 import ApprovalCard from '../components/ApprovalCard'
@@ -34,26 +34,34 @@ export default function DashboardPage({ onCountsChange }) {
 
   // ── Logs SSE ───────────────────────────────────────────────────────────────
   useEffect(() => {
-    const es = new EventSource(sseUrl('/api/logs/stream'))
-    es.onopen    = () => setConnected(true)
-    es.onerror   = () => setConnected(false)
-    es.onmessage = e => {
-      const entry = JSON.parse(e.data)
-      setLogs(p => { const n = [...p, entry]; return n.length > 2000 ? n.slice(-2000) : n })
-    }
-    return () => es.close()
+    let es, cancelled = false
+    openSSE('/api/logs/stream').then(s => {
+      if (cancelled) { s.close(); return }
+      es = s
+      es.onopen    = () => setConnected(true)
+      es.onerror   = () => setConnected(false)
+      es.onmessage = e => {
+        const entry = JSON.parse(e.data)
+        setLogs(p => { const n = [...p, entry]; return n.length > 2000 ? n.slice(-2000) : n })
+      }
+    })
+    return () => { cancelled = true; es?.close() }
   }, [])
 
   // ── Approvals SSE ──────────────────────────────────────────────────────────
   useEffect(() => {
-    const es = new EventSource(sseUrl('/api/approvals/stream'))
-    es.onmessage = e => {
-      const ev = JSON.parse(e.data)
-      if (ev.type === 'init')       setApprovals(ev.approvals)
-      else if (ev.type === 'added')    { setApprovals(p => [...p, ev.approval]); notify('warn', `Approval needed: ${ev.approval.payload?.issueKey}`); if (user.role === 'admin') setRightTab('approvals') }
-      else if (ev.type === 'resolved') setApprovals(p => p.filter(a => a.id !== ev.id))
-    }
-    return () => es.close()
+    let es, cancelled = false
+    openSSE('/api/approvals/stream').then(s => {
+      if (cancelled) { s.close(); return }
+      es = s
+      es.onmessage = e => {
+        const ev = JSON.parse(e.data)
+        if (ev.type === 'init')       setApprovals(ev.approvals)
+        else if (ev.type === 'added')    { setApprovals(p => [...p, ev.approval]); notify('warn', `Approval needed: ${ev.approval.payload?.issueKey}`); if (user.role === 'admin') setRightTab('approvals') }
+        else if (ev.type === 'resolved') setApprovals(p => p.filter(a => a.id !== ev.id))
+      }
+    })
+    return () => { cancelled = true; es?.close() }
   }, [notify, user.role])
 
   // ── Escalations SSE + HTTP fallback ───────────────────────────────────────
@@ -64,25 +72,29 @@ export default function DashboardPage({ onCountsChange }) {
   }, [])
 
   useEffect(() => {
-    const es = new EventSource(sseUrl('/api/escalations/stream'))
-    es.onmessage = e => {
-      const ev = JSON.parse(e.data)
-      if (ev.type === 'init') {
-        escSseReady.current = true
-        setEscalations(ev.escalations)
+    let es, cancelled = false
+    openSSE('/api/escalations/stream').then(s => {
+      if (cancelled) { s.close(); return }
+      es = s
+      es.onmessage = e => {
+        const ev = JSON.parse(e.data)
+        if (ev.type === 'init') {
+          escSseReady.current = true
+          setEscalations(ev.escalations)
+        }
+        else if (ev.type === 'added') {
+          setEscalations(p => [...p, ev.escalation])
+          notify('error', `Escalated: ${ev.escalation.issueKey}`)
+          setRightTab('escalations')
+        }
+        else if (ev.type === 'updated') setEscalations(p => {
+          const exists = p.some(x => x.id === ev.escalation.id)
+          return exists ? p.map(x => x.id === ev.escalation.id ? ev.escalation : x) : [...p, ev.escalation]
+        })
+        else if (ev.type === 'resolved') setEscalations(p => p.filter(x => x.id !== ev.id))
       }
-      else if (ev.type === 'added') {
-        setEscalations(p => [...p, ev.escalation])
-        notify('error', `Escalated: ${ev.escalation.issueKey}`)
-        setRightTab('escalations')
-      }
-      else if (ev.type === 'updated') setEscalations(p => {
-        const exists = p.some(x => x.id === ev.escalation.id)
-        return exists ? p.map(x => x.id === ev.escalation.id ? ev.escalation : x) : [...p, ev.escalation]
-      })
-      else if (ev.type === 'resolved') setEscalations(p => p.filter(x => x.id !== ev.id))
-    }
-    return () => es.close()
+    })
+    return () => { cancelled = true; es?.close() }
   }, [notify])
 
   // ── Auto-scroll logs ───────────────────────────────────────────────────────

@@ -7,4 +7,5 @@ module.exports = {
   ...require('./models/notifications'),
   ...require('./models/memory'),
   ...require('./models/audit'),
+  ...require('./models/clusters'),
 };

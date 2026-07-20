@@ -292,6 +292,11 @@ async function streamChat(req, res, { llm, chatTools }) {
 
     res.write(`data: ${JSON.stringify({ done: true, elapsed: Date.now() - t0 })}\n\n`);
   } catch (err) {
+    // err.message alone (relayed to the client) is often just "403 Forbidden" with no
+    // indication of *why* — the OpenAI SDK's APIError carries the provider's actual
+    // response body in err.error, which is where the real reason lives (e.g. "model
+    // does not support tool calling", "invalid_api_key", plan/feature restrictions).
+    console.error('[CHAT] LLM stream error:', err?.status ?? '', err?.message, err?.error ?? '');
     res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
   }
   res.end();

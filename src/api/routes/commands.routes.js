@@ -9,8 +9,17 @@ const { User, CommandHistory } = require('../../db/models');
 const { getClusters } = require('../../config/clusterConfig');
 const { requireAuth, loadPerms } = require('../middleware/auth');
 const { asyncHandler } = require('../middleware/asyncHandler');
+const PolicyEngine = require('../../policy/policyEngine');
 
 const router = express.Router();
+const policyEngine = new PolicyEngine();
+
+// A command with no --context is only safe to run if the caller is unrestricted
+// (full wildcard admin) — otherwise we can't tell which cluster it targets, so the
+// scope check below can't be evaluated and must deny rather than skip.
+function hasUnrestrictedAccess(permissions) {
+  return (permissions ?? []).some(p => p.cluster === '*' && p.namespace === '*' && p.role === 'admin');
+}
 
 // ── Command history (per-user, persisted in MongoDB) ─────────────────────
 router.get('/api/command/history', requireAuth, asyncHandler(async (req, res) => {
@@ -226,16 +235,30 @@ router.post('/api/command/execute', requireAuth, loadPerms, async (req, res) => 
   const { command } = req.body;
   if (!command?.trim()) return res.status(400).json({ error: 'command is required' });
 
-  // Permission gate — parse the command and check against user's scope
-  const cmdScope = permissionService.parseCommandScope(command);
-  if (cmdScope.cluster && !permissionService.checkAccess(req.permissions, cmdScope.cluster, cmdScope.namespace, cmdScope.category)) {
+  // Sanitizer gate — same check the autonomous agent path applies before every
+  // direct runCommand() call (PolicyEngine.sanitizeCommand): blocks shell metachars,
+  // --force deletes, missing namespaces, and invalid resource names.
+  const { safe, command: sanitized, reason } = policyEngine.sanitizeCommand(command);
+  if (!safe) {
+    return res.status(400).json({ success: false, error: `Command blocked by policy: ${reason}` });
+  }
+
+  // Permission gate — parse the command and check against user's scope. A command
+  // with no --context can't be scope-checked, so it must be denied rather than
+  // silently skipped, unless the caller has unrestricted (wildcard admin) access.
+  const cmdScope = permissionService.parseCommandScope(sanitized);
+  if (!cmdScope.cluster) {
+    if (!hasUnrestrictedAccess(req.permissions)) {
+      return res.status(403).json({ success: false, error: 'Permission denied: command must target a specific cluster (missing --context=<cluster>)' });
+    }
+  } else if (!permissionService.checkAccess(req.permissions, cmdScope.cluster, cmdScope.namespace, cmdScope.category)) {
     return res.status(403).json({ success: false, error: `Permission denied: you cannot run ${cmdScope.category} commands on cluster "${cmdScope.cluster}"${cmdScope.namespace ? ` namespace "${cmdScope.namespace}"` : ''}` });
   }
 
   const impersonateAs = req.user.role === 'admin' ? null : req.user.email;
-  console.log(`[CMD] ${req.user.name}${impersonateAs ? ` (--as=${impersonateAs})` : ''} → ${command}`);
+  console.log(`[CMD] ${req.user.name}${impersonateAs ? ` (--as=${impersonateAs})` : ''} → ${sanitized}`);
   try {
-    const output = await kubectl.runCommand(command, { impersonateAs });
+    const output = await kubectl.runCommand(sanitized, { impersonateAs });
     res.json({ success: true, output: output || '(command completed with no output)' });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

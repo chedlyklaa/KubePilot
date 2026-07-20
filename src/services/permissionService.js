@@ -30,8 +30,19 @@ const VERB_CATEGORY = {
 // Sort longest verbs first so multi-word verbs ("rollout restart") match before single-word ones
 const _SORTED_VERBS = Object.entries(VERB_CATEGORY).sort((a, b) => b[0].length - a[0].length);
 
+// Global flags that can appear before the verb (every command this system generates
+// puts --context immediately after "kubectl", e.g. "kubectl --context=prod get pods
+// -n ns" — see interpretGraph.js's prompt template) — strip them first so verb
+// matching isn't defeated by their position. Matches both "--flag=value" and
+// "--flag value" / "-n value" forms, repeated (flags can appear in any order/count).
+const _GLOBAL_FLAG_RE = /(?:--context|--namespace|-n|--as|--as-group)[= ]\S+/g;
+
 function classifyCommand(command) {
-  const trimmed = command.replace(/^kubectl\s+/, '').trim();
+  const trimmed = command
+    .replace(/^kubectl\s+/, '')
+    .replace(_GLOBAL_FLAG_RE, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
   for (const [verb, cat] of _SORTED_VERBS) {
     if (trimmed.startsWith(verb)) return cat;
   }

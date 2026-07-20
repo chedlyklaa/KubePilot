@@ -14,12 +14,32 @@ const TOKEN_TTL_MS = 8 * 60 * 60 * 1000;
 const resetTokens = new Map();
 const RESET_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
+// Per-account login lockout: email → { count, lastAttempt, lockedUntil }
+// Keyed by account rather than IP — combined with the per-IP rateLimit middleware
+// on the route (which stops one attacker hammering many accounts), this stops
+// repeated guesses against one specific account regardless of source IP.
+const loginAttempts       = new Map();
+const MAX_LOGIN_ATTEMPTS  = 5;
+const LOGIN_LOCKOUT_MS    = 15 * 60 * 1000; // 15 minutes
+
 // Sweep expired tokens every 15 minutes to avoid memory leaks
 setInterval(() => {
   const now = Date.now();
   for (const [tok, entry] of tokens)      { if (now > entry.expiresAt) tokens.delete(tok); }
   for (const [tok, entry] of resetTokens) { if (now > entry.expiresAt) resetTokens.delete(tok); }
+  for (const [key, entry] of loginAttempts) {
+    const staleAt = entry.lockedUntil ?? (entry.lastAttempt + LOGIN_LOCKOUT_MS);
+    if (now > staleAt) loginAttempts.delete(key);
+  }
 }, 15 * 60 * 1000).unref(); // .unref() so this timer doesn't prevent process exit
+
+function _recordFailedLogin(key) {
+  const entry = loginAttempts.get(key) ?? { count: 0, lockedUntil: null };
+  entry.count += 1;
+  entry.lastAttempt = Date.now();
+  if (entry.count >= MAX_LOGIN_ATTEMPTS) entry.lockedUntil = Date.now() + LOGIN_LOCKOUT_MS;
+  loginAttempts.set(key, entry);
+}
 
 // Seed default users on first start.
 // Passwords are randomly generated per-install rather than hardcoded — a fixed default
@@ -40,10 +60,21 @@ async function seedUsers() {
 }
 
 async function login(email, password) {
-  const user = await User.findOne({ email: email.toLowerCase().trim(), active: true });
-  if (!user) return null;
-  const match = await bcrypt.compare(password, user.password);
-  if (!match) return null;
+  const key = (email || '').toLowerCase().trim();
+
+  const attempt = loginAttempts.get(key);
+  if (attempt?.lockedUntil && Date.now() < attempt.lockedUntil) {
+    throw Object.assign(new Error('Too many failed login attempts. Try again in a few minutes.'), { status: 429 });
+  }
+
+  const user  = await User.findOne({ email: key, active: true });
+  const match = user && await bcrypt.compare(password, user.password);
+  if (!user || !match) {
+    _recordFailedLogin(key);
+    return null;
+  }
+  loginAttempts.delete(key);
+
   const token   = crypto.randomBytes(32).toString('hex');
   const payload = {
     id: user._id.toString(), email: user.email, name: user.name, role: user.role,
@@ -78,7 +109,9 @@ function updateUserPayload(userId, patch) {
 async function forgotPassword(email) {
   if (!email) throw Object.assign(new Error('Email is required'), { status: 400 });
   const user = await User.findOne({ email: email.toLowerCase().trim(), active: true });
-  if (!user) throw Object.assign(new Error('No account found for this email. Ask your admin to create one.'), { status: 404 });
+  // Return silently (same as the success path) whether or not the account exists —
+  // a distinct response for "no account" lets an attacker enumerate valid emails.
+  if (!user) return;
   const token = crypto.randomBytes(32).toString('hex');
   resetTokens.set(token, { email: user.email, expiresAt: Date.now() + RESET_TTL_MS });
   try {

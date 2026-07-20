@@ -367,6 +367,7 @@
 /* ── Cluster Manager modal ───────────────────────────────────────────── */
 .cluster-mgr            { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; width: 660px; max-width: 96vw; max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
 .cluster-mgr-header     { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.cluster-mgr-header-actions { display: flex; gap: 8px; align-items: center; }
 .cluster-mgr-title      { font-size: 14px; font-weight: 600; color: var(--text-head); }
 .cluster-mgr-body       { padding: 16px 20px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 14px; }
 .cluster-mgr-footer     { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; border-top: 1px solid var(--border); flex-shrink: 0; }
@@ -391,6 +392,11 @@
 .cm-name-input:disabled,
 .cm-tier-select:disabled{ opacity: .35; cursor: not-allowed; }
 .cm-tier-select         { padding: 5px 8px; border-radius: 5px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font-size: 12px; outline: none; cursor: pointer; }
+
+.cm-test-row            { display: flex; align-items: center; gap: 10px; }
+.cm-test-badge          { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 6px; }
+.cm-test-ok             { color: var(--success, #22c55e); background: var(--success-dim, rgba(34,197,94,.12)); }
+.cm-test-fail           { color: var(--danger); background: var(--danger-dim); }
 
 /* ── Search + filter toolbar ─────────────────────────────────────────── */
 .health-toolbar       { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: space-between; }
@@ -782,6 +788,17 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
   font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity .15s;
 }
 .btn-danger-solid:hover { opacity: .85; }
+
+/* ── Generic confirm dialog (replaces native confirm()) ──────────────────── */
+.confirm-modal {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 10px; padding: 32px 28px; text-align: center; max-width: 360px;
+}
+.confirm-icon    { font-size: 36px; color: var(--danger); line-height: 1; margin-bottom: 4px; }
+.confirm-title   { font-size: 18px; font-weight: 700; color: var(--text-head); }
+.confirm-sub     { font-size: 13px; color: var(--text-dim); line-height: 1.5; }
+.confirm-actions { display: flex; gap: 10px; margin-top: 8px; width: 100%; }
+.confirm-actions .btn-secondary { flex: 1; }
 
 /* ── Panel ────────────────────────────────────────────────────────────────── */
 .panel { display: flex; flex-direction: column; overflow: hidden; min-height: 0; border-right: 1px solid var(--border); }
@@ -1443,6 +1460,17 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
 }
 .field input:focus { border-color: var(--primary); }
 .field input::placeholder { color: var(--text-dim); }
+.field textarea {
+  padding: 10px 12px; border-radius: 7px;
+  border: 1px solid var(--border); background: var(--surface-2);
+  color: var(--text-head); font-size: 13px; outline: none;
+  transition: border-color .2s; resize: vertical;
+}
+.field textarea:focus { border-color: var(--primary); }
+.field textarea::placeholder { color: var(--text-dim); }
+.field .kubeconfig-textarea { font-family: var(--font-mono, 'SF Mono', Consolas, monospace); font-size: 12px; line-height: 1.5; }
+.field-hint { font-size: 11px; color: var(--text-dim); }
+.field-hint code { background: var(--surface-2); border-radius: 4px; padding: 1px 5px; font-size: 11px; }
 .login-error { font-size: 12px; color: var(--danger); background: var(--danger-dim); border-radius: 6px; padding: 8px 12px; text-align: center; }
 .login-btn {
   padding: 11px; border-radius: 7px; border: none;
@@ -1913,6 +1941,9 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
 [data-theme="light"] .field input { background: #FFFFFF; border-color: var(--border); color: #111111; }
 [data-theme="light"] .field input:focus { border-color: #888888; box-shadow: 0 0 0 3px rgba(0,0,0,.07); }
 [data-theme="light"] .field input::placeholder { color: #ABABAB; }
+[data-theme="light"] .field textarea { background: #FFFFFF; border-color: var(--border); color: #111111; }
+[data-theme="light"] .field textarea:focus { border-color: #888888; box-shadow: 0 0 0 3px rgba(0,0,0,.07); }
+[data-theme="light"] .field textarea::placeholder { color: #ABABAB; }
 
 [data-theme="light"] .cmd-input { background: #FFFFFF; border-color: var(--border); color: #111111; }
 [data-theme="light"] .cmd-input:focus { border-color: #888888; box-shadow: 0 0 0 3px rgba(0,0,0,.07); }
@@ -2783,6 +2814,13 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
 /* Subject chips */
 .rbac-subjects { display: flex; gap: 4px; flex-wrap: wrap; }
 
+/* Bindings table — fixed column widths (see <colgroup> in RbacPage.jsx) so the
+   table always fits its container instead of forcing .table-wrap's horizontal
+   scroll; long content wraps within its column instead of growing the table. */
+.rbac-bindings-table { table-layout: fixed; }
+.rbac-bindings-table th { white-space: normal; }
+.rbac-bindings-table td { overflow-wrap: break-word; word-break: break-word; }
+
 /* Danger row highlight */
 .rbac-row-danger td:first-child { border-left: 3px solid var(--danger); }
 .rbac-kp-badge { display: inline-block; font-size: 9px; font-weight: 700; margin-left: 8px; padding: 1px 6px; border-radius: 8px; background: var(--primary-dim); color: var(--primary); vertical-align: middle; }
@@ -2840,9 +2878,15 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
 
 /* ── Capacity & Cost Page ──────────────────────────────────────────────────── */
 .cp-page             { padding: 24px; max-width: 1400px; margin: 0 auto; width: 100%; }
+.cp-page-embedded    { padding: 16px 0 0; max-width: none; }
 .cp-controls         { display: flex; gap: 8px; align-items: center; }
 .cp-controls select  { font-size: 13px; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-body); }
 .cp-empty            { text-align: center; color: var(--text-dim); padding: 32px 20px; font-size: 13px; }
+/* Inline text-link button (e.g. "Clear" inside an empty-state sentence) —
+   unstyled otherwise, so it inherited raw browser button chrome. */
+.link-btn            { background: none; border: none; padding: 2px 6px; margin-left: 2px; border-radius: 5px; font: inherit; font-weight: 600; color: var(--primary); cursor: pointer; transition: background .15s; }
+.link-btn:hover       { background: var(--primary-dim); }
+.link-btn:active      { opacity: .8; }
 .cp-summary          { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
 .cp-card             { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
 .cp-card-accent      { border-left: 3px solid var(--primary); }
@@ -3151,4 +3195,53 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
   .ag-cluster-grid     { grid-template-columns: 1fr; }
   .ag-config-row       { flex-direction: column; align-items: stretch; gap: 8px; }
   .ag-rule-top         { flex-direction: column; align-items: flex-start; }
+}
+
+/* ── Responsive card layout for data-dense tables ─────────────────────────
+   Below 700px, tables that used to force horizontal scroll (fixed min-width,
+   one row per screen-width) instead stack each row into a labeled card. Opt-in
+   via .prom-pods-table (its own class) or .data-table-responsive — both require
+   every <td> to carry a data-label matching its column header, used as the
+   pseudo-element row label. Tables without data-label on their cells keep the
+   normal horizontal-scroll behavior (.table-wrap { overflow-x: auto }). */
+@media (max-width: 700px) {
+  .prom-pods-table, .data-table-responsive {
+    display: block;
+    min-width: 0;
+    width: 100%;
+  }
+  .prom-pods-table thead, .data-table-responsive thead { display: none; }
+  .prom-pods-table tbody, .data-table-responsive tbody { display: block; width: 100%; }
+  .prom-pods-table tr, .data-table-responsive tr {
+    display: block;
+    width: 100%;
+    margin-bottom: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 10px;
+  }
+  .prom-pods-table td, .data-table-responsive td {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    border-bottom: 1px solid var(--border);
+    padding: 6px 0;
+    text-align: right;
+  }
+  .prom-pods-table tr:last-child td:not([colspan]),
+  .data-table-responsive tr:last-child td:not([colspan]) { border-bottom: none; }
+  .prom-pods-table td::before, .data-table-responsive td::before {
+    content: attr(data-label);
+    font-weight: 600;
+    color: var(--text-dim);
+    text-align: left;
+    flex-shrink: 0;
+  }
+  .prom-pods-table td[colspan], .data-table-responsive td[colspan] {
+    display: block;
+    text-align: center;
+    border-bottom: none;
+  }
+  .prom-pods-table td[colspan]::before, .data-table-responsive td[colspan]::before { content: none; }
 }

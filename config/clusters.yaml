@@ -1,21 +1,6 @@
 clusters:
-  - name: cluster2
-    context: cluster2
-    tier: dev
-    namespaces:
-      - '*'
-  - name: cluster3
-    context: cluster3
-    tier: dev
-    namespaces:
-      - '*'
   - name: minikube
     context: minikube
-    tier: dev
-    namespaces:
-      - '*'
-  - name: staging-cluster
-    context: staging-cluster
     tier: dev
     namespaces:
       - '*'

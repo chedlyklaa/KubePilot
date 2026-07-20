@@ -128,21 +128,19 @@ describe('permissionService.parseCommandScope', () => {
     expect(parseCommandScope('kubectl get pods -n default').category).toBe('read-only');
   });
 
-  // KNOWN BUG (discovered by this test suite, not yet fixed): classifyCommand() only
-  // strips a literal "kubectl " prefix before matching a verb — it does not skip
-  // --context=... first. Every command this system actually generates puts --context
-  // immediately after "kubectl" and before the verb (see interpretGraph.js's own
-  // prompt template: "kubectl --context=CTX get pods -n NS", etc.), so in real usage
-  // this ALWAYS falls through to the 'destructive' default regardless of the real verb.
-  // Net effect: /api/command/execute's checkAccess() call — which uses this category
-  // directly, with no LLM-provided fallback — requires admin role for every command a
-  // non-admin submits, including harmless reads. Fails closed (not a security hole),
-  // but silently breaks command execution for every non-admin user. Flagged for a
-  // follow-up fix (strip leading flags before verb-matching); this test pins down
-  // today's actual behavior so a fix shows up here as an intentional, visible diff.
-  it('KNOWN BUG: --context before the verb defeats verb detection, defaulting to destructive', () => {
-    expect(parseCommandScope('kubectl --context=prod get pods -n team-a').category).toBe('destructive');
-    expect(parseCommandScope('kubectl --context=prod logs mypod -n team-a').category).toBe('destructive');
+  // REGRESSION (fixed): classifyCommand() used to only strip a literal "kubectl "
+  // prefix before matching a verb — it did not skip --context=... first. Every command
+  // this system actually generates puts --context immediately after "kubectl" and
+  // before the verb (see interpretGraph.js's own prompt template: "kubectl
+  // --context=CTX get pods -n NS", etc.), so in real usage this ALWAYS fell through to
+  // the 'destructive' default regardless of the real verb — requiring admin role for
+  // every command a non-admin submitted, including harmless reads. Fixed by stripping
+  // recognized global flags (--context, -n/--namespace, --as/--as-group) before
+  // verb-matching. See src/services/permissionService.js's _GLOBAL_FLAG_RE.
+  it('REGRESSION: --context before the verb no longer defeats verb detection', () => {
+    expect(parseCommandScope('kubectl --context=prod get pods -n team-a').category).toBe('read-only');
+    expect(parseCommandScope('kubectl --context=prod logs mypod -n team-a').category).toBe('read-only');
+    expect(parseCommandScope('kubectl --context=prod delete pod x -n team-a').category).toBe('destructive');
   });
 });
 

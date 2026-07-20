@@ -215,6 +215,23 @@ class PolicyEngine {
       warnings.push('Action overridden to rollback — a recent deployment change was correlated with this failure');
     }
 
+    // ── Rule 9: Resource quota headroom ────────────────────────────────────────
+    // increase_memory asks Kubernetes for more memory than the container has now. If
+    // the namespace's ResourceQuota already has no headroom left, that request is
+    // guaranteed to be rejected by the API server — block it here instead of burning a
+    // fix attempt (and a Guardian review, and a risk score) on an action that was always
+    // going to fail, and go straight to escalation instead.
+    // hasMemoryHeadroom is null when there's no data to judge from (quota awareness
+    // disabled, fetch failed, or no quota configured) — only an explicit false blocks.
+    if (action === 'increase_memory' && context.hasMemoryHeadroom === false) {
+      blockedRules.push(
+        'POLICY_QUOTA_EXHAUSTED: namespace ResourceQuota has no memory headroom left — increase_memory would be rejected by Kubernetes'
+      );
+      action = 'noop';
+      status = 'rejected';
+      warnings.push('Quota exhausted — escalate to raise the ResourceQuota or free up capacity manually');
+    }
+
     // ── Finalize ──────────────────────────────────────────────────────────────
     if (status === 'approved' && action !== plan.action) status = 'modified';
 
@@ -392,6 +409,10 @@ class PolicyEngine {
       tier:           context.tier,
       issueType:      context.issueType,
       dryRun:         this.dryRunMode,
+      // Without this, a blocked/modified audit entry records THAT something was
+      // blocked and WHY, but not WHICH resource — impossible to verify from the
+      // audit log alone which target a given policy decision applied to.
+      target:         plan.target ?? null,
     };
 
     if (result.status === 'rejected') {
@@ -472,6 +493,20 @@ class PolicyEngine {
     // ── Rule N5: Large blast radius warning ───────────────────────────────
     if (action === 'drain_node' && affectedPods > 20) {
       warnings.push(`NODE_POLICY_BLAST_RADIUS: drain will evict ~${affectedPods} pods — verify cluster has capacity`);
+    }
+
+    // ── Rule N6: PodDisruptionBudget protection ───────────────────────────
+    // blockingPDBs are PDBs (in namespaces with pods on this node) that already allow
+    // zero further disruptions — draining would either be rejected by Kubernetes or,
+    // worse, force past a safety margin someone configured on purpose. Namespace-level
+    // approximation (not full label-selector matching), so it can only be more cautious
+    // than necessary, never less.
+    const blockingPDBs = context.blockingPDBs ?? [];
+    if (action === 'drain_node' && blockingPDBs.length > 0) {
+      const names = blockingPDBs.map(p => `${p.metadata?.namespace}/${p.metadata?.name}`).join(', ');
+      blockedRules.push(`NODE_POLICY_PDB_BLOCKED: drain_node blocked — PodDisruptionBudget(s) with zero disruptions allowed: ${names}`);
+      action = 'noop';
+      status = 'rejected';
     }
 
     if (status === 'approved' && action !== plan.action) status = 'modified';
