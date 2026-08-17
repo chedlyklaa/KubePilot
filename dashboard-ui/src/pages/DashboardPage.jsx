@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useNotify } from '../contexts/NotifyContext'
 import { openSSE, apiFetch } from '../lib/api'
-import { LOG_LEVELS } from '../constants'
+import { LOG_LEVELS, AGENT_PRICING } from '../constants'
+import { fmtCost } from '../utils/format'
 import { LogRow } from '../components/Row'
 import ApprovalCard from '../components/ApprovalCard'
 import EscalationClaimCard from '../components/EscalationClaimCard'
@@ -41,8 +42,12 @@ export default function DashboardPage({ onCountsChange }) {
       es.onopen    = () => setConnected(true)
       es.onerror   = () => setConnected(false)
       es.onmessage = e => {
-        const entry = JSON.parse(e.data)
-        setLogs(p => { const n = [...p, entry]; return n.length > 2000 ? n.slice(-2000) : n })
+        const ev = JSON.parse(e.data)
+        if (ev.type === 'init') {
+          setLogs(ev.logs.length > 2000 ? ev.logs.slice(-2000) : ev.logs)
+        } else if (ev.type === 'log') {
+          setLogs(p => { const n = [...p, ev.entry]; return n.length > 2000 ? n.slice(-2000) : n })
+        }
       }
     })
     return () => { cancelled = true; es?.close() }
@@ -220,6 +225,15 @@ export default function DashboardPage({ onCountsChange }) {
   )
 }
 
+// Real Scaleway cost for one agent's counters, from AGENT_PRICING — prompt/completion
+// are billed at different per-agent rates, so this has to be summed per agent rather
+// than applied once to the combined total.
+function agentCost(key, c) {
+  const rate = AGENT_PRICING[key]
+  if (!rate || !c) return 0
+  return (c.prompt / 1_000_000) * rate.inputPerM + (c.completion / 1_000_000) * rate.outputPerM
+}
+
 // ── TokenBar component ────────────────────────────────────────────────────────
 function TokenBar({ tokens, onRefresh, isAdmin }) {
   const [expanded, setExpanded] = useState(false)
@@ -232,6 +246,7 @@ function TokenBar({ tokens, onRefresh, isAdmin }) {
   )
 
   const { agents, total } = tokens
+  const totalCost = AGENT_DEFS.reduce((sum, { key }) => sum + agentCost(key, agents[key]), 0)
 
   function handleReset() {
     if (!confirm('Reset token counters?')) return
@@ -255,6 +270,7 @@ function TokenBar({ tokens, onRefresh, isAdmin }) {
             <span className="token-chip-icon">{icon}</span>
             <span className="token-chip-name">{label}</span>
             <span className="token-chip-total">{fmtN(c.total)}</span>
+            <span className="token-chip-cost">{fmtCost(agentCost(key, c))}</span>
             {expanded && <span className="token-chip-detail">{fmtN(c.prompt)}↑ {fmtN(c.completion)}↓</span>}
             <span className="token-chip-calls">{c.calls} calls</span>
           </div>
@@ -265,6 +281,7 @@ function TokenBar({ tokens, onRefresh, isAdmin }) {
         <span className="token-chip-icon">⊕</span>
         <span className="token-chip-name">Total</span>
         <span className="token-chip-total">{fmtN(total.total)}</span>
+        <span className="token-chip-cost">{fmtCost(totalCost)}</span>
         {expanded && <span className="token-chip-detail">{fmtN(total.prompt)}↑ {fmtN(total.completion)}↓</span>}
         <span className="token-chip-calls">{total.calls} calls</span>
       </div>

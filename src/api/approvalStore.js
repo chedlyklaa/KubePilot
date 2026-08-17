@@ -3,6 +3,7 @@
 const notifEngine         = require('../services/notifications/engine');
 const { ApprovalHistory } = require('../db/models');
 const overrideStore       = require('./overrideStore');
+const issueTrackerStore   = require('./issueTrackerStore');
 const { createPubSub }    = require('./pubsub');
 
 const TIMEOUT_MS = 10 * 60 * 1000;
@@ -11,8 +12,15 @@ let seq = 0;
 const pending = new Map();
 const { notify, subscribe } = createPubSub();
 
-function requestApproval(payload) {
+async function requestApproval(payload) {
   const id = String(++seq);
+
+  // Resolves to the Issue Tracking page's display id for this issueKey, if one's
+  // already been recorded (see clusterAgent.js — issueTrackerStore.track() fires just
+  // before this is called) — lets the approval card link straight to that issue's
+  // timeline. null when no tracked episode exists yet; the card just omits the link.
+  const issueSeq = await issueTrackerStore.getSeqForIssueKey(payload.issueKey).catch(() => null);
+  const enrichedPayload = { ...payload, issueSeq };
 
   notifEngine.emit({
     severity:   'CRITICAL',
@@ -35,8 +43,8 @@ function requestApproval(payload) {
       resolve(false);
     }, TIMEOUT_MS);
 
-    pending.set(id, { id, payload, resolve, createdAt: new Date().toISOString(), timer });
-    notify({ type: 'added', approval: { id, payload, createdAt: new Date().toISOString() } });
+    pending.set(id, { id, payload: enrichedPayload, resolve, createdAt: new Date().toISOString(), timer });
+    notify({ type: 'added', approval: { id, payload: enrichedPayload, createdAt: new Date().toISOString() } });
   });
 }
 

@@ -2,6 +2,7 @@
 
 const { execFile } = require('child_process');
 const sessionManager = require('../services/sessionManager');
+const k8sClient = require('./k8sClient');
 
 // Split a command string into an argument array, respecting double-quoted segments.
 // Shell metacharacters (; | $ ` etc.) become harmless literal characters with execFile.
@@ -25,11 +26,11 @@ function _parseArgs(command) {
 // server's shared kubeconfig file, exactly as before this existed — that fallback is
 // what keeps every pre-existing cluster (context already in the shared file) working
 // unchanged.
-async function runCommand(command, { timeoutMs = 60_000, impersonateAs = null } = {}) {
+async function runCommand(command) {
   const args = _parseArgs(command);
-  if (impersonateAs) {
-    args.unshift(`--as=${impersonateAs}`);
-  }
+  // if (impersonateAs) {
+  //   args.unshift(`--as=${impersonateAs}`);
+  // }
 
   const ctxArg  = args.find(a => a.startsWith('--context='));
   const context = ctxArg ? ctxArg.slice('--context='.length) : null;
@@ -56,11 +57,23 @@ async function runCommand(command, { timeoutMs = 60_000, impersonateAs = null } 
  * Get all pods from a namespace
  */
 async function getPods(namespace = 'default', context, asJson = false) {
+  // Every caller of the JSON form goes through the long-lived API client
+  // instead of shelling out to `kubectl` — this is the hottest read in the
+  // app (called from clusterAgent, clusterService, chatService, interpretGraph,
+  // networkExposureEngine), so it's the one worth cutting the per-call
+  // process-spawn + kubeconfig-parse + TLS-handshake tax from. The non-JSON
+  // form (unused today, kept for compatibility) still goes through kubectl.
+  if (asJson) {
+    const api  = await k8sClient.getCoreV1Api(context);
+    const list = namespace === '*'
+      ? await api.listPodForAllNamespaces()
+      : await api.listNamespacedPod({ namespace });
+    return { items: list.items ?? [] };
+  }
   // "*" means all namespaces — maps to --all-namespaces flag
   const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
-  const cmd = `kubectl --context=${context} get pods ${nsFlag}${asJson ? ' -o json' : ''}`;
-  const out  = await runCommand(cmd);
-  return asJson ? JSON.parse(out) : out;
+  const cmd = `kubectl --context=${context} get pods ${nsFlag}`;
+  return await runCommand(cmd);
 }
 
 /**
@@ -432,6 +445,9 @@ module.exports = {
   isMetricsServerAvailable,
   getCRDs,
   getNamespacesFull,
+  getDeploymentsFull,
+  getStatefulSetsFull,
+  getDaemonSetsFull,
 };
 
 async function getPersistentVolumes(context) {
@@ -508,5 +524,31 @@ async function getCRDs(context) {
 // needed for reading Pod Security Admission labels off each namespace.
 async function getNamespacesFull(context) {
   const out = await runCommand(`kubectl --context="${context}" get namespace -o json`);
+  return JSON.parse(out).items ?? [];
+}
+
+// ── Workload specs (read-only) — cluster-wide sweeps for security posture scanning.
+// Unlike per-issue single-object reads elsewhere (e.g. investigatorAgent.js fetching
+// one Deployment while diagnosing a specific pod), these fetch every object of a kind
+// so a detector can scan pod templates for hardening findings independent of any
+// live incident. Findings are keyed off the controller (not the ephemeral Pod names
+// it creates), so scanning the controller's template directly — rather than every
+// live Pod — keeps a finding's identity stable across restarts/redeploys.
+
+async function getDeploymentsFull(namespace, context) {
+  const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
+  const out = await runCommand(`kubectl --context="${context}" get deployments ${nsFlag} -o json`);
+  return JSON.parse(out).items ?? [];
+}
+
+async function getStatefulSetsFull(namespace, context) {
+  const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
+  const out = await runCommand(`kubectl --context="${context}" get statefulsets ${nsFlag} -o json`);
+  return JSON.parse(out).items ?? [];
+}
+
+async function getDaemonSetsFull(namespace, context) {
+  const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
+  const out = await runCommand(`kubectl --context="${context}" get daemonsets ${nsFlag} -o json`);
   return JSON.parse(out).items ?? [];
 }

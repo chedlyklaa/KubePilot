@@ -145,13 +145,9 @@ export default function ClusterManager({ onClose, onSaved }) {
                           placeholder={ctx.name} />
                       </td>
                       <td className="cm-td">
-                        <select className="cm-tier-select" value={sel.tier}
-                          disabled={!sel.enabled}
-                          onChange={e => update(ctx.name, { tier: e.target.value })}>
-                          <option value="dev">dev</option>
-                          <option value="staging">staging</option>
-                          <option value="production">production</option>
-                        </select>
+                        <span className={`tier-badge tier-${sel.tier}`} title="Tier is set once when a cluster is first enabled/uploaded and can't be changed afterward — delete and re-add to change it">
+                          {sel.tier}
+                        </span>
                       </td>
                       <td className="cm-td">
                         <div className="action-btns">

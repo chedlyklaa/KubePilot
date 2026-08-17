@@ -16,7 +16,13 @@ const METRICS_REFRESH_MS = 30_000
 const NODES_REFRESH_MS   = 30_000
 import FilterDrawer, { FilterSection, FilterChips } from '../components/FilterDrawer'
 
-const REFRESH_INTERVAL = 10
+const REFRESH_OPTIONS = [
+  { label: 'Off', seconds: 0 },
+  { label: '10s', seconds: 10 },
+  { label: '30s', seconds: 30 },
+  { label: '1m',  seconds: 60 },
+  { label: '5m',  seconds: 300 },
+]
 
 const PHASE_OPTS = [
   { value: 'Running',   label: 'Running'   },
@@ -25,7 +31,7 @@ const PHASE_OPTS = [
   { value: 'Failed',    label: 'Failed'    },
   { value: 'Succeeded', label: 'Succeeded' },
 ]
-const EMPTY_FILTERS = { phases: [], namespaces: [], clusters: [], hasRestarts: false, hasGpu: false }
+const EMPTY_FILTERS = { phases: [], hasRestarts: false, hasGpu: false }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function fmtAge(t) {
@@ -96,6 +102,75 @@ function ClusterStats({ pods }) {
   )
 }
 
+function PodTable({ pods }) {
+  const hasGpuCol = pods.some(p => p.totalGpu > 0)
+  return (
+    <div className="hc-table-wrap">
+      <table className="hc-table">
+        <thead>
+          <tr>
+            <th className="hth">Pod</th>
+            <th className="hth">Status</th>
+            <th className="hth hth-center">Ready</th>
+            <th className="hth hth-center">Restarts</th>
+            <th className="hth">CPU</th>
+            <th className="hth" style={{ minWidth: 180 }}>Memory</th>
+            {hasGpuCol && <th className="hth hth-center">GPU</th>}
+            <th className="hth">Node</th>
+            <th className="hth">Age</th>
+          </tr>
+        </thead>
+        <tbody>
+          {pods.map(pod => {
+            const ep = effectivePhase(pod)
+            return (
+              <tr key={`${pod.namespace}/${pod.name}`} className={`htr htr-${ep.toLowerCase()}`}>
+                <td className="htd htd-pod">
+                  <StatusDot phase={pod.phase} isReady={pod.isReady} />
+                  <div className="pod-name-col">
+                    <span className="pod-name mono-small" title={pod.name}>
+                      {pod.name.length > 34 ? pod.name.slice(0, 32) + '…' : pod.name}
+                    </span>
+                    {pod.containers.some(c => c.reason) && (
+                      <span className="pod-reason-tag">
+                        {pod.containers.find(c => c.reason)?.reason}
+                      </span>
+                    )}
+                  </div>
+                </td>
+                <td className="htd"><PhaseBadge phase={pod.phase} isReady={pod.isReady} /></td>
+                <td className="htd htd-center">
+                  <span className={pod.isReady ? 'ready-ok' : 'ready-no'}>{pod.ready}</span>
+                </td>
+                <td className="htd htd-center"><RestartCount n={pod.restarts} /></td>
+                <td className="htd">
+                  {pod.cpuRaw
+                    ? <span className="hcell-mono cpu-val" title={pod.metricsSource === 'prometheus' ? '5-min avg from Prometheus' : 'kubectl top'}>
+                        {pod.cpuRaw}{pod.metricsSource === 'prometheus' ? <span className="prom-tilde">~</span> : null}
+                      </span>
+                    : <span className="hcell-dim">—</span>}
+                </td>
+                <td className="htd">
+                  <MemBar usedBytes={pod.memBytes} limitBytes={pod.totalMemLimitBytes} rawLabel={pod.memRaw} />
+                </td>
+                {hasGpuCol && (
+                  <td className="htd htd-center">
+                    {pod.totalGpu > 0
+                      ? <span className="gpu-tag">⬡ {pod.totalGpu}</span>
+                      : <span className="hcell-dim">—</span>}
+                  </td>
+                )}
+                <td className="htd hcell-dim mono-small">{pod.node}</td>
+                <td className="htd hcell-dim age-cell">{fmtAge(pod.startTime)}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function MetricsNotice({ onDismiss }) {
   return (
     <div className="metrics-notice">
@@ -140,7 +215,8 @@ export default function ClusterHealthPage() {
   const [data,              setData]              = useState(null)
   const [loading,           setLoading]           = useState(true)
   const [error,             setError]             = useState(null)
-  const [countdown,         setCountdown]         = useState(REFRESH_INTERVAL)
+  const [refreshSeconds,    setRefreshSeconds]    = useState(0) // 0 = auto-refresh off by default
+  const [countdown,         setCountdown]         = useState(refreshSeconds)
   const [lastSync,          setLastSync]          = useState(null)
   const [search,            setSearch]            = useState('')
   const { filters, setFilters, toggle, activeCount } = useFilters(EMPTY_FILTERS)
@@ -154,30 +230,121 @@ export default function ClusterHealthPage() {
   const [nodesLoading,      setNodesLoading]      = useState(false)
   const [activeView,        setActiveView]        = useState('pods')
   const [expandedClusters,  setExpandedClusters]  = useState({})
+  const [expandedNs,        setExpandedNs]        = useState({}) // key: "cluster/namespace"
   const [showClusterMgr,    setShowClusterMgr]    = useState(false)
   const { user } = useAuth()
 
+  // Streams each cluster's namespace list (NDJSON over a plain fetch) instead of
+  // waiting for every cluster to respond — a slow/unreachable cluster no longer
+  // blocks the ones that are already ready from showing up. Pods are NOT fetched
+  // here: namespaces are cheap to list, so they load eagerly, but pods are the
+  // expensive part and only load once a namespace is actually expanded — see
+  // loadNamespacePods below. On refresh, previously loaded namespace pod data is
+  // preserved (keyed by name) rather than being wiped back to a skeleton.
   const fetchData = useCallback(async () => {
+    setError(null)
     try {
-      const res  = await apiFetch('/api/cluster/pods')
-      const json = await res.json()
-      setData(json)
-      setLastSync(new Date())
-      setError(null)
+      const res = await apiFetch('/api/cluster/namespaces/stream')
+      if (!res.ok || !res.body) throw new Error(`Request failed (${res.status})`)
+
+      const reader  = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        let nl
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl)
+          buf = buf.slice(nl + 1)
+          if (!line.trim()) continue
+          const msg = JSON.parse(line)
+
+          if (msg.type === 'init') {
+            setData(prev => {
+              const prevByName = new Map((prev?.clusters ?? []).map(c => [c.name, c]))
+              return {
+                clusters: msg.clusters.map(c => {
+                  const old = prevByName.get(c.name)
+                  return old ? { ...old, loading: true } : { ...c, connected: null, namespaces: [], loading: true }
+                }),
+              }
+            })
+            setLoading(false)
+          } else if (msg.type === 'cluster') {
+            setData(prev => prev && {
+              ...prev,
+              clusters: prev.clusters.map(c => {
+                if (c.name !== msg.cluster.name) return c
+                const prevNsByName = new Map((c.namespaces ?? []).map(n => [n.name, n]))
+                return {
+                  ...msg.cluster,
+                  loading: false,
+                  namespaces: (msg.cluster.namespaces ?? []).map(name => {
+                    const old = prevNsByName.get(name)
+                    return old ?? { name, pods: null, loading: false, loaded: false, error: null }
+                  }),
+                }
+              }),
+            })
+          } else if (msg.type === 'done') {
+            setLastSync(new Date())
+          }
+        }
+      }
     } catch (err) { setError(err.message) }
-    finally { setLoading(false); setCountdown(REFRESH_INTERVAL) }
+    finally { setLoading(false); setCountdown(refreshSeconds) }
+  }, [refreshSeconds])
+
+  // Fetches pods for a single namespace — only called when that namespace's row is
+  // expanded for the first time. This is the actual "expensive" call; everything
+  // above (cluster list, namespace list) is metadata-only and loads eagerly.
+  const loadNamespacePods = useCallback(async (clusterName, ns) => {
+    const setNs = updater => setData(prev => prev && {
+      ...prev,
+      clusters: prev.clusters.map(c => c.name !== clusterName ? c : {
+        ...c,
+        namespaces: c.namespaces.map(n => n.name === ns ? updater(n) : n),
+      }),
+    })
+
+    setNs(n => ({ ...n, loading: true, error: null }))
+    try {
+      const res  = await apiFetch(`/api/cluster/${encodeURIComponent(clusterName)}/namespaces/${encodeURIComponent(ns)}/pods`)
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error ?? `Request failed (${res.status})`)
+      setNs(() => ({ name: ns, pods: json.pods ?? [], loading: false, loaded: true, error: null }))
+    } catch (err) {
+      setNs(n => ({ ...n, loading: false, error: err.message }))
+    }
   }, [])
+
+  const toggleNamespace = (clusterName, ns) => {
+    const key = `${clusterName}/${ns}`
+    setExpandedNs(prev => {
+      const nowOpen = !prev[key]
+      if (nowOpen) {
+        const nsObj = data?.clusters.find(c => c.name === clusterName)?.namespaces.find(n => n.name === ns)
+        if (nsObj && !nsObj.loaded && !nsObj.loading) loadNamespacePods(clusterName, ns)
+      }
+      return { ...prev, [key]: nowOpen }
+    })
+  }
 
   useEffect(() => {
     fetchData()
-    const iv = setInterval(fetchData, REFRESH_INTERVAL * 1000)
+    if (refreshSeconds <= 0) return
+    const iv = setInterval(fetchData, refreshSeconds * 1000)
     return () => clearInterval(iv)
-  }, [fetchData])
+  }, [fetchData, refreshSeconds])
 
   useEffect(() => {
+    if (refreshSeconds <= 0) return
     const t = setInterval(() => setCountdown(c => Math.max(0, c - 1)), 1000)
     return () => clearInterval(t)
-  }, [])
+  }, [refreshSeconds])
 
   // Fetch Prometheus error alerts + all-pods metrics — only while the Alerts tab is
   // active. (Pod polling above stays unconditional: it feeds the status summary bar,
@@ -229,43 +396,29 @@ export default function ClusterHealthPage() {
     return () => clearInterval(iv)
   }, [activeView])
 
-  // derived
-  const allPods       = useMemo(() => data?.clusters.flatMap(c => c.pods) ?? [], [data])
-  const allNamespaces = useMemo(() => [...new Set(allPods.map(p => p.namespace))].sort(), [allPods])
-  const allClusters   = useMemo(() => data?.clusters.map(c => c.name) ?? [], [data])
-  const hasMetrics          = allPods.some(p => p.hasMetrics)
-  const hasPrometheusMetrics = allPods.some(p => p.metricsSource === 'prometheus')
-  const anyGpu              = allPods.some(p => p.totalGpu > 0)
+  // derived — pods are only known for namespaces that have actually been opened
+  // (see loadNamespacePods), so nothing here can claim to represent cluster- or
+  // fleet-wide totals; it only reflects whatever's been loaded so far.
+  const loadedPods = useMemo(
+    () => data?.clusters.flatMap(c => c.namespaces?.flatMap(n => n.pods ?? []) ?? []) ?? [],
+    [data]
+  )
+  const hasMetrics           = loadedPods.some(p => p.hasMetrics)
+  const hasPrometheusMetrics = loadedPods.some(p => p.metricsSource === 'prometheus')
+  const anyGpu               = loadedPods.some(p => p.totalGpu > 0)
 
-  // summary counts
-  const totals = useMemo(() => allPods.reduce((acc, p) => {
-    const ep = effectivePhase(p)
-    acc[ep] = (acc[ep] ?? 0) + 1
-    return acc
-  }, {}), [allPods])
-
-  // filtering
+  // filtering — applies within a single already-loaded namespace's pod list
   const q = search.trim().toLowerCase()
-  function applyFilters(pods, clusterName) {
+  function applyFilters(pods) {
     return pods.filter(p => {
       if (q && ![p.name, p.namespace, p.node].some(s => s?.toLowerCase().includes(q))) return false
-      if (filters.phases.length     > 0 && !filters.phases.includes(effectivePhase(p)))  return false
-      if (filters.namespaces.length > 0 && !filters.namespaces.includes(p.namespace))    return false
-      if (filters.clusters.length   > 0 && !filters.clusters.includes(clusterName))      return false
+      if (filters.phases.length > 0 && !filters.phases.includes(effectivePhase(p)))     return false
       if (filters.hasRestarts && p.restarts  === 0) return false
       if (filters.hasGpu      && p.totalGpu === 0)  return false
       return true
     })
   }
-
-  const filtered = useMemo(() =>
-    data?.clusters.map(c => ({ ...c, visible: applyFilters(c.pods, c.name) })) ?? [],
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  [data, q, filters])
-
-  const totalVisible = filtered.reduce((s, c) => s + c.visible.length, 0)
-  const totalPods    = allPods.length
-  const hasActive    = q.length > 0 || Object.values(filters).some(v => Array.isArray(v) ? v.length > 0 : v)
+  const hasActive = q.length > 0 || filters.phases.length > 0 || filters.hasRestarts || filters.hasGpu
 
   const toggleCluster = name =>
     setExpandedClusters(p => ({ ...p, [name]: !p[name] }))
@@ -281,14 +434,28 @@ export default function ClusterHealthPage() {
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           {lastSync && <span className="hcell-dim" style={{ fontSize: 11 }}>synced {lastSync.toLocaleTimeString()}</span>}
-          <div className={`refresh-ring ${countdown <= 3 ? 'ring-imminent' : ''}`} title={`Next refresh in ${countdown}s`}>
-            <svg viewBox="0 0 36 36" className="ring-svg">
-              <circle cx="18" cy="18" r="15" className="ring-track" />
-              <circle cx="18" cy="18" r="15" className="ring-progress"
-                strokeDasharray={`${(countdown / REFRESH_INTERVAL) * 94} 94`} />
-            </svg>
-            <span className="ring-label">{countdown}s</span>
-          </div>
+          {refreshSeconds > 0 && (
+            <div className={`refresh-ring ${countdown <= 3 ? 'ring-imminent' : ''}`} title={`Next refresh in ${countdown}s`}>
+              <svg viewBox="0 0 36 36" className="ring-svg">
+                <circle cx="18" cy="18" r="15" className="ring-track" />
+                <circle cx="18" cy="18" r="15" className="ring-progress"
+                  strokeDasharray={`${(countdown / refreshSeconds) * 94} 94`} />
+              </svg>
+              <span className="ring-label">{countdown}s</span>
+            </div>
+          )}
+          <select
+            className="refresh-interval-select"
+            value={refreshSeconds}
+            title="Auto-refresh interval"
+            onChange={e => setRefreshSeconds(Number(e.target.value))}
+          >
+            {REFRESH_OPTIONS.map(o => (
+              <option key={o.seconds} value={o.seconds}>
+                {o.seconds === 0 ? 'Auto-refresh: Off' : `Auto-refresh: ${o.label}`}
+              </option>
+            ))}
+          </select>
           {user?.role === 'admin' && (
             <button className="btn-manage-clusters" onClick={() => setShowClusterMgr(true)}>
               ⚙ Manage Clusters
@@ -299,34 +466,11 @@ export default function ClusterHealthPage() {
         </div>
       </div>
 
-      {/* ── Status summary bar ── */}
-      {data && (
-        <div className="h-summary-bar">
-          {[
-            ['Running',   'ss-run',  totals['Running']],
-            ['Degraded',  'ss-deg',  totals['Degraded']],
-            ['Pending',   'ss-pnd',  totals['Pending']],
-            ['Failed',    'ss-fail', totals['Failed']],
-            ['Succeeded', 'ss-done', totals['Succeeded']],
-          ].filter(([,,n]) => n > 0).map(([label, cls, n]) => (
-            <div key={label} className={`ss-card ${cls}`}>
-              <span className="ss-num">{n}</span>
-              <span className="ss-label">{label}</span>
-            </div>
-          ))}
-          <div className="ss-card ss-total">
-            <span className="ss-num">{totalPods}</span>
-            <span className="ss-label">Total pods</span>
-          </div>
-        </div>
-      )}
-
       {/* ── View switcher tabs ── */}
       <div className="health-view-tabs">
         <button className={`hvtab${activeView === 'pods' ? ' hvtab-active' : ''}`}
           onClick={() => setActiveView('pods')}>
           Pod Status
-          <span className="hvtab-count hvtab-count-neutral">{totalPods}</span>
         </button>
         <button className={`hvtab${activeView === 'alerts' ? ' hvtab-active' : ''}`}
           onClick={() => setActiveView('alerts')}>
@@ -357,13 +501,12 @@ export default function ClusterHealthPage() {
       {/* ── Pods view ── */}
       {activeView === 'pods' && (<>
 
-        {data && !hasMetrics && !noticeDismiss && (
+        {loadedPods.length > 0 && !hasMetrics && !noticeDismiss && (
           <MetricsNotice onDismiss={() => setNoticeDismiss(true)} />
         )}
 
         {data && (
           <div className="health-toolbar">
-            {hasActive && <span className="esc-match-count">{totalVisible} / {totalPods} pods</span>}
             {hasActive && (
               <button className="btn-secondary" style={{ fontSize: 11, padding: '3px 10px' }}
                 onClick={() => { setSearch(''); setFilters(EMPTY_FILTERS) }}>✕ Clear</button>
@@ -371,7 +514,7 @@ export default function ClusterHealthPage() {
             <div className="health-toolbar-right">
               <div className="health-search-wrap">
                 <span className="health-search-icon">⌕</span>
-                <input className="health-search" placeholder="Search pod name, namespace, node…"
+                <input className="health-search" placeholder="Search pod name, node…"
                   value={search} onChange={e => setSearch(e.target.value)} />
                 {search && <button className="health-search-clear" onClick={() => setSearch('')}>✕</button>}
               </div>
@@ -388,32 +531,6 @@ export default function ClusterHealthPage() {
           <FilterSection label="Status">
             <FilterChips options={PHASE_OPTS} selected={filters.phases} onToggle={toggle('phases')} colorClass />
           </FilterSection>
-          {allNamespaces.length > 1 && (
-            <FilterSection label="Namespace">
-              <div className="filter-check-list">
-                {allNamespaces.map(ns => (
-                  <label key={ns} className="filter-check-item">
-                    <input type="checkbox" checked={filters.namespaces.includes(ns)}
-                      onChange={() => toggle('namespaces')(ns)} />
-                    <span className="mono-small">{ns}</span>
-                  </label>
-                ))}
-              </div>
-            </FilterSection>
-          )}
-          {allClusters.length > 1 && (
-            <FilterSection label="Cluster">
-              <div className="filter-check-list">
-                {allClusters.map(cl => (
-                  <label key={cl} className="filter-check-item">
-                    <input type="checkbox" checked={filters.clusters.includes(cl)}
-                      onChange={() => toggle('clusters')(cl)} />
-                    {cl}
-                  </label>
-                ))}
-              </div>
-            </FilterSection>
-          )}
           <FilterSection label="Quick filters">
             <div className="filter-chips">
               <button className={`filter-chip-item${filters.hasRestarts ? ' active' : ''}`}
@@ -429,10 +546,12 @@ export default function ClusterHealthPage() {
         {loading && <div className="page-loading">Loading cluster data…</div>}
         {error   && <div className="health-error">⚠ {error}</div>}
 
-        {filtered.map(cluster => {
-          const isOpen = !!expandedClusters[cluster.name]
+        {(data?.clusters ?? []).map(cluster => {
+          const isOpen    = !!expandedClusters[cluster.name]
+          const isPending = cluster.connected == null // namespace stream hasn't reported this cluster yet
           return (
-            <div key={cluster.name} className={`hc-block${isOpen ? ' hc-block-open' : ''}`}>
+            <div key={cluster.name}
+              className={`hc-block${isOpen ? ' hc-block-open' : ''}${cluster.loading && !isPending ? ' hc-refreshing' : ''}`}>
 
               {/* Clickable header — always visible */}
               <div
@@ -446,100 +565,78 @@ export default function ClusterHealthPage() {
                 <div className="hc-header-left">
                   <span className={`hc-chevron${isOpen ? ' hc-chevron-open' : ''}`}>▶</span>
                   <span
-                    className={`cluster-dot ${cluster.connected ? 'dot-ok' : 'dot-err'}`}
-                    aria-label={cluster.connected ? 'Connected' : 'Disconnected'}
+                    className={`cluster-dot ${isPending ? 'dot-pending' : cluster.connected ? 'dot-ok' : 'dot-err'}`}
+                    aria-label={isPending ? 'Connecting' : cluster.connected ? 'Connected' : 'Disconnected'}
                     role="img"
                   />
                   <span className="hc-name">{cluster.name}</span>
                   <span className={`tier-badge tier-${cluster.tier}`}>{cluster.tier}</span>
                   <span className="hcell-dim hc-ctx">{cluster.context}</span>
-                  {!cluster.connected && <span className="hc-err">{cluster.error}</span>}
                 </div>
                 <div className="hc-header-right">
-                  {hasActive
-                    ? <span className="hcell-dim">{cluster.visible.length} / {cluster.pods.length} pods</span>
-                    : <ClusterStats pods={cluster.pods} />
+                  {isPending
+                    ? <span className="hc-loading-tag">◌ Connecting…</span>
+                    : cluster.connected
+                      ? <span className="hcell-dim">{cluster.namespaces.length} namespace{cluster.namespaces.length === 1 ? '' : 's'}</span>
+                      : <span className="hc-err">⚠ Disconnected</span>
                   }
                 </div>
               </div>
 
-              {/* Collapsible body */}
+              {/* Collapsible body — lists namespaces; pods are fetched lazily per namespace below */}
               {isOpen && (<>
-                {cluster.visible.length === 0 && cluster.connected && (
-                  <div className="hc-empty">
-                    {hasActive ? '⊘ No pods match the current search or filters'
-                               : 'No pods in monitored namespaces'}
-                  </div>
+                {isPending && <div className="hc-empty">◌ Connecting to cluster…</div>}
+
+                {!isPending && !cluster.connected && (
+                  <div className="hc-empty">⚠ {cluster.error ?? 'Failed to connect'}</div>
                 )}
 
-                {cluster.visible.length > 0 && (
-                  <div className="hc-table-wrap">
-                    <table className="hc-table">
-                      <thead>
-                        <tr>
-                          <th className="hth">Pod</th>
-                          <th className="hth">Namespace</th>
-                          <th className="hth">Status</th>
-                          <th className="hth hth-center">Ready</th>
-                          <th className="hth hth-center">Restarts</th>
-                          <th className="hth">CPU</th>
-                          <th className="hth" style={{ minWidth: 180 }}>Memory</th>
-                          {cluster.pods.some(p => p.totalGpu > 0) && <th className="hth hth-center">GPU</th>}
-                          <th className="hth">Node</th>
-                          <th className="hth">Age</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {cluster.visible.map(pod => {
-                          const hasGpuCol = cluster.pods.some(p => p.totalGpu > 0)
-                          const ep = effectivePhase(pod)
-                          return (
-                            <tr key={`${pod.namespace}/${pod.name}`} className={`htr htr-${ep.toLowerCase()}`}>
-                              <td className="htd htd-pod">
-                                <StatusDot phase={pod.phase} isReady={pod.isReady} />
-                                <div className="pod-name-col">
-                                  <span className="pod-name mono-small" title={pod.name}>
-                                    {pod.name.length > 34 ? pod.name.slice(0, 32) + '…' : pod.name}
-                                  </span>
-                                  {pod.containers.some(c => c.reason) && (
-                                    <span className="pod-reason-tag">
-                                      {pod.containers.find(c => c.reason)?.reason}
-                                    </span>
-                                  )}
-                                </div>
-                              </td>
-                              <td className="htd"><span className="ns-tag">{pod.namespace}</span></td>
-                              <td className="htd"><PhaseBadge phase={pod.phase} isReady={pod.isReady} /></td>
-                              <td className="htd htd-center">
-                                <span className={pod.isReady ? 'ready-ok' : 'ready-no'}>{pod.ready}</span>
-                              </td>
-                              <td className="htd htd-center"><RestartCount n={pod.restarts} /></td>
-                              <td className="htd">
-                                {pod.cpuRaw
-                                  ? <span className="hcell-mono cpu-val" title={pod.metricsSource === 'prometheus' ? '5-min avg from Prometheus' : 'kubectl top'}>
-                                      {pod.cpuRaw}{pod.metricsSource === 'prometheus' ? <span className="prom-tilde">~</span> : null}
-                                    </span>
-                                  : <span className="hcell-dim">—</span>}
-                              </td>
-                              <td className="htd">
-                                <MemBar usedBytes={pod.memBytes} limitBytes={pod.totalMemLimitBytes} rawLabel={pod.memRaw} />
-                              </td>
-                              {hasGpuCol && (
-                                <td className="htd htd-center">
-                                  {pod.totalGpu > 0
-                                    ? <span className="gpu-tag">⬡ {pod.totalGpu}</span>
-                                    : <span className="hcell-dim">—</span>}
-                                </td>
-                              )}
-                              <td className="htd hcell-dim mono-small">{pod.node}</td>
-                              <td className="htd hcell-dim age-cell">{fmtAge(pod.startTime)}</td>
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
+                {!isPending && cluster.connected && cluster.namespaces.length === 0 && (
+                  <div className="hc-empty">No namespaces found</div>
                 )}
+
+                {!isPending && cluster.connected && cluster.namespaces.map(ns => {
+                  const nsKey     = `${cluster.name}/${ns.name}`
+                  const nsIsOpen  = !!expandedNs[nsKey]
+                  const visible   = ns.loaded ? applyFilters(ns.pods) : []
+                  return (
+                    <div key={ns.name} className={`hc-ns-block${nsIsOpen ? ' hc-ns-block-open' : ''}`}>
+                      <div
+                        className="hc-ns-header"
+                        role="button"
+                        tabIndex={0}
+                        aria-expanded={nsIsOpen}
+                        onClick={() => toggleNamespace(cluster.name, ns.name)}
+                        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleNamespace(cluster.name, ns.name) } }}
+                      >
+                        <span className={`hc-chevron hc-ns-chevron${nsIsOpen ? ' hc-chevron-open' : ''}`}>▶</span>
+                        <span className="ns-tag">{ns.name}</span>
+                        <div className="hc-ns-right">
+                          {ns.loading
+                            ? <span className="hc-loading-tag">◌ Loading pods…</span>
+                            : ns.error
+                              ? <span className="hc-err">⚠ {ns.error}</span>
+                              : ns.loaded
+                                ? (hasActive
+                                    ? <span className="hcell-dim">{visible.length} / {ns.pods.length} pods</span>
+                                    : <ClusterStats pods={ns.pods} />)
+                                : null
+                          }
+                        </div>
+                      </div>
+
+                      {nsIsOpen && (<>
+                        {ns.loaded && visible.length === 0 && (
+                          <div className="hc-empty">
+                            {hasActive ? '⊘ No pods match the current search or filters'
+                                       : 'No pods in this namespace'}
+                          </div>
+                        )}
+                        {ns.loaded && visible.length > 0 && <PodTable pods={visible} />}
+                      </>)}
+                    </div>
+                  )
+                })}
               </>)}
             </div>
           )

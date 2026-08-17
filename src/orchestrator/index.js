@@ -5,6 +5,7 @@ const episodicMemory   = require('../memory/episodicMemory');
 const ruleEngine       = require('../memory/ruleEngine');
 const metricsCollector = require('../monitoring/metricsCollector');
 const clusterConfig    = require('../config/clusterConfig');
+const rbacWatcher      = require('../services/rbacWatcher');
 const { loadConfig }   = require('../config');
 
 class FleetOrchestrator {
@@ -127,6 +128,9 @@ class FleetOrchestrator {
 
     // ── Watch for config changes (hot-reload) ─────────────────────────────
     this._startConfigWatcher();
+
+    // ── RBAC live watch (feature-flagged, no-op unless RBAC_WATCH_ENABLED) ─
+    rbacWatcher.boot();
 
     // ── First cycle immediately ───────────────────────────────────────────
     await this.runFleetCycle();

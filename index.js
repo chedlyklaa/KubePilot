@@ -22,6 +22,7 @@ const { seedUsers }      = require('./src/api/authService');
 const { createServer }   = require('./src/api/server');
 const escalationStore    = require('./src/api/escalationStore');
 const silenceStore       = require('./src/api/silenceStore');
+const issueTrackerStore  = require('./src/api/issueTrackerStore');
 const sessionManager     = require('./src/services/sessionManager');
 
 // Sweep any per-cluster kubeconfig files orphaned by a previous crash before anything
@@ -85,6 +86,7 @@ connect()
   .then(() => seedUsers())
   .then(() => escalationStore.init())
   .then(() => silenceStore.init())
+  .then(() => issueTrackerStore.init())
   .then(() => createServer(config.API_PORT))
   .catch(err => { console.error('[DB] Connection failed:', err.message); process.exit(1); });
 

@@ -7,6 +7,7 @@ const { getClusters } = require('../../config/clusterConfig');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 const { asyncHandler } = require('../middleware/asyncHandler');
 const rbacSync = require('../../services/rbacSync');
+const rbacWatcher = require('../../services/rbacWatcher');
 const certIssuer = require('../../services/certIssuer');
 
 const router = express.Router();
@@ -168,23 +169,62 @@ router.delete('/api/rbac/resource', requireAuth, requireAdmin, asyncHandler(asyn
   res.json({ output });
 }));
 
-// POST /api/rbac/sync-from-k8s — pull RoleBindings/ClusterRoleBindings from one
-// cluster and reconcile them into system User.permissions (admin only; mutates
-// other users' access, so it's audit-logged like apply/delete).
+// GET /api/rbac/pending-changes — RBAC changes the live watch (rbacWatcher.js) has
+// queued since the last sync, across EVERY monitored cluster, so the UI can show what
+// an all-clusters sync would do before the admin actually clicks it. Read-only;
+// nothing here is applied until POST /api/rbac/sync-from-k8s below drains these queues.
+router.get('/api/rbac/pending-changes', requireAuth, asyncHandler(async (_req, res) => {
+  const clusters = getClusters().map(c => ({
+    cluster:  c.name,
+    context:  c.context,
+    pending:  rbacWatcher.getPending(c.context),
+  }));
+  res.json({ clusters });
+}));
+
+// GET /api/rbac/unmatched-users — emails the live watch has seen granted access on a
+// monitored cluster with no matching KubePilot account, across every cluster. These
+// are what generate the "no matching KubePilot account, add them manually" WARNING
+// notification (see rbacSync.applyAndNotify) — this endpoint is where an admin actually
+// goes to act on that notification instead of just being told about it. Once a User
+// with a matching email is created, userService.create() drains this backlog and
+// applies it automatically — see rbacSync.applyBacklogToNewUser.
+router.get('/api/rbac/unmatched-users', requireAuth, requireAdmin, asyncHandler(async (_req, res) => {
+  res.json({ users: rbacWatcher.getUnmatchedBacklog() });
+}));
+
+// GET /api/rbac/multi-subject-advisories — bindings with more than one User subject,
+// across every monitored cluster, which the watch can't safely auto-diff (a MODIFIED
+// event only shows the current subject list, not what changed) — see rbacWatcher.js's
+// _multiSubject map. Read-only, admin-only (surfaces other users' emails/permissions),
+// never applied automatically; the admin compares the two lists and acts by hand.
+router.get('/api/rbac/multi-subject-advisories', requireAuth, requireAdmin, asyncHandler(async (_req, res) => {
+  const advisories = [];
+  for (const c of getClusters()) {
+    advisories.push(...await rbacSync.getMultiSubjectAdvisories(c.context));
+  }
+  res.json({ advisories });
+}));
+
+// POST /api/rbac/sync-from-k8s — apply RBAC changes queued by the live watch since
+// the last sync into system User.permissions, for EVERY monitored cluster in one call
+// (admin only; mutates other users' access, so each cluster's result is audit-logged
+// like apply/delete). Users not yet in KubePilot's database are never auto-created —
+// they're reported back so an admin adds them manually — and every deletion (whether
+// or not it matched a stored permission) is reported too, so access drift is never
+// silent. One cluster failing (e.g. its watch isn't connected) doesn't block the rest.
 router.post('/api/rbac/sync-from-k8s', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
-  const { context } = req.body;
-  if (!context) return res.status(400).json({ error: 'context required' });
-  if (!requireMonitoredContext(context, res)) return;
+  const results = [];
 
-  const result = await rbacSync.syncFromK8s(context);
+  for (const c of getClusters()) {
+    try {
+      results.push(await rbacSync.applyAndNotify(c.context, { actor: { userId: req.user.id, userEmail: req.user.email } }));
+    } catch (err) {
+      results.push({ cluster: c.name, context: c.context, error: err.message });
+    }
+  }
 
-  RbacAuditLog.create({
-    userId: req.user.id, userEmail: req.user.email,
-    action: 'apply', kind: 'UserPermissionsSync', name: `${result.updated.length} user(s)`,
-    context, timestamp: new Date(),
-  }).catch(e => console.error('[RBAC Audit]', e.message));
-
-  res.json(result);
+  res.json({ results });
 }));
 
 // ── Per-user client certificate (direct kubectl access, outside the dashboard) ──

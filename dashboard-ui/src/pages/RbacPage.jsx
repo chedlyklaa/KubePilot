@@ -1,14 +1,17 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { useNotify } from '../contexts/NotifyContext'
 import { apiFetch } from '../lib/api'
 import ScopeEditor from '../components/ScopeEditor'
 import ConfirmDialog from '../components/ConfirmDialog'
+import SecurityFindingsTable from '../components/SecurityFindingsTable'
+import { useSecurityFindings } from '../hooks/useSecurityFindings'
 
 const KIND_LABEL = { User: 'User', Group: 'Group', ServiceAccount: 'SA' }
 const KIND_COLOR = { User: 'role-admin', Group: 'role-user', ServiceAccount: 'role-viewer' }
 
-const ADMIN_TABS  = ['Bindings', 'Roles', 'Service Accounts', 'Audit', 'Teams', 'User Permissions']
+const ADMIN_TABS  = ['Bindings', 'Roles', 'Service Accounts', 'Audit', 'Findings', 'Teams', 'User Permissions']
 const VIEWER_TABS = ['Bindings', 'Roles', 'Service Accounts', 'Audit']
 
 const ROLE_YAML_TEMPLATE = (name, ns) =>
@@ -25,6 +28,7 @@ rules:
 export default function RbacPage() {
   const { user } = useAuth()
   const isAdmin  = user.role === 'admin'
+  const navigate = useNavigate()
 
   const [clusters,   setClusters]   = useState([])
   const [context,    setContext]    = useState('')
@@ -37,8 +41,10 @@ export default function RbacPage() {
   const [overview,   setOverview]   = useState(null)
   const [audit,      setAudit]      = useState(null)
 
-  // Sync system users from K8s RoleBindings/ClusterRoleBindings
-  const [syncBusy,   setSyncBusy]   = useState(false)
+  // Fleet-wide RBAC sync summary (the actual sync button + result panels now live on
+  // the dedicated /rbac/sync page — this is just enough to show a live count here).
+  const [syncPendingCount, setSyncPendingCount] = useState(0)
+  const [syncReviewCount,  setSyncReviewCount]  = useState(0)
 
   // Apply YAML modal
   const [showApply,  setShowApply]  = useState(false)
@@ -74,7 +80,12 @@ export default function RbacPage() {
   const [uCanProvision, setUCanProvision] = useState(false)
   const [uErr, setUErr]                  = useState('')
 
-  const clusterNames = useMemo(() => clusters.map(c => c.name), [clusters])
+  // ScopeEditor's cluster field feeds User.permissions[].cluster, which rbacSync,
+  // filterClusters, and certIssuer all key by the clusters.yaml friendly name — not
+  // the raw kubectl context (c.name here). Using c.name silently broke K8s sync
+  // whenever a cluster's context differs from its friendly name (e.g. name "ubuntu",
+  // context "kp-ubuntu"): permissions saved fine, but no RoleBinding was ever created.
+  const clusterNames = useMemo(() => clusters.map(c => c.config?.name ?? c.name), [clusters])
 
   function loadTeams() {
     if (!isAdmin) return
@@ -110,6 +121,28 @@ export default function RbacPage() {
       .catch(() => {})
   }, [context])
 
+  // Fleet-wide counts (across every monitored cluster, not just the one selected
+  // above) — same endpoints the /rbac/sync page uses, just summed here for the banner.
+  const loadSyncSummary = useCallback(async () => {
+    if (!isAdmin) return
+    try {
+      const [pr, ar] = await Promise.all([
+        apiFetch('/api/rbac/pending-changes'),
+        apiFetch('/api/rbac/multi-subject-advisories'),
+      ])
+      const [pd, ad] = await Promise.all([pr.json(), ar.json()])
+      setSyncPendingCount((pd.clusters ?? []).reduce((s, c) => s + (c.pending?.length ?? 0), 0))
+      setSyncReviewCount((ad.advisories ?? []).length)
+    } catch { /* leave the last known counts rather than clearing them on a transient error */ }
+  }, [isAdmin])
+
+  useEffect(() => { loadSyncSummary() }, [loadSyncSummary])
+  useEffect(() => {
+    if (!isAdmin) return
+    const iv = setInterval(loadSyncSummary, 20_000)
+    return () => clearInterval(iv)
+  }, [isAdmin, loadSyncSummary])
+
   const load = useCallback(async () => {
     if (!context) return
     setLoading(true)
@@ -134,6 +167,16 @@ export default function RbacPage() {
     if (context) load()
   }, [load])
 
+  // ── Security findings (RBAC posture) ──────────────────────────────────────
+  // security.routes.js keys findings by the cluster's friendly name (from
+  // clusters.yaml), not the raw kubectl context this page otherwise uses — so
+  // derive it from the already-fetched, already-monitored-only `clusters` list.
+  const clusterFriendlyName = useMemo(
+    () => clusters.find(c => c.name === context)?.config?.name ?? context,
+    [clusters, context]
+  )
+  const rbacFindings = useSecurityFindings(clusterFriendlyName, 'RbacPosture')
+
   // ── Apply YAML ────────────────────────────────────────────────────────────
 
   async function submitApply() {
@@ -152,25 +195,6 @@ export default function RbacPage() {
       }
     } catch (err) { setApplyErr(err.message) }
     finally { setApplyBusy(false) }
-  }
-
-  // ── Sync system user permissions from K8s bindings ────────────────────────
-
-  async function syncFromK8s() {
-    if (!context) return
-    setSyncBusy(true)
-    try {
-      const r = await apiFetch('/api/rbac/sync-from-k8s', { method: 'POST', body: { context } })
-      const d = await r.json()
-      if (d.error) { notify('error', d.error); return }
-      const parts = []
-      if (d.updated.length)   parts.push(`${d.updated.length} user(s) updated`)
-      if (d.cleared.length)   parts.push(`${d.cleared.length} user(s) had revoked access removed`)
-      if (d.unmatched.length) parts.push(`${d.unmatched.length} K8s subject(s) had no matching system account`)
-      notify('success', parts.length ? `Synced from ${d.cluster}: ${parts.join(', ')}` : `Synced from ${d.cluster}: no changes`)
-      if (tab === 5) loadTeams() // refresh User Permissions tab if currently viewing it
-    } catch (err) { notify('error', err.message) }
-    finally { setSyncBusy(false) }
   }
 
   // ── Delete resource ───────────────────────────────────────────────────────
@@ -432,6 +456,24 @@ export default function RbacPage() {
     )
   }
 
+  function renderFindings() {
+    return (
+      <SecurityFindingsTable
+        findings={rbacFindings.findings}
+        loading={rbacFindings.loading}
+        error={rbacFindings.error}
+        busyId={rbacFindings.busyId}
+        onAccept={rbacFindings.accept}
+        onRescan={rbacFindings.rescan}
+        onEscalate={rbacFindings.escalate}
+        emptyMessage={
+          `No open findings${clusterFriendlyName ? ` for ${clusterFriendlyName}` : ''}. ` +
+          `Enable RBAC_POSTURE_ENABLED=true and wait for a scan cycle if this cluster hasn't been scanned yet.`
+        }
+      />
+    )
+  }
+
   // ── Team CRUD helpers ─────────────────────────────────────────────────────
   function openCreateGroup() {
     setEditGroup(null); setGForm({ name: '', description: '', permissions: [], members: [] })
@@ -575,7 +617,7 @@ export default function RbacPage() {
     )
   }
 
-  const tabContent = [renderBindings, renderRoles, renderServiceAccounts, renderAudit, renderTeams, renderUserPerms]
+  const tabContent = [renderBindings, renderRoles, renderServiceAccounts, renderAudit, renderFindings, renderTeams, renderUserPerms]
 
   return (
     <div className="rbac-page">
@@ -589,12 +631,6 @@ export default function RbacPage() {
           {isAdmin && (
             <button className="btn-primary-sm" onClick={() => { setYamlDraft(ROLE_YAML_TEMPLATE('my-role', nsFilter === '_all' ? 'default' : nsFilter)); setApplyOut(''); setApplyErr(''); setShowApply(true) }}>
               + Apply YAML
-            </button>
-          )}
-          {isAdmin && (
-            <button className="btn-sm" onClick={syncFromK8s} disabled={syncBusy || !context}
-              title="Read RoleBindings/ClusterRoleBindings from this cluster and update system user permissions to match">
-              {syncBusy ? 'Syncing…' : '⟳ Sync Users from K8s'}
             </button>
           )}
           <button className="btn-refresh" onClick={load} disabled={loading} title="Refresh">
@@ -630,6 +666,29 @@ export default function RbacPage() {
           </div>
         )}
       </div>
+
+      {/* ── RBAC watch summary — fleet-wide, drills into the dedicated sync page ── */}
+      {isAdmin && (
+        <div className="rbac-sync-banner">
+          <div className="rbac-sync-banner-info">
+            <span className="rbac-sync-banner-icon">⟳</span>
+            <div>
+              <div className="rbac-sync-banner-title">RBAC Sync</div>
+              <div className="rbac-sync-banner-sub">
+                {syncPendingCount > 0
+                  ? `${syncPendingCount} pending change${syncPendingCount !== 1 ? 's' : ''} across monitored clusters`
+                  : 'All monitored clusters are in sync'}
+                {syncReviewCount > 0 && ` · ${syncReviewCount} need${syncReviewCount === 1 ? 's' : ''} manual review`}
+              </div>
+            </div>
+          </div>
+          <button className="rbac-sync-banner-btn" onClick={() => navigate('/rbac/sync')}>
+            {syncPendingCount > 0 && <span className="rbac-sync-banner-count">{syncPendingCount}</span>}
+            Open Sync Center
+            <span className="rbac-sync-banner-arrow">→</span>
+          </button>
+        </div>
+      )}
 
       {error && <div className="health-error">{error}</div>}
 

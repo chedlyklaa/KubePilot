@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { useNotify } from '../contexts/NotifyContext'
 import { apiFetch } from '../lib/api'
@@ -29,6 +30,7 @@ const SILENCE_DURATIONS = [
 export default function ApprovalCard({ approval, onSettle }) {
   const { user }   = useAuth()
   const notify     = useNotify()
+  const navigate   = useNavigate()
   const [busy, setBusy]                       = useState(false)
   // denyMode: null | 'choose' | 'silence' | 'override'
   const [denyMode, setDenyMode]               = useState(null)
@@ -37,6 +39,7 @@ export default function ApprovalCard({ approval, onSettle }) {
   const [adminNote, setAdminNote]             = useState('')
   const [silenceDuration, setSilenceDuration] = useState(SILENCE_DURATIONS[0].ms)
   const [silenceReason, setSilenceReason]     = useState('')
+  const [customMinutes, setCustomMinutes]     = useState('')
 
   const { id, payload, createdAt } = approval
   const { issue, diagnosis, rca }  = payload
@@ -57,6 +60,14 @@ export default function ApprovalCard({ approval, onSettle }) {
     setAdminNote('')
     setSilenceDuration(SILENCE_DURATIONS[0].ms)
     setSilenceReason('')
+    setCustomMinutes('')
+  }
+
+  function handleCustomMinutesChange(e) {
+    const v = e.target.value
+    setCustomMinutes(v)
+    const n = Number(v)
+    if (v && n > 0) setSilenceDuration(Math.round(n * 60_000))
   }
 
   async function handleApprove() {
@@ -83,7 +94,8 @@ export default function ApprovalCard({ approval, onSettle }) {
       body: { key: silenceKey, durationMs: silenceDuration, reason: silenceReason.trim() },
     })
     await apiFetch(`/api/approvals/${id}/silence`, { method: 'POST' })
-    const label = SILENCE_DURATIONS.find(d => d.ms === silenceDuration)?.label ?? 'custom'
+    const label = SILENCE_DURATIONS.find(d => d.ms === silenceDuration)?.label
+      ?? (customMinutes ? `${customMinutes} min` : 'custom')
     notify('info', `Silenced for ${label}: ${payload.issueKey}`)
     onSettle(id)
   }
@@ -91,7 +103,18 @@ export default function ApprovalCard({ approval, onSettle }) {
   return (
     <div className="card">
       <div className="card-head">
-        <span className="card-type">{issue?.type ?? 'Unknown'}</span>
+        <div className="card-head-left">
+          <span className="card-type">{issue?.type ?? 'Unknown'}</span>
+          {payload.issueSeq != null && (
+            <button
+              className="issue-id-chip card-issue-link"
+              title="Open this issue's full timeline"
+              onClick={() => navigate(`/issues?open=${payload.issueSeq}`)}
+            >
+              #{payload.issueSeq}
+            </button>
+          )}
+        </div>
         <span className="card-time">{fmtTime(createdAt)}</span>
       </div>
       <div className="card-body">
@@ -145,10 +168,23 @@ export default function ApprovalCard({ approval, onSettle }) {
             {SILENCE_DURATIONS.map(d => (
               <button
                 key={d.ms}
-                className={`silence-pill${silenceDuration === d.ms ? ' selected' : ''}`}
-                onClick={() => setSilenceDuration(d.ms)}
+                className={`silence-pill${silenceDuration === d.ms && !customMinutes ? ' selected' : ''}`}
+                onClick={() => { setSilenceDuration(d.ms); setCustomMinutes('') }}
               >{d.label}</button>
             ))}
+          </div>
+
+          <div className="silence-custom">
+            <input
+              type="number"
+              min="1"
+              step="1"
+              className={`silence-custom-input${customMinutes ? ' selected' : ''}`}
+              placeholder="Custom"
+              value={customMinutes}
+              onChange={handleCustomMinutesChange}
+            />
+            <span className="silence-custom-suffix">minutes</span>
           </div>
 
           <div className="override-section-label">Reason (optional)</div>

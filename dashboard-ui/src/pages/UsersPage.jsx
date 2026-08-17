@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { useNotify } from '../contexts/NotifyContext'
 import { apiFetch } from '../lib/api'
@@ -9,6 +10,8 @@ import ConfirmDialog from '../components/ConfirmDialog'
 export default function UsersPage() {
   const { user: me }              = useAuth()
   const notify                    = useNotify()
+  const location                  = useLocation()
+  const navigate                  = useNavigate()
   const [users, setUsers]         = useState([])
   const [loading, setLoading]     = useState(true)
   const [showForm, setShowForm]   = useState(false)
@@ -28,6 +31,19 @@ export default function UsersPage() {
       .then(d => setClusters((d.contexts ?? []).filter(c => c.isMonitored)))
       .catch(() => {})
   }, [])
+
+  // Handoff from RbacSyncPage's "new users detected" panel — open straight into the
+  // create form with the email already filled in. Clear the state afterward so
+  // navigating back here later (or refreshing) doesn't keep reopening it.
+  useEffect(() => {
+    const prefillEmail = location.state?.prefillEmail
+    if (!prefillEmail) return
+    setEditing(null); setFormErr('')
+    setForm({ name: '', email: prefillEmail, password: '', role: 'developer' })
+    setIssueCert(false)
+    setShowForm(true)
+    navigate(location.pathname, { replace: true, state: null })
+  }, [location.state, location.pathname, navigate])
 
   function openCreate() {
     setEditing(null); setForm({ name: '', email: '', password: '', role: 'developer' }); setFormErr('')

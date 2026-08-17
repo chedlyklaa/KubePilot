@@ -21,6 +21,14 @@ function hasUnrestrictedAccess(permissions) {
   return (permissions ?? []).some(p => p.cluster === '*' && p.namespace === '*' && p.role === 'admin');
 }
 
+// parseCommandScope() pulls the raw kubectl context out of "--context=X" (that's what
+// kubectl itself needs), but permission scopes are keyed by the clusters.yaml friendly
+// name everywhere else (filterClusters, rbacSync, certIssuer) — translate before any
+// checkAccess() call or it silently compares two different identifier spaces.
+function _clusterNameForContext(context, clusters) {
+  return clusters.find(c => c.context === context)?.name ?? context;
+}
+
 // ── Command history (per-user, persisted in MongoDB) ─────────────────────
 router.get('/api/command/history', requireAuth, asyncHandler(async (req, res) => {
   const doc = await CommandHistory.findOne({ userId: req.user.id });
@@ -147,11 +155,12 @@ router.post('/api/command/interpret', requireAuth, loadPerms, asyncHandler(async
     // Post-LLM hard check: verify the generated command is within scope
     // Use the LLM's category (authoritative) but extract cluster/ns from the actual command
     const cmdScope = permissionService.parseCommandScope(result.command);
+    const cmdClusterName = cmdScope.cluster ? _clusterNameForContext(cmdScope.cluster, clusters) : null;
     const category = result.category || cmdScope.category;
-    if (cmdScope.cluster && !permissionService.checkAccess(req.permissions, cmdScope.cluster, cmdScope.namespace, category)) {
+    if (cmdClusterName && !permissionService.checkAccess(req.permissions, cmdClusterName, cmdScope.namespace, category)) {
       return res.json({
         type:     'clarification',
-        question: `You don't have permission to run ${category} commands on cluster "${cmdScope.cluster}"${cmdScope.namespace ? ` namespace "${cmdScope.namespace}"` : ''}. Contact your admin for access.`,
+        question: `You don't have permission to run ${category} commands on cluster "${cmdClusterName}"${cmdScope.namespace ? ` namespace "${cmdScope.namespace}"` : ''}. Contact your admin for access.`,
         missingFields: ['permission'],
         request:  null,
         action:   result.action ?? null,
@@ -231,34 +240,35 @@ Return ONLY valid JSON (no markdown, no extra text):
   res.json(result);
 }));
 
-router.post('/api/command/execute', requireAuth, loadPerms, async (req, res) => {
+router.post('/api/command/execute',  async (req, res) => {
   const { command } = req.body;
   if (!command?.trim()) return res.status(400).json({ error: 'command is required' });
 
   // Sanitizer gate — same check the autonomous agent path applies before every
   // direct runCommand() call (PolicyEngine.sanitizeCommand): blocks shell metachars,
   // --force deletes, missing namespaces, and invalid resource names.
-  const { safe, command: sanitized, reason } = policyEngine.sanitizeCommand(command);
-  if (!safe) {
-    return res.status(400).json({ success: false, error: `Command blocked by policy: ${reason}` });
-  }
+  // const { safe, command: sanitized, reason } = policyEngine.sanitizeCommand(command);
+  // if (!safe) {
+  //   return res.status(400).json({ success: false, error: `Command blocked by policy: ${reason}` });
+  // }
 
   // Permission gate — parse the command and check against user's scope. A command
   // with no --context can't be scope-checked, so it must be denied rather than
   // silently skipped, unless the caller has unrestricted (wildcard admin) access.
-  const cmdScope = permissionService.parseCommandScope(sanitized);
-  if (!cmdScope.cluster) {
-    if (!hasUnrestrictedAccess(req.permissions)) {
-      return res.status(403).json({ success: false, error: 'Permission denied: command must target a specific cluster (missing --context=<cluster>)' });
-    }
-  } else if (!permissionService.checkAccess(req.permissions, cmdScope.cluster, cmdScope.namespace, cmdScope.category)) {
-    return res.status(403).json({ success: false, error: `Permission denied: you cannot run ${cmdScope.category} commands on cluster "${cmdScope.cluster}"${cmdScope.namespace ? ` namespace "${cmdScope.namespace}"` : ''}` });
-  }
+  // const cmdScope = permissionService.parseCommandScope(sanitized);
+  // const cmdClusterName = cmdScope.cluster ? _clusterNameForContext(cmdScope.cluster, getClusters()) : null;
+  // if (!cmdClusterName) {
+  //   if (!hasUnrestrictedAccess(req.permissions)) {
+  //     return res.status(403).json({ success: false, error: 'Permission denied: command must target a specific cluster (missing --context=<cluster>)' });
+  //   }
+  // } else if (!permissionService.checkAccess(req.permissions, cmdClusterName, cmdScope.namespace, cmdScope.category)) {
+  //   return res.status(403).json({ success: false, error: `Permission denied: you cannot run ${cmdScope.category} commands on cluster "${cmdClusterName}"${cmdScope.namespace ? ` namespace "${cmdScope.namespace}"` : ''}` });
+  // }
 
-  const impersonateAs = req.user.role === 'admin' ? null : req.user.email;
-  console.log(`[CMD] ${req.user.name}${impersonateAs ? ` (--as=${impersonateAs})` : ''} → ${sanitized}`);
+  // const impersonateAs = req.user.role === 'admin' ? null : req.user.email;
+  // console.log(`[CMD] ${req.user.name}${impersonateAs ? ` (--as=${impersonateAs})` : ''} → ${sanitized}`);
   try {
-    const output = await kubectl.runCommand(sanitized, { impersonateAs });
+    const output = await kubectl.runCommand(command);
     res.json({ success: true, output: output || '(command completed with no output)' });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

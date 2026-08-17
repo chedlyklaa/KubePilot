@@ -16,7 +16,7 @@
 // override: true — otherwise a stale OPENAI_API_KEY already sitting in this shell's
 // environment (e.g. from an earlier `$env:OPENAI_API_KEY = "..."` in the same
 // terminal session) silently wins over .env, same reasoning as src/api/llmClient.js.
-require('dotenv').config();
+require('dotenv').config({ override: true });
 const OpenAI = require('openai');
 
 const message = process.argv.slice(2).join(' ') || 'hello who are you';

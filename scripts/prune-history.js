@@ -28,29 +28,32 @@ const APPROVALS_COUNT   = parseInt(ARGS.approvals   ?? '0', 10);
 const DRY_RUN            = !!ARGS['dry-run'];
 
 async function pruneOldest(Model, label, count) {
+  const totalBefore = await Model.countDocuments();
+
   if (!count || count <= 0) {
-    console.log(`[prune] ${label}: skipped (no --${label.toLowerCase()}=N given)`);
+    console.log(`[prune] ${label}: skipped (no --${label.toLowerCase()}=N given) — total: ${totalBefore}`);
     return;
   }
 
   // Oldest-first, capped at `count` — naturally never deletes more than exists.
   const oldest = await Model.find().sort({ createdAt: 1 }).limit(count).select('_id createdAt issueKey');
   if (oldest.length === 0) {
-    console.log(`[prune] ${label}: nothing to delete (collection is empty)`);
+    console.log(`[prune] ${label}: nothing to delete (collection is empty) — total: ${totalBefore}`);
     return;
   }
 
-  console.log(`[prune] ${label}: ${oldest.length} oldest record(s) selected (requested ${count})`);
+  console.log(`[prune] ${label}: ${oldest.length} oldest record(s) selected (requested ${count}) — total before: ${totalBefore}`);
   console.log(`         range: ${oldest[0].createdAt.toISOString()}  →  ${oldest[oldest.length - 1].createdAt.toISOString()}`);
 
   if (DRY_RUN) {
-    console.log(`[prune] ${label}: DRY RUN — nothing deleted`);
+    console.log(`[prune] ${label}: DRY RUN — nothing deleted (would leave ${totalBefore - oldest.length} remaining)`);
     return;
   }
 
   const ids = oldest.map(d => d._id);
   const result = await Model.deleteMany({ _id: { $in: ids } });
-  console.log(`[prune] ${label}: deleted ${result.deletedCount}`);
+  const totalAfter = await Model.countDocuments();
+  console.log(`[prune] ${label}: deleted ${result.deletedCount} — total ${totalBefore} → ${totalAfter}`);
 }
 
 async function main() {

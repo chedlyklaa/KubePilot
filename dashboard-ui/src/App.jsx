@@ -1,4 +1,5 @@
 import './App.css'
+import { BrowserRouter } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ThemeProvider } from './contexts/ThemeContext'
 import AppShell from './AppShell'
@@ -13,7 +14,9 @@ export default function App() {
   return (
     <ThemeProvider>
       <AuthProvider>
-        <RootContent />
+        <BrowserRouter>
+          <RootContent />
+        </BrowserRouter>
       </AuthProvider>
     </ThemeProvider>
   )

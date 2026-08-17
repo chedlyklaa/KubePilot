@@ -77,10 +77,45 @@ const SilenceRuleSchema = new Schema({
   createdBy: { name: String, email: String, role: String },
 }, { timestamps: true });
 
+// ── Issue tracker ─────────────────────────────────────────────────────────────
+// One document per remediation episode — from first detection through to fixed/
+// still-retrying — so a user who clicks Approve can look up what happened next.
+// `seq` is the human-facing id (#1042); `issueKey` is the agent's own dedupe key
+// ("type:target:namespace") and is how this doc gets found again on later stages
+// of the same episode (see issueTrackerStore.js).
+const IssueTrackerSchema = new Schema({
+  seq:         { type: Number, required: true, unique: true, index: true },
+  issueKey:    { type: String, required: true, index: true },
+  issueType:   String,
+  cluster:     String,
+  tier:        String,
+  namespace:   String,
+  resource:    String,   // pod / deployment / node name
+  fingerprint: Schema.Types.Mixed,
+  rca:         Schema.Types.Mixed,
+  status: {
+    type: String,
+    // detected → investigating → awaiting_approval → approved → (blocked|skipped|failed|success)* → fixed
+    //                                                                                             → escalated
+    enum: ['detected', 'investigating', 'awaiting_approval', 'approved', 'blocked', 'skipped', 'failed', 'success', 'escalated', 'fixed'],
+    default: 'detected',
+  },
+  timeline: [{
+    stage:           String,   // detected | investigated | awaiting_approval | approved | progress | escalated | resolved
+    action:          String,
+    outcome:         String,
+    guardianVerdict: String,
+    note:            String,
+    at:              { type: Date, default: Date.now },
+  }],
+  resolvedAt: Date,
+}, { timestamps: true });
+
 module.exports = {
   ApprovalHistory:   mongoose.model('ApprovalHistory',   ApprovalHistorySchema),
   EscalationHistory: mongoose.model('EscalationHistory', EscalationHistorySchema),
   ChatHistory:       mongoose.model('ChatHistory',       ChatHistorySchema),
   CommandHistory:    mongoose.model('CommandHistory',    CommandHistorySchema),
   SilenceRule:       mongoose.model('SilenceRule',       SilenceRuleSchema),
+  IssueTracker:      mongoose.model('IssueTracker',      IssueTrackerSchema),
 };

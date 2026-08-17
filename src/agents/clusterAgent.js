@@ -15,8 +15,13 @@ const ChangeCorrelationEngine    = require('./changeCorrelationEngine');
 const CapacityForecastEngine     = require('./capacityForecastEngine');
 const RbacDriftEngine            = require('./rbacDriftEngine');
 const ConnectivityAlertEngine    = require('./connectivityAlertEngine');
+const RbacPostureEngine          = require('./rbacPostureEngine');
+const WorkloadHardeningEngine    = require('./workloadHardeningEngine');
+const NetworkExposureEngine      = require('./networkExposureEngine');
+const SecretsHygieneEngine       = require('./secretsHygieneEngine');
 const approvalStore       = require('../api/approvalStore');
 const escalationStore     = require('../api/escalationStore');
+const issueTrackerStore   = require('../api/issueTrackerStore');
 const episodicMemory      = require('../memory/episodicMemory');
 const vectorStore         = require('../memory/vectorStore');
 const ruleEngine          = require('../memory/ruleEngine');
@@ -319,6 +324,31 @@ class ClusterAgent {
         .catch(err => console.warn(`[${this.name}] [RBAC-DRIFT] Non-blocking error: ${err.message}`));
     }
 
+    // ── RBAC posture scan (fire-and-forget — notify-only, never touches the
+    // remediation pipeline; findings are standing state, not transient issues) ──
+    if (process.env.RBAC_POSTURE_ENABLED === 'true') {
+      RbacPostureEngine.check({ cluster: this.name, context: this.context })
+        .catch(err => console.warn(`[${this.name}] [RBAC-POSTURE] Non-blocking error: ${err.message}`));
+    }
+
+    // ── Workload hardening scan (fire-and-forget — notify-only) ───────────
+    if (process.env.WORKLOAD_HARDENING_ENABLED === 'true') {
+      WorkloadHardeningEngine.check({ cluster: this.name, context: this.context })
+        .catch(err => console.warn(`[${this.name}] [WORKLOAD-HARDENING] Non-blocking error: ${err.message}`));
+    }
+
+    // ── Network exposure scan (fire-and-forget — notify-only) ─────────────
+    if (process.env.NETWORK_EXPOSURE_ENABLED === 'true') {
+      NetworkExposureEngine.check({ cluster: this.name, context: this.context })
+        .catch(err => console.warn(`[${this.name}] [NETWORK-EXPOSURE] Non-blocking error: ${err.message}`));
+    }
+
+    // ── Secrets hygiene scan (fire-and-forget — notify-only) ──────────────
+    if (process.env.SECRETS_HYGIENE_ENABLED === 'true') {
+      SecretsHygieneEngine.check({ cluster: this.name, context: this.context })
+        .catch(err => console.warn(`[${this.name}] [SECRETS-HYGIENE] Non-blocking error: ${err.message}`));
+    }
+
     console.log(`[${this.name}] Cycle complete\n`);
   }
 
@@ -432,6 +462,10 @@ class ClusterAgent {
         .slice(-this.MAX_FIX_ATTEMPTS);
 
       await escalationStore.escalate(key, issue, history, epDraft?.rca ?? null);
+      issueTrackerStore.track(key, {
+        stage: 'escalated', cluster: this.name, tier: this.tier, issue,
+        note: `escalated after ${this.MAX_FIX_ATTEMPTS} failed attempt(s)`,
+      });
       // Reset attempt counter so the agent keeps retrying next cycle.
       // Duplicate escalation records are suppressed by escalationStore.escalate().
       this.attemptCounts.delete(key);
@@ -497,6 +531,10 @@ class ClusterAgent {
         lastDiagnosis:   null,
         metricsSnapshot: podMetrics,
       });
+      issueTrackerStore.track(key, {
+        stage: 'detected', cluster: this.name, tier: this.tier, issue, fingerprint,
+        note: `${issue.type} detected on ${target}`,
+      });
     } else {
       // Refresh the snapshot every cycle so the stored episode has the latest reading.
       this.episodeTimelines.get(key).metricsSnapshot = podMetrics;
@@ -539,7 +577,13 @@ class ClusterAgent {
         rolloutHistory: investigationArtifacts?.rolloutHistory ?? null,
       }),
     ]);
-    if (rca) this.episodeTimelines.get(key).rca = rca;
+    if (rca) {
+      this.episodeTimelines.get(key).rca = rca;
+      issueTrackerStore.track(key, {
+        stage: 'investigated', cluster: this.name, tier: this.tier, issue, rca,
+        note: rca.suspected_cause ? `suspected cause: ${rca.suspected_cause}` : 'investigation complete',
+      });
+    }
     if (changeCorrelation) {
       console.log(`[${this.name}] [CHANGE] ${changeCorrelation.triggerType} "${changeCorrelation.triggerResource}" conf=${changeCorrelation.confidence.toFixed(2)}`);
     }
@@ -730,6 +774,10 @@ class ClusterAgent {
         ? 'Uncertain — evidence insufficient for confident automated decision'
         : 'High-risk action';
       console.log(`[${this.name}] [APPROVAL] ${gateReason} — waiting for human decision…`);
+      issueTrackerStore.track(key, {
+        stage: 'awaiting_approval', cluster: this.name, tier: this.tier, issue, diagnosis,
+        note: gateReason,
+      });
       const approved = await approvalStore.requestApproval({ issue, diagnosis, issueKey: key, guardianNote: guardian.reason, rca });
       if (!approved) {
         console.log(`[${this.name}] [APPROVAL] Denied — skipping`);
@@ -740,6 +788,10 @@ class ClusterAgent {
         return;
       }
       console.log(`[${this.name}] [APPROVAL] Approved — proceeding`);
+      issueTrackerStore.track(key, {
+        stage: 'approved', cluster: this.name, tier: this.tier, issue, diagnosis,
+        note: 'approved by human reviewer — applying fix',
+      });
     }
 
     // ── Step 9: Executor applies the fix ─────────────────────────────────────
@@ -814,6 +866,8 @@ class ClusterAgent {
 
       const stats = episodicMemory.stats();
       console.log(`[${this.name}] [MEMORY] Index: ${stats.buckets} buckets, ${stats.episodes} episodes`);
+
+      issueTrackerStore.resolve(key, 'fixed', `resolved after ${attempt} attempt(s) via ${diagnosis.action}`);
 
       this.episodeTimelines.delete(key);
       this.attemptCounts.delete(key);
@@ -972,6 +1026,13 @@ class ClusterAgent {
       at:             new Date(),
     });
     draft.lastDiagnosis = diagnosis.rootCause;
+
+    // Mirror this entry into the persistent issue tracker so the tracking page
+    // reflects every skip/block/failure/success, not just the terminal outcome.
+    issueTrackerStore.track(key, {
+      stage: 'progress', cluster: this.name, tier: this.tier, issue, diagnosis, guardian,
+      outcome, note, fingerprint,
+    });
   }
 
   // ── Snapshot execution context at incident start ───────────────────────────

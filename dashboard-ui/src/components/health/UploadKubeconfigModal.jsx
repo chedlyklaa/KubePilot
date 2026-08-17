@@ -11,8 +11,18 @@ import { apiFetch } from '../../lib/api'
 //  - The real guarantee is server-side: /api/kube/clusters/upload runs the exact same
 //    check again inside sessionManager.storeCredential() before it ever persists
 //    anything, so a bad kubeconfig can't get saved even if this button is skipped.
+function formatBytes(n) {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+}
+
 export default function UploadKubeconfigModal({ onClose, onUploaded }) {
   const [form, setForm] = useState({ name: '', tier: 'dev', kubeconfig: '' })
+  const [fileName, setFileName] = useState(null)
+  const [fileSize, setFileSize] = useState(0)
+  const [fileError, setFileError] = useState(null)
+  const [dragging, setDragging] = useState(false)
 
   const [testStatus, setTestStatus] = useState('idle') // idle | testing | ok | fail
   const [testError,  setTestError]  = useState(null)
@@ -26,8 +36,34 @@ export default function UploadKubeconfigModal({ onClose, onUploaded }) {
     setTestError(null)
   }
 
+  function loadFile(file) {
+    if (!file) return
+    setFileError(null)
+    const reader = new FileReader()
+    reader.onload = () => {
+      setFileName(file.name)
+      setFileSize(file.size)
+      setKubeconfig(String(reader.result || ''))
+    }
+    reader.onerror = () => setFileError('Could not read that file')
+    reader.readAsText(file)
+  }
+
+  function clearFile() {
+    setFileName(null)
+    setFileSize(0)
+    setFileError(null)
+    setKubeconfig('')
+  }
+
+  function handleDrop(e) {
+    e.preventDefault()
+    setDragging(false)
+    loadFile(e.dataTransfer.files?.[0])
+  }
+
   async function handleTest() {
-    if (!form.kubeconfig.trim()) { setTestStatus('fail'); setTestError('Paste a kubeconfig first'); return }
+    if (!form.kubeconfig.trim()) { setTestStatus('fail'); setTestError('Choose a kubeconfig file first'); return }
     setTestStatus('testing'); setTestError(null)
     try {
       const r = await apiFetch('/api/kube/clusters/test-credential', { method: 'POST', body: { kubeconfig: form.kubeconfig } })
@@ -72,13 +108,39 @@ export default function UploadKubeconfigModal({ onClose, onUploaded }) {
               <option value="staging">staging</option>
               <option value="production">production</option>
             </select>
+            <span className="field-hint">Locked once uploaded — delete and re-add the cluster to change it</span>
           </div>
 
           <div className="field">
-            <label>Kubeconfig</label>
-            <textarea className="kubeconfig-textarea" rows={10} required value={form.kubeconfig}
-              onChange={e => setKubeconfig(e.target.value)}
-              placeholder={'apiVersion: v1\nclusters:\n- cluster: ...'} />
+            <label>Kubeconfig file</label>
+
+            {!fileName ? (
+              <label
+                className={`kc-dropzone${dragging ? ' kc-dropzone-active' : ''}${fileError ? ' kc-dropzone-error' : ''}`}
+                onDragOver={e => { e.preventDefault(); setDragging(true) }}
+                onDragLeave={() => setDragging(false)}
+                onDrop={handleDrop}
+              >
+                <input type="file" className="kc-dropzone-input"
+                  accept=".yaml,.yml,.conf,.config,text/yaml,text/plain"
+                  onChange={e => loadFile(e.target.files?.[0])} required />
+                <span className="kc-dropzone-icon">⬆</span>
+                <span className="kc-dropzone-text">
+                  <strong>Click to choose a file</strong> or drag it here
+                </span>
+              </label>
+            ) : (
+              <div className="kc-file-chip">
+                <span className="kc-file-icon">📄</span>
+                <span className="kc-file-meta">
+                  <span className="kc-file-name">{fileName}</span>
+                  <span className="kc-file-size">{formatBytes(fileSize)}</span>
+                </span>
+                <button type="button" className="kc-file-remove" title="Remove file" onClick={clearFile}>×</button>
+              </div>
+            )}
+
+            {fileError && <div className="cm-error">{fileError}</div>}
             <span className="field-hint">
               Must contain exactly one cluster/context — export with: <code>kubectl config view --minify --flatten</code>
             </span>

@@ -243,4 +243,199 @@ async function syncFromK8s(context) {
   return results;
 }
 
-module.exports = { syncUserToK8s, syncGroupToK8s, removeUserFromK8s, syncFromK8s };
+// ── Apply watch-queued changes → system User.permissions ────────────────────
+//
+// Companion to syncFromK8s above (still used by RbacDriftEngine's periodic full
+// reconcile): instead of re-pulling and diffing every binding in the cluster, this
+// drains the discrete ADDED/MODIFIED/DELETED events rbacWatcher.js queued since the
+// last sync and applies each one individually. Same PLATFORM_ROLE filtering and the
+// same User.save()-per-user mutation as syncFromK8s — just event-driven instead of a
+// full pull, and one queued change may target one specific (cluster, namespace) pair
+// rather than syncFromK8s's "recompute the whole cluster's grants" pass.
+//
+// Known limitation: if a binding has multiple User subjects and one of them is
+// removed by editing the binding (not deleting it), the watch delivers a MODIFIED
+// event containing only the remaining subjects — the removed subject's last queued
+// state is never told "you were dropped" by a DELETED event. KubePilot's own managed
+// bindings (kp-<user>) are always single-subject, so this only affects bindings
+// authored by hand or another tool with multiple User subjects on one binding.
+async function applyPendingChanges(context) {
+  const contextMap  = _getContextMap();
+  const clusterName = [...contextMap.entries()].find(([, ctx]) => ctx === context)?.[0];
+  if (!clusterName) throw new Error(`Context "${context}" is not in monitored clusters`);
+
+  // Lazy require: rbacWatcher.js requires PLATFORM_ROLE from this module at load
+  // time, so requiring it back here at load time too would be a circular require.
+  const rbacWatcher = require('./rbacWatcher');
+  const changes = rbacWatcher.takePending(context);
+
+  const results = { cluster: clusterName, context, updated: [], unmatched: [], deleted: [], deletedUnmatched: [], failed: [] };
+
+  for (const change of changes) {
+    const { changeType, email, role, namespace, bindingName } = change;
+    try {
+      const user = await User.findOne({ email: email.toLowerCase() });
+
+      if (changeType === 'ADDED' || changeType === 'MODIFIED') {
+        if (!user) {
+          results.unmatched.push({ email, role, namespace, bindingName, changeType });
+          continue;
+        }
+        const others = (user.permissions ?? []).filter(p => !(p.cluster === clusterName && p.namespace === namespace));
+        user.permissions = [...others, { cluster: clusterName, namespace, role }];
+        await user.save();
+        results.updated.push({ email: user.email, role, namespace, bindingName, changeType });
+        continue;
+      }
+
+      // changeType === 'DELETED'
+      if (!user) {
+        results.deletedUnmatched.push({ email, role, namespace, bindingName });
+        continue;
+      }
+      const before = user.permissions.length;
+      user.permissions = (user.permissions ?? []).filter(p => !(p.cluster === clusterName && p.namespace === namespace));
+      if (user.permissions.length !== before) {
+        await user.save();
+        results.deleted.push({ email: user.email, role, namespace, bindingName });
+      } else {
+        // The binding is gone from K8s, but this user never had a matching stored
+        // permission to begin with — still surfaced so the admin isn't left assuming
+        // access was in sync when it never was.
+        results.deletedUnmatched.push({ email, role, namespace, bindingName });
+      }
+    } catch (err) {
+      // A single user.save() failure (e.g. a concurrent edit tripping Mongoose's
+      // optimistic-concurrency check) must not lose every other change in this batch —
+      // takePending() already drained the queue, so anything not caught here would
+      // otherwise vanish silently instead of just being retried. Keep the full change
+      // (not just a summary) so applyAndNotify can requeue it as-is.
+      results.failed.push({ ...change, error: err.message });
+      console.warn(`[RBAC Sync] ${clusterName}: applying ${email} → ${role}@${namespace} failed: ${err.message}`);
+    }
+  }
+
+  return results;
+}
+
+// ── Apply + audit-log + notify, shared by the manual sync-from-k8s route and the ──
+// live watch's debounced auto-apply (rbacWatcher._runAutoApply) ─────────────────
+//
+// Same audit-log/notification shape either way — only `actor` differs (the admin who
+// clicked the button, vs. a synthetic "system" actor for auto-apply). Also feeds any
+// unmatched grants into rbacWatcher's backlog so they aren't lost once the pending
+// queue is drained — see applyBacklogToNewUser below.
+async function applyAndNotify(context, { actor }) {
+  const { RbacAuditLog } = require('../db/models'); // lazy — avoid a hard dep for callers that don't need it
+  const notifEngine      = require('./notifications/engine');
+  const rbacWatcher       = require('./rbacWatcher'); // lazy — see applyPendingChanges above
+
+  const result = await applyPendingChanges(context);
+  rbacWatcher.recordUnmatchedBacklog(result);
+  // Requeues each failed change and schedules another auto-apply pass to retry it —
+  // takePending() already removed these from the queue, so without this a save()
+  // failure would otherwise just vanish instead of being retried.
+  if (result.failed.length) rbacWatcher.requeueFailed(context, result.failed);
+
+  const needsAttention = result.unmatched.length + result.deletedUnmatched.length + result.failed.length;
+
+  RbacAuditLog.create({
+    userId: actor.userId, userEmail: actor.userEmail,
+    action: 'apply', kind: 'UserPermissionsSync',
+    name: `${result.updated.length} updated, ${result.deleted.length} deleted, ${needsAttention} unmatched`,
+    context, timestamp: new Date(),
+  }).catch(e => console.error('[RBAC Audit]', e.message));
+
+  if (needsAttention > 0) {
+    const lines = [
+      ...result.unmatched.map(u => `+ ${u.email} → ${u.role} @ ${u.namespace} — no matching KubePilot account, add them manually`),
+      ...result.deletedUnmatched.map(u => `- ${u.email} → ${u.role} @ ${u.namespace} — binding removed from K8s but no stored permission matched`),
+      ...result.failed.map(u => `! ${u.email} → ${u.role} @ ${u.namespace} — failed to apply (${u.error}), retrying`),
+    ];
+    notifEngine.emit({
+      severity: 'WARNING',
+      category: 'RBAC Sync',
+      title:    `RBAC sync on ${result.cluster}: ${needsAttention} change(s) need admin attention`,
+      message:  lines.join('\n'),
+      source:   'rbac-sync',
+      metadata: result,
+    }).catch(() => {});
+  }
+  if (result.updated.length > 0 || result.deleted.length > 0) {
+    notifEngine.emit({
+      severity: 'INFO',
+      category: 'RBAC Sync',
+      title:    `RBAC sync on ${result.cluster}: ${result.updated.length} updated, ${result.deleted.length} removed`,
+      message:  `Applied ${result.updated.length} update(s) and ${result.deleted.length} removal(s) from queued K8s RBAC changes.`,
+      source:   'rbac-sync',
+      metadata: result,
+    }).catch(() => {});
+  }
+
+  return result;
+}
+
+// ── Backfill a brand-new KubePilot User from grants seen on the cluster before ────
+// their account existed — called once, right after userService.create() ────────
+//
+// applyPendingChanges never auto-creates accounts, so a grant for an email with no
+// matching User sits in rbacWatcher's backlog (see recordUnmatchedBacklog) instead of
+// being applied. This is the other half: once that email actually becomes a User,
+// pull in whatever was waiting and apply it immediately instead of making an admin
+// remember to run a manual sync afterward.
+async function applyBacklogToNewUser(user) {
+  const rbacWatcher = require('./rbacWatcher');
+  const scopes = rbacWatcher.resolveBacklogForEmail(user.email);
+  if (!scopes.length) return null;
+
+  user.permissions = [...(user.permissions ?? []), ...scopes];
+  await user.save();
+
+  const { RbacAuditLog } = require('../db/models');
+  RbacAuditLog.create({
+    userId: 'system', userEmail: 'rbac-watch-auto-sync',
+    action: 'apply', kind: 'UserPermissionsSync',
+    name: `backfilled ${scopes.length} grant(s) from K8s for new user ${user.email}`,
+    context: scopes.map(s => s.cluster).join(','), timestamp: new Date(),
+  }).catch(e => console.error('[RBAC Audit]', e.message));
+
+  const notifEngine = require('./notifications/engine');
+  notifEngine.emit({
+    severity: 'INFO',
+    category: 'RBAC Sync',
+    title:    `New user ${user.email} auto-granted ${scopes.length} permission(s) from existing K8s RBAC`,
+    message:  scopes.map(s => `${s.role} @ ${s.cluster}/${s.namespace}`).join('\n'),
+    source:   'rbac-sync',
+    metadata: { email: user.email, scopes },
+  }).catch(() => {});
+
+  return scopes;
+}
+
+// ── Multi-subject binding advisories → enrich with KubePilot's stored side ─────
+//
+// rbacWatcher.js flags any binding with more than one User subject instead of
+// guessing at removals (see the comment on its _multiSubject map). This adds the
+// other half of the comparison an admin needs: who KubePilot currently believes
+// has that same (cluster, namespace, role) grant, so the two lists can be read
+// side by side. Nothing here is applied automatically — purely informational.
+async function getMultiSubjectAdvisories(context) {
+  const rbacWatcher = require('./rbacWatcher'); // lazy require — see applyPendingChanges above
+  const raw = rbacWatcher.getMultiSubjectAdvisories(context);
+
+  const results = [];
+  for (const a of raw) {
+    const dbUsers = await User.find({
+      'permissions.cluster':   a.cluster,
+      'permissions.namespace': a.namespace,
+      'permissions.role':      a.role,
+    }).select('email').lean();
+    results.push({ ...a, dbUsers: dbUsers.map(u => u.email) });
+  }
+  return results;
+}
+
+module.exports = {
+  syncUserToK8s, syncGroupToK8s, removeUserFromK8s, syncFromK8s, applyPendingChanges,
+  applyAndNotify, applyBacklogToNewUser, getMultiSubjectAdvisories, PLATFORM_ROLE,
+};

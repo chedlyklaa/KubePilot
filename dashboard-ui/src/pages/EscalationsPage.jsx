@@ -147,7 +147,20 @@ export default function EscalationsPage() {
         : visibleEscalations.length === 0
           ? <div className="empty-page"><span style={{ fontSize: 32, opacity: .2 }}>⊘</span><span>No escalations match the current filters</span></div>
           : <div className="table-wrap">
-              <table className="data-table">
+              <table className="data-table data-table-responsive esc-table">
+                <colgroup>
+                  <col style={{ width: user.role === 'admin' ? '15%' : '17%' }} />
+                  <col style={{ width: '7%' }} />
+                  <col style={{ width: user.role === 'admin' ? '9%' : '10%' }} />
+                  <col style={{ width: '7%' }} />
+                  <col style={{ width: user.role === 'admin' ? '10%' : '11%' }} />
+                  <col style={{ width: '5%' }} />
+                  <col style={{ width: user.role === 'admin' ? '10%' : '11%' }} />
+                  <col style={{ width: user.role === 'admin' ? '10%' : '11%' }} />
+                  {user.role === 'admin' && <col style={{ width: '10%' }} />}
+                  <col style={{ width: user.role === 'admin' ? '9%' : '10%' }} />
+                  <col style={{ width: user.role === 'admin' ? '8%' : '9%' }} />
+                </colgroup>
                 <thead>
                   <tr>
                     <th>Issue</th>

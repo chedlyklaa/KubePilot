@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from './contexts/AuthContext'
 import { NotifyCtx } from './contexts/NotifyContext'
 import { openSSE, apiFetch } from './lib/api'
@@ -6,8 +7,10 @@ import Toasts from './components/Toasts'
 import SignOutModal from './components/SignOutModal'
 import ThemeToggle from './components/ThemeToggle'
 import NotificationPanel from './components/NotificationPanel'
+import UserSidebar from './components/UserSidebar'
 import DashboardPage from './pages/DashboardPage'
 import EscalationsPage from './pages/EscalationsPage'
+import IssuesPage from './pages/IssuesPage'
 import ClusterHealthPage from './pages/ClusterHealthPage'
 import ChatPage from './pages/ChatPage'
 import HistoryPage from './pages/HistoryPage'
@@ -16,13 +19,19 @@ import HelpModal from './components/HelpModal'
 import ProfilePage from './pages/ProfilePage'
 import NotificationsSettingsPage from './pages/NotificationsSettingsPage'
 import RbacPage from './pages/RbacPage'
+import RbacSyncPage from './pages/RbacSyncPage'
 import CapacityPage from './pages/CapacityPage'
 import AgentsPage from './pages/AgentsPage'
 import PoliciesPage from './pages/PoliciesPage'
+import HardeningPage from './pages/HardeningPage'
+import NetworkPage from './pages/NetworkPage'
+import SecretsPage from './pages/SecretsPage'
+import SecurityPage from './pages/SecurityPage'
 
 export default function AppShell() {
   const { user, logout }            = useAuth()
-  const [page, setPage]             = useState('dashboard')
+  const routerNavigate              = useNavigate()
+  const { pathname: page }          = useLocation()
   const [toasts, setToasts]         = useState([])
   const [notifCount, setNotifCount] = useState(0)
   const [showNotifPanel, setShowNotifPanel] = useState(false)
@@ -32,7 +41,6 @@ export default function AppShell() {
   const [showHelp, setShowHelp]             = useState(false)
   const [showUserMenu, setShowUserMenu]     = useState(false)
   const bellRef    = useRef(null)
-  const userMenuRef = useRef(null)
 
   const notify = useCallback((type, message) => {
     const id = Date.now() + Math.random()
@@ -44,15 +52,7 @@ export default function AppShell() {
 
   function toggleNotif() { setShowNotifPanel(p => !p); setNotifCount(0) }
 
-  function navigate(p) { setPage(p); setMenuOpen(false); setShowUserMenu(false) }
-
-  useEffect(() => {
-    function handleOutside(e) {
-      if (userMenuRef.current && !userMenuRef.current.contains(e.target)) setShowUserMenu(false)
-    }
-    document.addEventListener('mousedown', handleOutside)
-    return () => document.removeEventListener('mousedown', handleOutside)
-  }, [])
+  function navigate(p) { routerNavigate(p); setMenuOpen(false); setShowUserMenu(false) }
 
   useEffect(() => {
     let es, cancelled = false
@@ -100,8 +100,16 @@ export default function AppShell() {
       {showSignOut && <SignOutModal onConfirm={logout} onCancel={() => setShowSignOut(false)} />}
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
       {menuOpen && <div className="nav-backdrop" onClick={() => setMenuOpen(false)} />}
+      <UserSidebar
+        open={showUserMenu}
+        onClose={() => setShowUserMenu(false)}
+        user={user}
+        page={page}
+        onNavigate={navigate}
+        onSignOut={() => { setShowSignOut(true); setShowUserMenu(false) }}
+      />
 
-      <div className={`app ${page !== 'dashboard' ? 'app-page' : ''}`}>
+      <div className={`app ${page !== '/' ? 'app-page' : ''}`}>
         <header className="header">
           <div className="header-left">
             <span className="header-logo">⎈</span>
@@ -112,16 +120,17 @@ export default function AppShell() {
           </div>
 
           <nav className={`header-nav ${menuOpen ? 'nav-open' : ''}`}>
-            <button className={`nav-btn ${page === 'dashboard'   ? 'active' : ''}`} onClick={() => navigate('dashboard')}>
+            <button className={`nav-btn ${page === '/'            ? 'active' : ''}`} onClick={() => navigate('/')}>
               Dashboard
               {dashBadge > 0 && <span className="nav-badge">{dashBadge > 99 ? '99+' : dashBadge}</span>}
             </button>
-            <button className={`nav-btn ${page === 'health'      ? 'active' : ''}`} onClick={() => navigate('health')}>Cluster Health</button>
-            <button className={`nav-btn ${page === 'escalations' ? 'active' : ''}`} onClick={() => navigate('escalations')}>Escalations</button>
-            <button className={`nav-btn ${page === 'chat'        ? 'active' : ''}`} onClick={() => navigate('chat')}>AI Assistant</button>
-            <button className={`nav-btn ${page === 'history'     ? 'active' : ''}`} onClick={() => navigate('history')}>History</button>
-            <button className={`nav-btn ${page === 'rbac'        ? 'active' : ''}`} onClick={() => navigate('rbac')}>RBAC</button>
-            <button className={`nav-btn ${page === 'capacity'    ? 'active' : ''}`} onClick={() => navigate('capacity')}>Capacity</button>
+            <button className={`nav-btn ${page === '/health'      ? 'active' : ''}`} onClick={() => navigate('/health')}>Cluster Health</button>
+            <button className={`nav-btn ${page === '/escalations' ? 'active' : ''}`} onClick={() => navigate('/escalations')}>Escalations</button>
+            <button className={`nav-btn ${page === '/issues'      ? 'active' : ''}`} onClick={() => navigate('/issues')}>Issue Tracking</button>
+            <button className={`nav-btn ${page === '/chat'        ? 'active' : ''}`} onClick={() => navigate('/chat')}>AI Assistant</button>
+            <button className={`nav-btn ${page === '/history'     ? 'active' : ''}`} onClick={() => navigate('/history')}>History</button>
+            <button className={`nav-btn ${page === '/rbac'        ? 'active' : ''}`} onClick={() => navigate('/rbac')}>RBAC</button>
+            <button className={`nav-btn ${page === '/capacity'    ? 'active' : ''}`} onClick={() => navigate('/capacity')}>Capacity</button>
           </nav>
 
           <div className="header-right">
@@ -132,7 +141,7 @@ export default function AppShell() {
               </button>
               {showNotifPanel && <NotificationPanel onClose={() => setShowNotifPanel(false)} bellRef={bellRef} />}
             </div>
-            <div className="user-menu-wrap" ref={userMenuRef}>
+            <div className="user-menu-wrap">
               <button className="user-menu-trigger" onClick={() => setShowUserMenu(p => !p)}>
                 <div className="user-avatar-sm">{user.name?.[0]?.toUpperCase() ?? '?'}</div>
                 <div className="user-info">
@@ -141,35 +150,6 @@ export default function AppShell() {
                 </div>
                 <span className="menu-caret">{showUserMenu ? '▲' : '▼'}</span>
               </button>
-              {showUserMenu && (
-                <div className="user-dropdown">
-                  <button className="dropdown-item" onClick={() => navigate('profile')}>
-                    <span className="dropdown-item-icon">👤</span> My Profile
-                  </button>
-                  <button className="dropdown-item" onClick={() => navigate('notifications')}>
-                    <span className="dropdown-item-icon">🔔</span> Notifications
-                  </button>
-                  {user.role === 'admin' && (
-                    <button className="dropdown-item" onClick={() => navigate('users')}>
-                      <span className="dropdown-item-icon">👥</span> Users
-                    </button>
-                  )}
-                  {user.role === 'admin' && (
-                    <button className="dropdown-item" onClick={() => navigate('agents')}>
-                      <span className="dropdown-item-icon">⎈</span> Agent Management
-                    </button>
-                  )}
-                  {user.role === 'admin' && (
-                    <button className="dropdown-item" onClick={() => navigate('policies')}>
-                      <span className="dropdown-item-icon">🛡</span> Policies
-                    </button>
-                  )}
-                  <div className="dropdown-divider" />
-                  <button className="dropdown-item dropdown-item-danger" onClick={() => { setShowSignOut(true); setShowUserMenu(false) }}>
-                    <span className="dropdown-item-icon">⏻</span> Sign Out
-                  </button>
-                </div>
-              )}
             </div>
             <button className="help-btn" onClick={() => setShowHelp(true)} title="Help">?</button>
             <button className="hamburger" onClick={() => setMenuOpen(p => !p)} aria-label="Toggle menu">
@@ -178,18 +158,27 @@ export default function AppShell() {
           </div>
         </header>
 
-        {page === 'dashboard'                      && <DashboardPage onCountsChange={setDashCounts} />}
-        {page === 'health'                         && <ClusterHealthPage />}
-        {page === 'escalations'                    && <EscalationsPage />}
-        {page === 'chat'                           && <ChatPage />}
-        {page === 'history'                        && <HistoryPage />}
-        {page === 'users'         && user.role === 'admin' && <UsersPage />}
-        {page === 'profile'                               && <ProfilePage />}
-        {page === 'notifications'                         && <NotificationsSettingsPage />}
-        {page === 'rbac'                                  && <RbacPage />}
-        {page === 'capacity'                              && <CapacityPage />}
-        {page === 'agents'        && user.role === 'admin' && <AgentsPage />}
-        {page === 'policies'      && user.role === 'admin' && <PoliciesPage />}
+        <Routes>
+          <Route path="/"             element={<DashboardPage onCountsChange={setDashCounts} />} />
+          <Route path="/health"       element={<ClusterHealthPage />} />
+          <Route path="/escalations"  element={<EscalationsPage />} />
+          <Route path="/issues"       element={<IssuesPage />} />
+          <Route path="/chat"         element={<ChatPage />} />
+          <Route path="/history"      element={<HistoryPage />} />
+          <Route path="/profile"      element={<ProfilePage />} />
+          <Route path="/notifications" element={<NotificationsSettingsPage />} />
+          <Route path="/rbac"         element={<RbacPage />} />
+          {user.role === 'admin' && <Route path="/rbac/sync" element={<RbacSyncPage />} />}
+          <Route path="/capacity"     element={<CapacityPage />} />
+          {user.role === 'admin' && <Route path="/users"     element={<UsersPage />} />}
+          {user.role === 'admin' && <Route path="/agents"    element={<AgentsPage />} />}
+          {user.role === 'admin' && <Route path="/security"  element={<SecurityPage onNavigate={navigate} />} />}
+          {user.role === 'admin' && <Route path="/policies"  element={<PoliciesPage />} />}
+          {user.role === 'admin' && <Route path="/hardening" element={<HardeningPage />} />}
+          {user.role === 'admin' && <Route path="/network"   element={<NetworkPage />} />}
+          {user.role === 'admin' && <Route path="/secrets"   element={<SecretsPage />} />}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
       </div>
     </NotifyCtx.Provider>
   )

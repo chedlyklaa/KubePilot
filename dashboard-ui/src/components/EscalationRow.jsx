@@ -122,7 +122,7 @@ export default function EscalationRow({ item, onRemove, users }) {
       notify('error', 'Failed to delete escalation')
     }
     setBusy(false)
-    setConfirmDelete(false)
+    setShowDelModal(false)
   }
 
   return (
@@ -143,20 +143,20 @@ export default function EscalationRow({ item, onRemove, users }) {
         </div>
       )}
       <tr className={item.reassignRequested ? 'row-warn' : ''}>
-        <td>
+        <td data-label="Issue">
           <span className="esc-type fw-500">{item.issue?.type ?? 'Unknown'}</span>
           <div className="mono-small text-dim" style={{ marginTop: 2 }}>{item.issueKey}</div>
         </td>
 
-        <td className="mono-small">{item.cluster || item.issue?.clusterName || '—'}</td>
+        <td data-label="Cluster" className="mono-small">{item.cluster || item.issue?.clusterName || '—'}</td>
 
-        <td className="mono-small text-dim">{item.node || item.issue?.node || item.issue?.nodeName || '—'}</td>
+        <td data-label="Node" className="mono-small text-dim">{item.node || item.issue?.node || item.issue?.nodeName || '—'}</td>
 
-        <td className="text-dim">{item.issue?.namespace ?? 'default'}</td>
+        <td data-label="Namespace" className="text-dim">{item.issue?.namespace ?? 'default'}</td>
 
-        <td className="text-dim">{item.issue?.podName ?? '—'}</td>
+        <td data-label="Pod" className="text-dim">{item.issue?.podName ?? '—'}</td>
 
-        <td style={{ textAlign: 'center' }}>
+        <td data-label="Attempts" style={{ textAlign: 'center' }}>
           {(item.attempts > 0 || item.rca)
             ? <button className="attempts-btn" onClick={() => setOpen(o => !o)} title="Show attempt history">
                 {item.attempts} {open ? '▲' : '▼'}
@@ -165,14 +165,14 @@ export default function EscalationRow({ item, onRemove, users }) {
           }
         </td>
 
-        <td>
+        <td data-label="Status">
           {canEdit && item.status !== 'pending'
             ? <StatusDropdown value={item.status} onChange={changeState} disabled={busy} />
             : <span className={`state-badge state-${item.status}`}>{STATE_LABEL[item.status] ?? item.status}</span>
           }
         </td>
 
-        <td>
+        <td data-label="Handled By">
           {item.assignedTo
             ? <span>
                 {item.assignedTo.name}
@@ -187,7 +187,7 @@ export default function EscalationRow({ item, onRemove, users }) {
         </td>
 
         {user.role === 'admin' && (
-          <td>
+          <td data-label="Reassign">
             <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
               <select value={assignId} onChange={e => setAssignId(e.target.value)} className="reassign-select" style={{ fontSize: 12, padding: '3px 6px' }}>
                 {users.map(u => <option key={u._id} value={u._id}>{u.name}</option>)}
@@ -197,9 +197,9 @@ export default function EscalationRow({ item, onRemove, users }) {
           </td>
         )}
 
-        <td className="text-dim">{fmtDT(item.createdAt)}</td>
+        <td data-label="Escalated At" className="text-dim">{fmtDT(item.createdAt)}</td>
 
-        <td>
+        <td data-label="Actions">
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
             {user.role === 'developer' && isAssigned && !item.reassignRequested && (
               <button className="btn-sm" disabled={busy} onClick={requestReassign} style={{ whiteSpace: 'nowrap' }}>

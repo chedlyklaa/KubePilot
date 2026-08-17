@@ -8,4 +8,5 @@ module.exports = {
   ...require('./models/memory'),
   ...require('./models/audit'),
   ...require('./models/clusters'),
+  ...require('./models/security'),
 };

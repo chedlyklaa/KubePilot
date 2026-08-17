@@ -136,103 +136,125 @@ class ClusterService {
   }
 
   // ── Pod health ─────────────────────────────────────────────────────────────
-  async getPodHealth(configPath) {
-    const clusters = this.readConfig(configPath);
+  // Fetches one cluster's pod health. Split out from getPodHealth/streamPodHealth
+  // so callers can either wait for the whole set (Promise.allSettled) or react to
+  // each cluster as it individually finishes (streamPodHealth) — clusters vary
+  // wildly in latency (slow VPN, cold API server) so waiting for the slowest one
+  // to show the fast ones is a bad tradeoff for the UI.
+  async _fetchClusterPods(cluster, prometheusMap) {
+    const { name, context: ctx, tier = 'dev', namespaces: ns = ['default'] } = cluster;
+    const rawPods    = [];
+    const metricsMap = {};
+    const allNs      = ns.includes('*');
+    let podsFetchOk  = false;
+    let lastPodsErr  = null;
 
-    let prometheusMap = {};
-    if (metricsCollector.isAvailable()) {
-      try { prometheusMap = await metricsCollector.collectAllPodsMetrics() ?? {}; } catch {}
+    if (allNs) {
+      await Promise.allSettled([
+        (async () => {
+          try { rawPods.push(...((await kubectl.getPods('*', ctx, true)).items ?? [])); podsFetchOk = true; }
+          catch (err) { lastPodsErr = err; console.warn(`[HEALTH] ${name}/all-namespaces pods: ${err.message}`); }
+        })(),
+        (async () => {
+          try { Object.assign(metricsMap, parseTopOutputAllNs(
+            await kubectl.runCommand(`kubectl --context=${ctx} top pods --all-namespaces --no-headers`)
+          )); } catch { /* metrics-server not available */ }
+        })(),
+      ]);
+    } else {
+      await Promise.allSettled(ns.map(async namespace => {
+        try { rawPods.push(...((await kubectl.getPods(namespace, ctx, true)).items ?? [])); podsFetchOk = true; }
+        catch (err) { lastPodsErr = err; console.warn(`[HEALTH] ${name}/${namespace} pods: ${err.message}`); }
+        try { Object.assign(metricsMap, parseTopOutput(
+          await kubectl.runCommand(`kubectl --context=${ctx} top pods -n ${namespace} --no-headers`),
+          namespace
+        )); } catch { /* metrics-server not available */ }
+      }));
     }
 
-    const results = await Promise.allSettled(clusters.map(async cluster => {
-      const { name, context: ctx, tier = 'dev', namespaces: ns = ['default'] } = cluster;
-      const rawPods    = [];
-      const metricsMap = {};
-      const allNs      = ns.includes('*');
+    // Pod fetch failing for every namespace means the cluster itself is
+    // unreachable (bad context, network down, auth expired) — not just "no pods".
+    if (!podsFetchOk) throw lastPodsErr ?? new Error('Failed to connect');
 
-      if (allNs) {
-        await Promise.allSettled([
-          (async () => {
-            try { rawPods.push(...((await kubectl.getPods('*', ctx, true)).items ?? [])); }
-            catch (err) { console.warn(`[HEALTH] ${name}/all-namespaces pods: ${err.message}`); }
-          })(),
-          (async () => {
-            try { Object.assign(metricsMap, parseTopOutputAllNs(
-              await kubectl.runCommand(`kubectl --context=${ctx} top pods --all-namespaces --no-headers`)
-            )); } catch { /* metrics-server not available */ }
-          })(),
-        ]);
-      } else {
-        await Promise.allSettled(ns.map(async namespace => {
-          try { rawPods.push(...((await kubectl.getPods(namespace, ctx, true)).items ?? [])); }
-          catch (err) { console.warn(`[HEALTH] ${name}/${namespace} pods: ${err.message}`); }
-          try { Object.assign(metricsMap, parseTopOutput(
-            await kubectl.runCommand(`kubectl --context=${ctx} top pods -n ${namespace} --no-headers`),
-            namespace
-          )); } catch { /* metrics-server not available */ }
-        }));
-      }
+    const pods = this._shapePods(rawPods, metricsMap, prometheusMap);
+    return { name, context: ctx, tier, connected: true, podCount: pods.length, pods };
+  }
 
-      const pods = rawPods.map(pod => {
-        const meta   = pod.metadata  ?? {};
-        const spec   = pod.spec      ?? {};
-        const status = pod.status    ?? {};
-        const csArr  = status.containerStatuses ?? [];
-        const icArr  = status.initContainerStatuses ?? [];
+  // Turns raw kubectl pod objects into the shape the UI expects. Shared by the
+  // full-cluster fetch (_fetchClusterPods) and the single-namespace lazy fetch
+  // (getNamespacePods) so the two paths can't drift apart.
+  _shapePods(rawPods, metricsMap, prometheusMap) {
+    return rawPods.map(pod => {
+      const meta   = pod.metadata  ?? {};
+      const spec   = pod.spec      ?? {};
+      const status = pod.status    ?? {};
+      const csArr  = status.containerStatuses ?? [];
+      const icArr  = status.initContainerStatuses ?? [];
 
-        const readyCount = csArr.filter(c => c.ready).length;
-        const restarts   = [...csArr, ...icArr].reduce((s, c) => s + (c.restartCount ?? 0), 0);
-        const readyCond  = (status.conditions ?? []).find(c => c.type === 'Ready');
+      const readyCount = csArr.filter(c => c.ready).length;
+      const restarts   = [...csArr, ...icArr].reduce((s, c) => s + (c.restartCount ?? 0), 0);
+      const readyCond  = (status.conditions ?? []).find(c => c.type === 'Ready');
 
-        const containers = (spec.containers ?? []).map(c => {
-          const lim = c.resources?.limits   ?? {};
-          const req = c.resources?.requests ?? {};
-          const cs  = csArr.find(x => x.name === c.name) ?? {};
-          const gpu = GPU_RESOURCES.reduce((v, k) => v ?? lim[k] ?? req[k] ?? null, null);
-          return {
-            name:          c.name,
-            image:         c.image,
-            ready:         cs.ready         ?? false,
-            state:         Object.keys(cs.state ?? { waiting: true })[0],
-            reason:        cs.state?.waiting?.reason ?? cs.state?.terminated?.reason ?? null,
-            restartCount:  cs.restartCount  ?? 0,
-            memLimitBytes: parseK8sQuantity(lim.memory ?? null),
-            memReqBytes:   parseK8sQuantity(req.memory ?? null),
-            cpuLimitMilli: parseK8sQuantity(lim.cpu    ?? null),
-            cpuReqMilli:   parseK8sQuantity(req.cpu    ?? null),
-            gpuRequested:  gpu ? parseInt(gpu, 10) : 0,
-          };
-        });
-
-        const key        = `${meta.namespace}/${meta.name}`;
-        const topMetrics = metricsMap[key]    ?? null;
-        const promMetrics = prometheusMap[key] ?? null;
-
-        const cpuRaw   = topMetrics?.cpuRaw   ?? (promMetrics?.cpuCores != null ? `${(promMetrics.cpuCores * 100).toFixed(1)}%` : null);
-        const memRaw   = topMetrics?.memRaw   ?? (promMetrics?.memBytes != null ? fmtBytes(promMetrics.memBytes) : null);
-        const cpuMilli = topMetrics?.cpuMilli ?? (promMetrics?.cpuCores != null ? promMetrics.cpuCores * 1000 : null);
-        const memBytes = topMetrics?.memBytes ?? promMetrics?.memBytes ?? null;
-
+      const containers = (spec.containers ?? []).map(c => {
+        const lim = c.resources?.limits   ?? {};
+        const req = c.resources?.requests ?? {};
+        const cs  = csArr.find(x => x.name === c.name) ?? {};
+        const gpu = GPU_RESOURCES.reduce((v, k) => v ?? lim[k] ?? req[k] ?? null, null);
         return {
-          name:               meta.name,
-          namespace:          meta.namespace ?? 'default',
-          phase:              status.phase   ?? 'Unknown',
-          ready:              `${readyCount}/${csArr.length}`,
-          isReady:            readyCond?.status === 'True',
-          restarts,
-          node:               spec.nodeName ?? '—',
-          startTime:          status.startTime ?? null,
-          containers,
-          cpuRaw, cpuMilli, memRaw, memBytes,
-          hasMetrics:         !!(topMetrics || promMetrics),
-          metricsSource:      topMetrics ? 'kubectl' : promMetrics ? 'prometheus' : null,
-          totalMemLimitBytes: containers.reduce((s, c) => s != null && c.memLimitBytes != null ? s + c.memLimitBytes : null, 0) || null,
-          totalGpu:           containers.reduce((s, c) => s + c.gpuRequested, 0),
+          name:          c.name,
+          image:         c.image,
+          ready:         cs.ready         ?? false,
+          state:         Object.keys(cs.state ?? { waiting: true })[0],
+          reason:        cs.state?.waiting?.reason ?? cs.state?.terminated?.reason ?? null,
+          restartCount:  cs.restartCount  ?? 0,
+          memLimitBytes: parseK8sQuantity(lim.memory ?? null),
+          memReqBytes:   parseK8sQuantity(req.memory ?? null),
+          cpuLimitMilli: parseK8sQuantity(lim.cpu    ?? null),
+          cpuReqMilli:   parseK8sQuantity(req.cpu    ?? null),
+          gpuRequested:  gpu ? parseInt(gpu, 10) : 0,
         };
       });
 
-      return { name, context: ctx, tier, connected: true, podCount: pods.length, pods };
-    }));
+      const key        = `${meta.namespace}/${meta.name}`;
+      const topMetrics = metricsMap[key]    ?? null;
+      const promMetrics = prometheusMap[key] ?? null;
+
+      const cpuRaw   = topMetrics?.cpuRaw   ?? (promMetrics?.cpuCores != null ? `${(promMetrics.cpuCores * 100).toFixed(1)}%` : null);
+      const memRaw   = topMetrics?.memRaw   ?? (promMetrics?.memBytes != null ? fmtBytes(promMetrics.memBytes) : null);
+      const cpuMilli = topMetrics?.cpuMilli ?? (promMetrics?.cpuCores != null ? promMetrics.cpuCores * 1000 : null);
+      const memBytes = topMetrics?.memBytes ?? promMetrics?.memBytes ?? null;
+
+      return {
+        name:               meta.name,
+        namespace:          meta.namespace ?? 'default',
+        phase:              status.phase   ?? 'Unknown',
+        ready:              `${readyCount}/${csArr.length}`,
+        isReady:            readyCond?.status === 'True',
+        restarts,
+        node:               spec.nodeName ?? '—',
+        startTime:          status.startTime ?? null,
+        containers,
+        cpuRaw, cpuMilli, memRaw, memBytes,
+        hasMetrics:         !!(topMetrics || promMetrics),
+        metricsSource:      topMetrics ? 'kubectl' : promMetrics ? 'prometheus' : null,
+        totalMemLimitBytes: containers.reduce((s, c) => s != null && c.memLimitBytes != null ? s + c.memLimitBytes : null, 0) || null,
+        totalGpu:           containers.reduce((s, c) => s + c.gpuRequested, 0),
+      };
+    });
+  }
+
+  async _getPrometheusMap() {
+    if (!metricsCollector.isAvailable()) return {};
+    try { return await metricsCollector.collectAllPodsMetrics() ?? {}; } catch { return {}; }
+  }
+
+  async getPodHealth(configPath) {
+    const clusters      = this.readConfig(configPath);
+    const prometheusMap = await this._getPrometheusMap();
+
+    const results = await Promise.allSettled(
+      clusters.map(cluster => this._fetchClusterPods(cluster, prometheusMap))
+    );
 
     return {
       clusters: results.map((r, i) =>
@@ -248,6 +270,64 @@ class ClusterService {
       ),
       timestamp: new Date().toISOString(),
     };
+  }
+
+  // ── Namespaces (lazy pod loading) ─────────────────────────────────────────────
+  // The Cluster Health page no longer preloads every pod of every cluster — that's
+  // wasted work when most of it never gets looked at. Instead it lists namespaces
+  // (cheap: one `kubectl get namespaces` per cluster, no pod bodies) up front, and
+  // only fetches a namespace's pods once the user actually expands it.
+
+  // Invokes onCluster(result) as soon as each cluster's namespace list resolves,
+  // rather than waiting for the slowest cluster — same rationale as getPodHealth
+  // vs. the old streamPodHealth, just one level up (namespaces, not pods).
+  async streamClusterNamespaces(configPath, onCluster) {
+    const clusters = this.readConfig(configPath);
+
+    await Promise.allSettled(clusters.map(async cluster => {
+      try {
+        const namespaces = await kubectl.getNamespaces(cluster.context);
+        onCluster({
+          name: cluster.name, context: cluster.context, tier: cluster.tier ?? 'dev',
+          connected: true, namespaces,
+        });
+      } catch (err) {
+        onCluster({
+          name: cluster.name, context: cluster.context, tier: cluster.tier ?? 'dev',
+          connected: false, namespaces: [], error: err?.message ?? 'Failed to connect',
+        });
+      }
+    }));
+  }
+
+  async getNamespacePods(configPath, clusterName, namespace) {
+    const cluster = this.readConfig(configPath).find(c => c.name === clusterName);
+    if (!cluster) throw Object.assign(new Error('Cluster not found or not monitored'), { status: 404 });
+
+    const { context: ctx, tier = 'dev' } = cluster;
+    const rawPods    = [];
+    const metricsMap = {};
+    let podsFetchOk  = false;
+    let lastPodsErr  = null;
+
+    await Promise.allSettled([
+      (async () => {
+        try { rawPods.push(...((await kubectl.getPods(namespace, ctx, true)).items ?? [])); podsFetchOk = true; }
+        catch (err) { lastPodsErr = err; }
+      })(),
+      (async () => {
+        try { Object.assign(metricsMap, parseTopOutput(
+          await kubectl.runCommand(`kubectl --context=${ctx} top pods -n ${namespace} --no-headers`), namespace
+        )); } catch { /* metrics-server not available */ }
+      })(),
+    ]);
+
+    if (!podsFetchOk) throw lastPodsErr ?? new Error('Failed to connect');
+
+    const prometheusMap = await this._getPrometheusMap();
+    const pods = this._shapePods(rawPods, metricsMap, prometheusMap);
+
+    return { cluster: clusterName, namespace, tier, podCount: pods.length, pods };
   }
 }
 
