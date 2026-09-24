@@ -44,6 +44,20 @@ export const CATEGORY_ICON = {
 
 export const LOG_LEVELS = ['ALL', 'INFO', 'WARN', 'ERROR']
 
+// Live Pipeline page — graph.js node name -> icon/label. Matches the `component`
+// values IncidentTracer.step() is called with across src/orchestrator/graph.js
+// (orchestrator/investigator/planner/guardian/policy/executor/reflector).
+export const WORKFLOW_STEP = {
+  orchestrator: { icon: '🛰',  label: 'Detected' },
+  investigator: { icon: '🔎', label: 'Investigator' },
+  planner:      { icon: '🧩', label: 'Planner' },
+  guardian:     { icon: '🛡',  label: 'Guardian' },
+  policy:       { icon: '📋', label: 'Policy' },
+  executor:     { icon: '⚙',  label: 'Executor' },
+  reflector:    { icon: '🪞', label: 'Reflexion' },
+}
+export const WORKFLOW_STEP_ORDER = ['orchestrator', 'investigator', 'planner', 'guardian', 'policy', 'executor', 'reflector']
+
 // Scaleway Generative APIs per-1M-token pricing (EUR), keyed by agent — mirrors
 // which model each agent is actually configured to use (OPENAI_MODEL for
 // planner/investigator, GUARDIAN_MODEL for guardian/reflection in .env).

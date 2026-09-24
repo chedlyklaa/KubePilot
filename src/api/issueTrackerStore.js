@@ -53,7 +53,7 @@ async function init() {
 // e.g. after a server restart mid-episode), and appends to the existing open one
 // otherwise — mirrors how clusterAgent's own episodeTimelines Map is keyed.
 async function track(issueKey, ctx = {}) {
-  const { stage, cluster, tier, issue, diagnosis, guardian, outcome, note, rca, fingerprint } = ctx;
+  const { stage, cluster, tier, issue, diagnosis, guardian, outcome, note, rca, fingerprint, workflowId } = ctx;
   const status = _statusFor(stage, outcome);
   const entry  = {
     stage,
@@ -81,6 +81,7 @@ async function track(issueKey, ctx = {}) {
         namespace:   issue?.namespace ?? null,
         resource:    _resourceOf(issue),
         fingerprint: fingerprint ?? null,
+        workflowId:  workflowId ?? null,
         status,
         timeline:    [entry],
       });
@@ -90,6 +91,7 @@ async function track(issueKey, ctx = {}) {
       if (cluster)     doc.cluster     = cluster;
       if (tier)         doc.tier        = tier;
       if (fingerprint)  doc.fingerprint = fingerprint;
+      if (workflowId)   doc.workflowId  = workflowId;
     }
     if (rca) doc.rca = rca;
 

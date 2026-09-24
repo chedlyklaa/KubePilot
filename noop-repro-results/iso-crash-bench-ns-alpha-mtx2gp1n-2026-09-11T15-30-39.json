@@ -1,0 +1,629 @@
+{
+  "case": {
+    "pod": "iso-crash",
+    "namespace": "bench-ns-alpha-mtx2gp1n",
+    "category": "isolation",
+    "name": "Isolation: crash in ns-alpha",
+    "expectedAction": "restart",
+    "expectedDiagnosisPattern": "/crash|exit|fail/i"
+  },
+  "issueKey": "minikube/bench-ns-alpha-mtx2gp1n/iso-crash",
+  "issueId": null,
+  "finalStatus": "unknown",
+  "verdict": "unsettled:timeout",
+  "settled": false,
+  "workflowIds": [],
+  "attempts": [],
+  "earlyFailureThenLaterFixed": false,
+  "podStateHistory": [
+    {
+      "ts": "2026-09-11T14:44:16.062Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Pending",
+          "ready": false,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:ContainerCreating"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T14:45:31.928Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 2,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T14:48:01.815Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 5,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T14:50:32.374Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 5,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T14:52:42.590Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T14:54:32.444Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T14:56:31.746Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 7,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T14:58:19.326Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 7,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:00:19.895Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 7,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:02:15.683Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 8,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:04:17.033Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 8,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:05:53.745Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 8,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:07:39.100Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 9,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:09:23.335Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 9,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:10:43.146Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 9,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:12:11.454Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 10,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:13:47.115Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 10,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:15:13.791Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 10,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:16:35.747Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 10,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:17:56.999Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 11,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:19:22.391Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 11,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:20:37.993Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 11,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:21:50.113Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 12,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:23:07.364Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 12,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:24:19.599Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 12,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:25:26.203Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 12,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:26:32.542Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 12,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:27:37.080Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 13,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:28:42.700Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 13,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:29:41.240Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 13,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:30:38.105Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 13,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T15:30:39.958Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "iso-crash-669675fcd9-mhhks",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 13,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "totalLatencyMs": 2784056
+}

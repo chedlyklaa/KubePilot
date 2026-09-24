@@ -26,9 +26,18 @@ const IncidentEpisodeSchema = new Schema({
   },
 
   // Ordered list of actions attempted during this incident
+  // Union of two pipelines' vocabularies, not one: the legacy ClusterAgent pipeline
+  // (clusterAgent.js._recordTimelineEntry) writes 'success'/'failed'/'blocked'/
+  // 'skipped'; the v5 LangGraph pipeline (orchestrator/graph.js reflexionNode) writes
+  // 'fixed'/'blocked'/'escalated'/'skipped'/'failed' — a different vocabulary, not a
+  // subset, since it was introduced without updating this shared schema. Confirmed
+  // live, 2026-08-24: every v5 escalation silently failed to persist here
+  // ("'escalated' is not a valid enum value") until this fix, because 'fixed' and
+  // 'escalated' were both missing. Both pipelines write to this same collection, so
+  // this needs to keep accepting the legacy pipeline's values too, not replace them.
   timeline: [{
     action:         String,
-    outcome:        { type: String, enum: ['success', 'failed', 'blocked', 'skipped'] },
+    outcome:        { type: String, enum: ['success', 'fixed', 'failed', 'blocked', 'skipped', 'escalated'] },
     guardianVerdict:String,
     note:           String,
     at:             { type: Date, default: Date.now },

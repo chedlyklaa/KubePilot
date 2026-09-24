@@ -1,0 +1,401 @@
+<title>Orchestrator Live Test</title>
+<style>
+  :root {
+    --bg: #10141a;
+    --surface: #161c24;
+    --surface-2: #1d2530;
+    --border: #2b3440;
+    --border-soft: #212a35;
+    --text: #e7ecf2;
+    --text-dim: #93a0af;
+    --text-faint: #5f6c7a;
+    --accent: #d9a441;
+    --accent-soft: rgba(217, 164, 65, 0.14);
+    --accent-line: rgba(217, 164, 65, 0.35);
+    --danger: #e2665d;
+    --danger-soft: rgba(226, 102, 93, 0.14);
+    --success: #4caf7d;
+    --success-soft: rgba(76, 175, 125, 0.14);
+    --info: #5b9bd5;
+    --info-soft: rgba(91, 155, 213, 0.14);
+    --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, "Segoe UI", "Inter", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0 0 6rem;
+  }
+
+  ::selection { background: var(--accent-soft); color: var(--text); }
+
+  a { color: var(--accent); }
+
+  .wrap { max-width: 900px; margin: 0 auto; padding: 0 1.75rem; }
+  .wrap-wide { max-width: 1080px; margin: 0 auto; padding: 0 1.75rem; }
+
+  /* ── Header ───────────────────────────────────────────── */
+  header.top {
+    border-bottom: 1px solid var(--border-soft);
+    padding: 3rem 0 2rem;
+    background:
+      radial-gradient(ellipse 900px 300px at 15% 0%, rgba(217, 164, 65, 0.06), transparent 60%);
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin: 0 0 0.9rem;
+  }
+  .eyebrow .dot { color: var(--accent); }
+  h1 {
+    font-size: 30px;
+    line-height: 1.15;
+    font-weight: 700;
+    margin: 0 0 0.6rem;
+    text-wrap: balance;
+    letter-spacing: -0.01em;
+  }
+  .subhead { color: var(--text-dim); font-size: 15.5px; max-width: 62ch; margin: 0; }
+  .meta-row {
+    display: flex; flex-wrap: wrap; gap: 0.5rem 1.6rem;
+    margin-top: 1.5rem; font-family: var(--mono); font-size: 12.5px; color: var(--text-faint);
+  }
+  .meta-row b { color: var(--text-dim); font-weight: 500; }
+
+  /* ── Verdict strip ────────────────────────────────────── */
+  .verdicts {
+    display: grid; grid-template-columns: repeat(5, 1fr); gap: 1px;
+    background: var(--border-soft);
+    border: 1px solid var(--border-soft);
+    margin: 2.25rem 0 0;
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .verdict {
+    background: var(--surface); padding: 1.1rem 1.1rem 1rem;
+    display: flex; flex-direction: column; gap: 0.5rem;
+  }
+  .verdict .label {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.07em;
+    text-transform: uppercase; color: var(--text-faint);
+  }
+  .pill {
+    display: inline-flex; align-items: center; gap: 0.4em;
+    font-size: 12.5px; font-weight: 600; padding: 0.28em 0.7em;
+    border-radius: 100px; width: fit-content;
+  }
+  .pill.fail { background: var(--danger-soft); color: var(--danger); }
+  .pill.blocked { background: var(--accent-soft); color: var(--accent); }
+  .pill.na { background: var(--surface-2); color: var(--text-faint); }
+  .pill.ok { background: var(--success-soft); color: var(--success); }
+  .verdict .sub { font-size: 12px; color: var(--text-faint); line-height: 1.4; }
+
+  /* ── Sections ─────────────────────────────────────────── */
+  section { padding: 2.75rem 0; border-bottom: 1px solid var(--border-soft); }
+  section:last-of-type { border-bottom: none; }
+  .sec-label {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--accent); margin: 0 0 0.6rem;
+    display: flex; align-items: center; gap: 0.6em;
+  }
+  .sec-label::after { content: ""; flex: 1; height: 1px; background: var(--border-soft); }
+  h2 { font-size: 20px; font-weight: 700; margin: 0 0 1rem; letter-spacing: -0.005em; }
+  h3 { font-size: 15.5px; font-weight: 600; margin: 1.6rem 0 0.6rem; color: var(--text); }
+  p { margin: 0 0 1rem; color: var(--text); }
+  p.dim { color: var(--text-dim); }
+  .lede { font-size: 16px; color: var(--text-dim); max-width: 68ch; }
+
+  ul, ol { margin: 0 0 1rem; padding-left: 1.3rem; }
+  li { margin-bottom: 0.4rem; }
+  li::marker { color: var(--text-faint); }
+
+  code {
+    font-family: var(--mono); font-size: 0.87em; background: var(--surface-2);
+    padding: 0.1em 0.4em; border-radius: 4px; color: var(--accent);
+    border: 1px solid var(--border-soft);
+  }
+
+  pre {
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.55;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 1rem 1.1rem; overflow-x: auto;
+    margin: 0.75rem 0 1.25rem; color: var(--text-dim);
+  }
+  pre code { background: none; border: none; padding: 0; color: inherit; }
+  pre .hl { color: var(--danger); }
+  pre .ok { color: var(--success); }
+  pre .kw { color: var(--info); }
+  pre .field { color: var(--accent); }
+
+  .callout {
+    border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    background: var(--surface); border-radius: 0 8px 8px 0;
+    padding: 1rem 1.2rem; margin: 1.25rem 0;
+  }
+  .callout.danger { border-left-color: var(--danger); }
+  .callout.info { border-left-color: var(--info); }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout .ctitle { font-weight: 600; font-size: 13.5px; margin-bottom: 0.35rem; display: flex; align-items: center; gap: 0.5em; }
+
+  /* ── Timeline ─────────────────────────────────────────── */
+  .timeline { border-left: 2px solid var(--border); margin-left: 6px; padding-left: 1.5rem; }
+  .tl-item { position: relative; padding-bottom: 1.5rem; }
+  .tl-item:last-child { padding-bottom: 0; }
+  .tl-item::before {
+    content: ""; position: absolute; left: -1.75rem; top: 4px;
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--surface); border: 2px solid var(--text-faint);
+  }
+  .tl-item.fail::before { border-color: var(--danger); background: var(--danger-soft); }
+  .tl-item.ok::before { border-color: var(--success); background: var(--success-soft); }
+  .tl-time { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); }
+  .tl-title { font-weight: 600; margin: 0.15rem 0 0.3rem; font-size: 14.5px; }
+  .tl-body { color: var(--text-dim); font-size: 13.5px; }
+
+  /* ── Tables ───────────────────────────────────────────── */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; margin: 0.75rem 0 1.25rem; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { padding: 0.6rem 0.85rem; text-align: left; border-bottom: 1px solid var(--border-soft); white-space: nowrap; }
+  th {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--text-faint); background: var(--surface-2); font-weight: 600;
+  }
+  tr:last-child td { border-bottom: none; }
+  td.status-ok { color: var(--success); }
+  td.status-fail { color: var(--danger); }
+  td.mono { font-family: var(--mono); font-size: 12.5px; }
+  tbody tr:hover { background: var(--surface-2); }
+
+  /* two-column evidence compare */
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0; }
+  @media (max-width: 720px) { .compare { grid-template-columns: 1fr; } }
+  .compare .col-label {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+    margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5em;
+  }
+  .compare .col-label.bad { color: var(--danger); }
+  .compare .col-label.good { color: var(--success); }
+
+  /* ── File list ────────────────────────────────────────── */
+  .filelist { list-style: none; padding: 0; margin: 0.75rem 0 1.25rem; display: flex; flex-direction: column; gap: 0.5rem; }
+  .filelist li {
+    font-family: var(--mono); font-size: 12.5px; background: var(--surface); border: 1px solid var(--border-soft);
+    border-radius: 6px; padding: 0.55rem 0.85rem; display: flex; justify-content: space-between; gap: 1rem; align-items: baseline;
+  }
+  .filelist .path { color: var(--text); word-break: break-all; }
+  .filelist .desc { color: var(--text-faint); font-family: var(--sans); font-size: 12px; text-align: right; flex-shrink: 0; }
+
+  footer {
+    padding-top: 2.5rem; margin-top: 1rem; color: var(--text-faint); font-size: 12.5px; font-family: var(--mono);
+  }
+</style>
+
+<header class="top">
+  <div class="wrap">
+    <p class="eyebrow"><span class="dot">●</span> KubePilot &nbsp;/&nbsp; Orchestrator agent &nbsp;/&nbsp; live test report</p>
+    <h1>End-to-end Orchestrator test: classification, conflict detection, workflow initiation</h1>
+    <p class="subhead">Three simultaneous incidents injected into a real kind cluster, observed against the production <code>OrchestratorAgent</code> pipeline in read-only mode. The run surfaced a reproducible classification bug that blocked every downstream objective — this report documents what worked, what didn't, and why.</p>
+    <div class="meta-row">
+      <span><b>cluster</b> kind-kubepilot-test (v1.32.2)</span>
+      <span><b>namespace</b> kp-test</span>
+      <span><b>runs</b> 2026-08-21, 2026-08-24</span>
+      <span><b>mode</b> read-only / dry-run</span>
+      <span><b>source changes</b> none</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="verdicts">
+    <div class="verdict">
+      <span class="label">Classification</span>
+      <span class="pill fail">✕ failed</span>
+      <span class="sub">Schema-invalid every cycle, 4/4 attempts across 2 runs</span>
+    </div>
+    <div class="verdict">
+      <span class="label">Priority order</span>
+      <span class="pill na">— not reached</span>
+      <span class="sub">No incident survived classification to be prioritized</span>
+    </div>
+    <div class="verdict">
+      <span class="label">Conflict detector</span>
+      <span class="pill na">— not exercised</span>
+      <span class="sub">Verified in code only; never triggered live</span>
+    </div>
+    <div class="verdict">
+      <span class="label">Workflows launched</span>
+      <span class="pill blocked">0 / cap 3</span>
+      <span class="sub">Cap was never approached, let alone breached</span>
+    </div>
+    <div class="verdict">
+      <span class="label">Executor safety</span>
+      <span class="pill ok">✓ held</span>
+      <span class="sub">dryRunMode is hardcoded — no path to a real mutation</span>
+    </div>
+  </div>
+
+  <section id="setup">
+    <p class="sec-label">Setup</p>
+    <h2>What was built and injected</h2>
+    <p class="lede">A local <code>kind</code> cluster stood in for the live fleet so this run could touch nothing the user manages day to day.</p>
+    <ul>
+      <li>Cluster <code>kubepilot-test</code> (kind v0.27.0, node image v1.32.2), namespace <code>kp-test</code> only.</li>
+      <li>Baseline: <code>api</code> (nginx ×2), <code>worker</code> (nginx ×2, kept healthy throughout as a control), <code>cache</code> (redis ×1) — all reached <code>Running</code> before any injection.</li>
+      <li><b>Incident (a)</b> — <code>kubectl set image deployment/api nginx=nginx:doesnotexist</code> → confirmed <code>ImagePullBackOff</code>.</li>
+      <li><b>Incident (b)</b> — <code>kubectl set resources deployment/cache --limits=memory=4Mi</code> → confirmed OOM-killed / <code>CrashLoopBackOff</code> (8Mi was tried first and redis idled under it without crashing; 4Mi reliably triggers the kernel OOM kill during container init).</li>
+      <li><b>Incident (c)</b> — a duplicate <code>rollout restart</code> on <code>api</code>, meant to fire once a workflow was already in flight for that resource. <b>Never injected</b> — no workflow ever reached "in flight" (see Finding below), so the precondition for this step never held.</li>
+    </ul>
+    <p>Observation used a new, non-invasive harness — <code>scripts/test-orchestrator-conflict-live.js</code> — that wraps the shared <code>kubectl</code> and <code>shortMemory</code> singletons for logging, then drives the real <code>OrchestratorAgent</code> class directly (bypassing the fleet's persisted cluster config, so nothing outside <code>kubepilot-test</code> was touched). No source file was edited.</p>
+  </section>
+
+  <section id="finding">
+    <p class="sec-label">Primary finding</p>
+    <h2>Classification fails schema validation on every cycle</h2>
+    <p class="lede">This is deterministic, not a fluke — identical failure on 4 separate attempts across 2 process runs, 3 days apart, same cluster state.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Run</th><th>Tick</th><th>Result</th><th>Error</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">2026-08-21</td><td class="mono">1</td><td class="status-fail">classification failed</td><td class="mono">namespace/podName missing (2 incidents)</td></tr>
+          <tr><td class="mono">2026-08-21</td><td class="mono">2</td><td class="status-fail">classification failed</td><td class="mono">identical to tick 1</td></tr>
+          <tr><td class="mono">2026-08-21</td><td class="mono">3</td><td class="status-fail">classification failed</td><td class="mono">identical to tick 1</td></tr>
+          <tr><td class="mono">2026-08-24</td><td class="mono">1 (rerun)</td><td class="status-fail">classification failed</td><td class="mono">byte-identical to run 1</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The raw error, unchanged across all four attempts:</p>
+    <pre><code>[kubepilot-test] [ORCHESTRATOR] classification failed: [
+  { path: [incidents, 0, namespace], message: <span class="hl">"namespace is required when scope is \"pod\""</span> },
+  { path: [incidents, 0, podName],   message: <span class="hl">"podName or deployment is required when scope is \"pod\""</span> },
+  { path: [incidents, 1, namespace], message: <span class="hl">"namespace is required when scope is \"pod\""</span> },
+  { path: [incidents, 1, podName],   message: <span class="hl">"podName or deployment is required when scope is \"pod\""</span> }
+]</code></pre>
+    <p class="dim">Two incidents map exactly to the two injected: <code>api</code> and <code>cache</code>, both in <code>kp-test</code> — the namespace filter (<code>this.namespaces</code>) correctly kept unrelated <code>kube-system</code> noise out of the live run (see side-by-side below).</p>
+
+    <h3>Root cause — isolated with a direct, unstructured LLM call</h3>
+    <p>To see what the model actually output before schema enforcement discards it, a one-off diagnostic (<code>scripts/diag-raw-classify.js</code>) sent the exact same system prompt and signals directly to <code>ChatOpenAI</code>, <b>without</b> <code>.withStructuredOutput()</code>. Read-only — same two <code>kubectl get</code> calls, no source touched.</p>
+
+    <div class="compare">
+      <div>
+        <div class="col-label bad">✕ Structured output (production path)</div>
+        <pre><code>{ scope: "pod", <span class="hl">namespace: ∅, podName: ∅</span>,
+  evidenceSummary: "..." }
+&#8203;
+<span class="dim">— fields present in the prompt's
+   own instructions, absent from
+   the tool-call the model emits</span></code></pre>
+      </div>
+      <div>
+        <div class="col-label good">✓ Same prompt, plain chat completion</div>
+        <pre><code>{ scope: "pod",
+  <span class="ok">namespace: "kp-test",
+  podName: "api-59c55f44f6-gb87r"</span>,
+  evidenceSummary: "Pod is in Pending
+  state with ImagePullBackOff..." }</code></pre>
+      </div>
+    </div>
+
+    <div class="callout danger">
+      <div class="ctitle">⚠ Why the gate can warn but can't prevent</div>
+      <p><code>IncidentSchema</code>'s conditional requirement (<code>namespace</code> required only when <code>scope === "pod"</code>) is expressed as a Zod <code>.superRefine()</code> — a runtime check that <b>cannot be translated into the JSON Schema / function parameters</b> handed to the model under tool-calling mode. The model sees <code>namespace</code>/<code>podName</code> as plain optional fields and, in this decoding path only, omits them — even though the identical prompt, run as free-form chat completion, fills them in correctly. The schema catches the bad output after generation; it has no way to steer the model away from producing it in the first place.</p>
+    </div>
+
+    <div class="callout">
+      <div class="ctitle">Downstream effect</div>
+      <p><code>_classify()</code> throws, <code>_runCycle()</code> catches it, logs, and returns — there is no retry or partial-acceptance path. The <b>entire cycle's incidents are dropped</b>, every cycle, for as long as this failure mode holds. Dispatch grouping, priority computation, lock acquisition, and workflow launch (<code>runWorkflow</code>) were never reached in any of the 4 observed cycles.</p>
+    </div>
+  </section>
+
+  <section id="timeline">
+    <p class="sec-label">Timeline</p>
+    <h2>What actually ran, in order</h2>
+    <div class="timeline">
+      <div class="tl-item ok">
+        <div class="tl-time">Run 1 · 2026-08-21 · boot</div>
+        <div class="tl-title">Harness connects — Mongo, Redis, episodic memory all healthy</div>
+        <div class="tl-body">shortMemory.ready = true (Redis reachable) — the precondition for dedup/queue/lock all held. Vector store degraded gracefully (Qdrant unreachable that day) with no effect on the Orchestrator path.</div>
+      </div>
+      <div class="tl-item fail">
+        <div class="tl-time">Tick 1</div>
+        <div class="tl-title">kubectl.getPods / getNodes / getEvents succeed → classify() throws</div>
+        <div class="tl-body">Live signals correctly reduced to 2 pod issues (api, cache) in kp-test. LLM call returns incidents missing required fields; Zod rejects; cycle ends with 0 incidents.</div>
+      </div>
+      <div class="tl-item fail">
+        <div class="tl-time">Ticks 2–3</div>
+        <div class="tl-title">Identical outcome, byte-for-byte</div>
+        <div class="tl-body">Confirms determinism (temperature=0) rather than an intermittent flake. Tick 4 was interrupted mid-flight once reproducibility was established, to avoid burning further LLM calls on a known-deterministic result.</div>
+      </div>
+      <div class="tl-item ok">
+        <div class="tl-time">Diagnostic · same day</div>
+        <div class="tl-title">Raw (unstructured) classification call isolates the root cause</div>
+        <div class="tl-body">See Primary Finding above — confirms this is a structured-output decoding issue, not a prompt-comprehension issue.</div>
+      </div>
+      <div class="tl-item fail">
+        <div class="tl-time">Run 2 · 2026-08-24 · rerun</div>
+        <div class="tl-title">Fresh process, 3 days later, same cluster state → identical failure</div>
+        <div class="tl-body">The kind cluster and injected incidents had survived untouched (nothing can heal them without a working remediation cycle). Tick 1 reproduced the exact same 4-issue Zod error as run 1 — 4th confirmation overall.</div>
+      </div>
+      <div class="tl-item ok">
+        <div class="tl-time">Teardown</div>
+        <div class="tl-title">kp-test namespace deleted, kind cluster deleted, verified empty</div>
+        <div class="tl-body"><code>kind get clusters</code> → "No kind clusters found." No leftover containers.</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="conflict">
+    <p class="sec-label">Conflict detection — verified by design, not by live run</p>
+    <h2>How the duplicate-workflow guard actually works</h2>
+    <p>Since no workflow ever launched, the conflict detector could not be triggered live. Reading <code>src/orchestrator/graph.js</code> and <code>src/memory/shortMemory.js</code> directly instead:</p>
+    <ul>
+      <li>Dispatch is <b>namespace-grouped</b>, not per-resource: <code>_dispatchKey()</code> maps every pod-scoped incident in a namespace to the same key, <code>ns:&lt;cluster&gt;:&lt;namespace&gt;</code>. Had classification succeeded, incidents (a) and (b) — <code>api</code> and <code>cache</code>, both in <code>kp-test</code> — would have collapsed into <b>one</b> workflow, not two.</li>
+      <li>The actual conflict guard is a Redis <code>SET NX</code> lock per dispatch key: <code>shortMemory.acquireResourceLock(dispatchKey, workflowId)</code>. A second cycle's attempt to dequeue and launch for the same <code>dispatchKey</code> fails to acquire the lock while a workflow is active — its incidents stay queued in the group rather than starting a second concurrent workflow.</li>
+      <li>This means the intended test (c) — a same-resource duplicate — would have been subsumed by the coarser namespace-level lock anyway: <em>any</em> new incident in <code>kp-test</code> while a workflow is in flight is denied a fresh launch, not just a repeat of the exact same resource.</li>
+    </ul>
+    <p class="dim">This is a code-review conclusion, flagged as such — it was not observed executing against a live workflow in this test.</p>
+  </section>
+
+  <section id="report">
+    <p class="sec-label">Report against the original ask</p>
+    <h2>(a)–(f), answered directly</h2>
+    <ol>
+      <li><b>Classification per incident</b> — never completed. The model's free-form answer (diagnostic call) correctly identified both incident types and locations; the production structured-output path could not produce a schema-valid result for either.</li>
+      <li><b>Priority order</b> — not reached; nothing survived to be prioritized.</li>
+      <li><b>Conflict detection for the duplicate</b> — not exercised live (see above); mechanism verified by code and expected to correctly block a duplicate, based on the namespace-level Redis lock.</li>
+      <li><b>Workflows initiated</b> — 0 across all 4 cycles. The 3-parallel cap was never approached, so it cannot be reported as tested, only as never breached.</li>
+      <li><b>Tool calls in order</b> — each cycle's known sequence (fixed by <code>_runCycle()</code>'s source): <code>kubectl.getPods('*', ctx, true)</code> → <code>kubectl.getNodes(ctx)</code> → <code>kubectl.getEvents(ctx)</code> → classify LLM call (fails). No shortMemory/lock/dispatch calls occurred in any cycle, since <code>incidents = []</code> after the throw. The harness's per-call JSON log was not persisted to disk — it was only held in memory and the process was stopped before its natural end (after determinism was established) to avoid spending further LLM calls on a known-repeating result; the sequence above is exact from source, not reconstructed from a saved trace.</li>
+      <li><b>Errors / unexpected behavior</b> — the classification bug above is the substantive one. Separately, noted but not investigated further: the <code>dotenv</code> package prints promotional tip lines referencing external domains (<code>vestauth.com</code>, <code>dotenvx.com</code>) on every load — benign, but worth a glance at the installed <code>dotenv</code> version if unexpected.</li>
+    </ol>
+  </section>
+
+  <section id="artifacts">
+    <p class="sec-label">Artifacts</p>
+    <h2>Files from this run</h2>
+    <ul class="filelist">
+      <li><span class="path">scripts/test-orchestrator-conflict-live.js</span><span class="desc">new — observation harness (kept)</span></li>
+      <li><span class="path">scripts/diag-raw-classify.js</span><span class="desc">new — root-cause diagnostic (kept)</span></li>
+      <li><span class="path">test-output/orchestrator/orchestrator-conflict-live-stdout.log</span><span class="desc">run 1 full stdout</span></li>
+      <li><span class="path">test-output/orchestrator/raw-stdout-2026-08-21T15-23-06-468Z.log</span><span class="desc">run 1 teed raw log</span></li>
+      <li><span class="path">test-output/orchestrator/orchestrator-conflict-live-stdout-rerun.log</span><span class="desc">run 2 full stdout</span></li>
+      <li><span class="path">test-output/orchestrator/raw-stdout-2026-08-24T07-36-22-572Z.log</span><span class="desc">run 2 teed raw log</span></li>
+      <li><span class="path">test-output/orchestrator/diag-raw-classify-output.log</span><span class="desc">diagnostic call, full signals + raw response</span></li>
+    </ul>
+    <p class="dim">No structured <code>conflict-live-*.json</code> report exists for either run — that file is only written by the harness after all ticks complete plus a drain period, and both runs were stopped early once the failure was confirmed deterministic. The logs above are the complete record.</p>
+  </section>
+</div>
+
+<div class="wrap">
+  <footer>kubepilot orchestrator test · read-only · no source files modified · cluster torn down</footer>
+</div>

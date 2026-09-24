@@ -31,21 +31,10 @@ const RiskEngine          = require('../risk/engine');
 const PolicyEngine        = require('../policy/policyEngine');
 const metricsCollector    = require('../monitoring/metricsCollector');
 const silenceStore        = require('../api/silenceStore');
+const { parseMiB: _parseMiB } = require('../utils/k8sQuantity');
+const { ACTION_RISK_PARAMS }  = require('../policy/actionRiskParams');
 
 const riskEngine = new RiskEngine();
-
-// Parse a Kubernetes memory quantity string (e.g. "128Mi", "1Gi", "512M") into MiB.
-function _parseMiB(str) {
-  if (!str) return 128;
-  const num = parseFloat(str);
-  if (isNaN(num)) return 128;
-  if (/Gi$/i.test(str)) return Math.round(num * 1024);
-  if (/G$/i.test(str))  return Math.round(num * 1000);
-  if (/Mi$/i.test(str) || /M$/i.test(str)) return Math.round(num);
-  if (/Ki$/i.test(str)) return Math.round(num / 1024);
-  if (/k$/i.test(str))  return Math.round(num / 1000);
-  return Math.round(num / (1024 * 1024)); // assume raw bytes
-}
 
 // Returns false when a namespace's ResourceQuota has (almost) no memory headroom left
 // (>=98% used), true when there's room, null when there's no data to judge from (quota
@@ -83,17 +72,6 @@ function _findZeroDisruptionPDBs(namespaces, pdbs) {
 }
 
 const HIGH_RISK_ACTIONS = new Set(['increase_memory', 'drain_node']);
-
-const ACTION_RISK_PARAMS = {
-  restart:         { engineAction: 'restart_deployment', blastRadius: 2, reversibility: 0.9, costImpact: 0   },
-  rollback:        { engineAction: 'apply_manifest',     blastRadius: 3, reversibility: 0.8, costImpact: 0   },
-  delete_pod:      { engineAction: 'delete_pod',         blastRadius: 1, reversibility: 0.7, costImpact: 0   },
-  scale_down:      { engineAction: 'scale_small',        blastRadius: 4, reversibility: 0.6, costImpact: 50  },
-  increase_memory: { engineAction: 'scale_large',        blastRadius: 2, reversibility: 0.5, costImpact: 100 },
-  cordon_node:     { engineAction: 'scale_small',        blastRadius: 5, reversibility: 0.9, costImpact: 0   },
-  drain_node:      { engineAction: 'scale_large',        blastRadius: 9, reversibility: 0.7, costImpact: 0   },
-  uncordon_node:   { engineAction: 'scale_small',        blastRadius: 1, reversibility: 1.0, costImpact: 0   },
-};
 
 class ClusterAgent {
   constructor(clusterConfig) {
@@ -722,9 +700,35 @@ class ClusterAgent {
       return;
     }
 
+    // DELEGATE_HUMAN (architecture-doc §3.4's 4th verdict, now actually producible by
+    // guardianAgent.js) means Guardian judged that no available automated action can fix
+    // this — escalate immediately rather than falling through to the implicit-approve
+    // path below, which is what an unhandled verdict string would otherwise do.
+    if (guardian.verdict === 'DELEGATE_HUMAN') {
+      console.warn(`[${this.name}] [GUARDIAN] DELEGATE_HUMAN — ${guardian.reason}`);
+      audit.blocked({
+        cluster:  this.name,
+        agent:    this.name,
+        action:   diagnosis.action,
+        reason:   `Guardian delegated to human: ${guardian.reason}`,
+        metadata: { issueKey: key, guardianClass: guardian.classification },
+      });
+      await escalationStore.escalate(key, issue, [], rca ?? null);
+      issueTrackerStore.track(key, { stage: 'escalated', cluster: this.name, tier: this.tier, issue, note: `Guardian delegated to human: ${guardian.reason}` });
+      this._recordTimelineEntry(key, fingerprint, issue, podLogs, diagnosis, guardian, 'escalated', 'guardian delegated to human');
+      this.cooldowns.set(key, Date.now());
+      return;
+    }
+
     if (guardian.verdict === 'MODIFY') {
-      console.warn(`[${this.name}] [GUARDIAN] Action MODIFIED: ${diagnosis.action} → ${guardian.suggestedAction}`);
-      diagnosis.action = guardian.suggestedAction;
+      // guardianAgent.js (shared with the v5 pipeline) now returns a free-form
+      // suggestedCommand, not a fixed action name — this legacy pipeline's own
+      // dispatch table (_applyFix) only understands the old fixed action set, so a
+      // MODIFY verdict here will fail loudly downstream ("Unknown action") rather than
+      // silently misbehave. Acceptable only because this path is already unreachable
+      // from the main entrypoint; a real fix would need its own legacy-shaped verdict.
+      console.warn(`[${this.name}] [GUARDIAN] Action MODIFIED: ${diagnosis.action} → ${guardian.suggestedCommand}`);
+      diagnosis.action = guardian.suggestedCommand;
     }
 
     if (guardian.classification === 'DANGEROUS') {
@@ -1247,7 +1251,16 @@ class ClusterAgent {
       this.cooldowns.set(key, Date.now());
       return;
     }
-    if (guardian.verdict === 'MODIFY') diagnosis.action = guardian.suggestedAction;
+    // See the pod-path DELEGATE_HUMAN handling above — same reasoning, node actions.
+    if (guardian.verdict === 'DELEGATE_HUMAN') {
+      console.warn(`[${this.name}] [NODE-GUARDIAN] DELEGATE_HUMAN — ${guardian.reason}`);
+      await escalationStore.escalate(key, { ...nodeIssue, isNodeIssue: true }, [], null);
+      issueTrackerStore.track(key, { stage: 'escalated', cluster: this.name, tier: this.tier, issue: nodeIssue, note: `Guardian delegated to human: ${guardian.reason}` });
+      this.cooldowns.set(key, Date.now());
+      return;
+    }
+    // See the pod-path MODIFY comment above — guardian.suggestedCommand is free-form now.
+    if (guardian.verdict === 'MODIFY') diagnosis.action = guardian.suggestedCommand;
 
     // Risk engine with dynamic blast radius from actual affected pod count (Rec 5)
     const nodeRiskParams = ACTION_RISK_PARAMS[diagnosis.action];

@@ -1,0 +1,7 @@
+{
+  "ignore": [
+    "noop-repro-results/*",
+    "benchmark/results/*",
+    "logs/*"
+  ]
+}

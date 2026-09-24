@@ -342,6 +342,18 @@ async function remove(id) {
 
 function getAll() { return [...escalations.values()].map(_safe); }
 
+// True while `issueKey` has an escalation still sitting in the in-memory active map —
+// i.e. status is pending/acknowledged/in_progress/need_help, NOT fixed/not_fixed (those
+// are deleted from `escalations` the moment updateState() marks them terminal, see
+// above). Used by orchestratorAgent.js's dedup step so an already-escalated incident
+// stops getting silently re-classified/re-investigated/re-escalated every cooldown
+// window while a human hasn't acted on it yet — escalating is meant to hand the issue
+// to a person and back off, not "give up for 30 minutes and go through the exact same
+// investigation again anyway, just to hit escalate()'s own pending-dedup a second time."
+function hasActiveEscalation(issueKey) {
+  return [...escalations.values()].some(e => e.issueKey === issueKey);
+}
+
 // ── Restore active escalations from MongoDB on startup ────────────────────────
 async function init() {
   try {
@@ -385,4 +397,4 @@ async function init() {
   }
 }
 
-module.exports = { init, escalate, acknowledge, updateState, assign, requestReassign, remove, getAll, subscribe };
+module.exports = { init, escalate, acknowledge, updateState, assign, requestReassign, remove, getAll, hasActiveEscalation, subscribe };

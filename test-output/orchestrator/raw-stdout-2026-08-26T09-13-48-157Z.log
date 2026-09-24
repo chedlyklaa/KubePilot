@@ -1,0 +1,184 @@
+[2026-08-26T09:13:50.931Z] 
+=== test-orchestrator-conflict-live: starting (clusters=kubepilot-test:kind-kubepilot-test,kubepilot-test-2:kind-kubepilot-test-2 namespaces=kp-test ticks=6 interval=30000ms) ===
+
+[2026-08-26T09:13:51.055Z] [DB] Connected to MongoDB at mongodb://localhost:27017/K8S-agent-IHM
+[2026-08-26T09:13:51.292Z] [ShortMemory] Connected to Redis (redis://localhost:6379)
+[2026-08-26T09:13:51.293Z] [VectorStore] Probing embedding model "bge-multilingual-gemma2"…
+[2026-08-26T09:13:51.519Z] [VectorStore] Embedding dimension: 3584
+[2026-08-26T09:13:51.934Z] [VectorStore] Collection "incident_episodes" ready (dim=3584)
+[2026-08-26T09:13:52.454Z] [EpisodicMemory] Loaded 987 resolved episode(s) into memory index
+[2026-08-26T09:13:52.719Z] [EscalationStore] Restored 61 active escalation(s) from MongoDB
+[2026-08-26T09:13:52.740Z] [IssueTracker] Resuming from seq=133
+[2026-08-26T09:13:52.741Z] [harness] shortMemory.ready = true (Redis) — conflict detection requires this to be true
+[2026-08-26T09:13:52.741Z] [harness] clusterConfigStore.getClusters() -> kubepilot-test, kubepilot-test-2
+[2026-08-26T09:13:52.741Z] 
+----- TICK 1/6 -----
+[2026-08-26T09:13:52.742Z] 
+====================================
+[2026-08-26T09:13:52.742Z] ORCHESTRATOR FLEET CYCLE STARTED
+[2026-08-26T09:13:52.742Z] ====================================
+[2026-08-26T09:14:01.832Z] [warn] [ORCHESTRATOR] auto-correcting 4 incident(s) that used scope "cluster" as a shortcut: api-677fcc5689-v8d8t, api-59c55f44f6-jck85, worker-6c764dbcb5-mvnrx, worker-6c764dbcb5-w486v
+[2026-08-26T09:14:02.173Z] [ORCHESTRATOR] 4 incident(s) classified fleet-wide
+[2026-08-26T09:14:02.321Z] [ORCHESTRATOR] launching workflow 7ed8f66c-0abb-47f3-adfe-96a3bff59a3d for ns:kube-system (5 incident(s))
+[2026-08-26T09:14:02.328Z] 
+====================================
+[2026-08-26T09:14:02.328Z] ORCHESTRATOR FLEET CYCLE COMPLETED — 9.59s
+[2026-08-26T09:14:02.328Z] ====================================
+[2026-08-26T09:14:02.329Z] [harness] sleeping 30000ms before next tick...
+[2026-08-26T09:14:02.374Z] [staging-cluster] [GRAPH] investigator — staging-cluster/kube-system/coredns-ffd5c7cc4-8bgmr, staging-cluster/kube-system/kube-apiserver-staging-cluster, staging-cluster/kube-system/storage-provisioner, staging-cluster/kube-system/metrics-server-57b9d9d455-c8mll, staging-cluster/kube-system/metrics-server-7d54648784-95qxx (attempt 1/3)
+[2026-08-26T09:14:02.375Z] [warn] [GRAPH] no clusterConfig found for "staging-cluster" — falling back to context=clusterName, tier=dev
+[2026-08-26T09:14:02.375Z] [warn] [GRAPH] no clusterConfig found for "staging-cluster" — falling back to context=clusterName, tier=dev
+[2026-08-26T09:14:02.376Z] [warn] [GRAPH] no clusterConfig found for "staging-cluster" — falling back to context=clusterName, tier=dev
+[2026-08-26T09:14:02.376Z] [warn] [GRAPH] no clusterConfig found for "staging-cluster" — falling back to context=clusterName, tier=dev
+[2026-08-26T09:14:02.376Z] [warn] [GRAPH] no clusterConfig found for "staging-cluster" — falling back to context=clusterName, tier=dev
+[2026-08-26T09:14:07.642Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods -n kube-system
+[2026-08-26T09:14:09.457Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test-2 get pods -n kube-system
+[2026-08-26T09:14:10.641Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get nodes
+[2026-08-26T09:14:12.339Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test-2 get nodes
+[2026-08-26T09:14:13.710Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kube-system --sort-by=.metadata.creationTimestamp
+[2026-08-26T09:14:15.548Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test describe pod kube-apiserver-kubepilot-test-control-plane -n kube-system
+[2026-08-26T09:14:17.184Z] [warn] Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a03d58-f155-73a4-a7c2-11937214cede,id=01a03d58-f155-73a4-a7c2-11937214cede; trace=01a03d58-f155-73a4-a7c2-11937214cede,id=01a03d58-f173-75b5-9358-f88d04b83fa4
+[2026-08-26T09:14:17.853Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events --sort-by=.metadata.creationTimestamp
+[2026-08-26T09:14:19.506Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kube-system --field-selector involvedObject.name=kube-apiserver-kubepilot-test-control-plane
+[2026-08-26T09:14:20.781Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test logs kube-apiserver-kubepilot-test-control-plane -n kube-system --tail=20
+[2026-08-26T09:14:22.996Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test logs kube-apiserver-kubepilot-test-control-plane -n kube-system --previous
+[2026-08-26T09:14:24.928Z] [warn] Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a03d58-f155-73a4-a7c2-11937214cede,id=01a03d59-0eda-77ce-9143-c5d3df841b25; trace=01a03d58-f155-73a4-a7c2-11937214cede,id=01a03d59-0ee0-77ea-bce2-51414c439929; trace=01a03d59-0eeb-73f7-b3a7-c2c9123b1943,id=01a03d59-0eeb-73f7-b3a7-c2c9123b1943; trace=01a03d59-0eeb-73f7-b3a7-c2c9123b1943,id=01a03d59-0ef2-72cb-916c-d6de786a38fb; trace=01a03d58-f155-73a4-a7c2-11937214cede,id=01a03d58-f173-75b5-9358-f88d04b83fa4; trace=01a03d58-f155-73a4-a7c2-11937214cede,id=01a03d58-f155-73a4-a7c2-11937214cede
+[2026-08-26T09:14:28.215Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test describe node kubepilot-test-control-plane
+[2026-08-26T09:14:29.124Z] [warn] Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a03d59-0eeb-73f7-b3a7-c2c9123b1943,id=01a03d59-103a-76e5-85be-867fb0a0efd5; trace=01a03d59-0eeb-73f7-b3a7-c2c9123b1943,id=01a03d59-103c-75ee-8cfd-fc806f1f7a69; trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-10d9-739d-a416-4ab47e5c12a5; trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-10f2-7362-8348-0c3d9c052496; trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-1104-707d-abf2-41016795f238; trace=01a03d59-0eeb-73f7-b3a7-c2c9123b1943,id=01a03d59-0ef2-72cb-916c-d6de786a38fb; trace=01a03d59-0eeb-73f7-b3a7-c2c9123b1943,id=01a03d59-0eeb-73f7-b3a7-c2c9123b1943
+[2026-08-26T09:14:29.900Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods -n kube-system -o wide
+[2026-08-26T09:14:30.343Z] [warn] Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-2215-74fd-8c68-532ebd9dcb12; trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-1cd7-70b3-8c28-2f3360031622
+[2026-08-26T09:14:30.730Z] [warn] Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-1cd7-70b3-8c28-2f3360031622
+[2026-08-26T09:14:32.330Z] 
+----- TICK 2/6 -----
+[2026-08-26T09:14:32.330Z] 
+====================================
+[2026-08-26T09:14:32.330Z] ORCHESTRATOR FLEET CYCLE STARTED
+[2026-08-26T09:14:32.330Z] ====================================
+[2026-08-26T09:14:33.580Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get configmaps -n kube-system
+[2026-08-26T09:14:35.495Z] [warn] [INVESTIGATOR] [EXEC-LAYER] blocked: "get secrets -n kube-system" — reading Secret values is blocked — use the Config-layer summary (key names only) instead
+[2026-08-26T09:14:36.913Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get configmaps -n kube-system -o yaml
+[2026-08-26T09:14:38.079Z] [warn] Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-2215-74fd-8c68-532ebd9dcb12
+[2026-08-26T09:14:38.616Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods -n kube-system --field-selector=status.phase=Failed
+[2026-08-26T09:14:38.865Z] [warn] [ORCHESTRATOR] auto-correcting 4 incident(s) that used scope "cluster" as a shortcut: api-677fcc5689-v8d8t, api-59c55f44f6-jck85, worker-6c764dbcb5-mvnrx, worker-6c764dbcb5-w486v
+[2026-08-26T09:14:39.882Z] [ORCHESTRATOR] 4 incident(s) classified fleet-wide
+[2026-08-26T09:14:39.893Z] 
+ORCHESTRATOR FLEET CYCLE COMPLETED — 7.56s (no free workflow slots)
+[2026-08-26T09:14:39.893Z] [harness] sleeping 30000ms before next tick...
+[2026-08-26T09:14:40.371Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods -n kube-system --field-selector=status.phase=Unknown
+[2026-08-26T09:14:42.848Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kube-system --field-selector=reason=FailedScheduling
+[2026-08-26T09:14:44.554Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kube-system --field-selector=reason=ReadinessProbeFailed
+[2026-08-26T09:14:46.196Z] [warn] Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-28f9-717b-9978-70555a92a9fe
+[2026-08-26T09:14:46.320Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kube-system --field-selector=reason=ProbeError
+[2026-08-26T09:14:48.005Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kube-system --field-selector=reason=Unhealthy
+[2026-08-26T09:14:49.720Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kube-system --field-selector=type=Warning
+[2026-08-26T09:14:50.298Z] [warn] Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-28f9-717b-9978-70555a92a9fe
+[2026-08-26T09:14:51.374Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get apiservices
+[2026-08-26T09:14:53.037Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get apiservices -o yaml
+[2026-08-26T09:14:54.365Z] [warn] Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-2e3b-715c-94e0-a519ca949d99
+[2026-08-26T09:14:54.919Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get endpoints
+[2026-08-26T09:14:56.127Z] [warn] Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-2e3b-715c-94e0-a519ca949d99
+[2026-08-26T09:14:56.840Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get endpoints -n kube-system
+[2026-08-26T09:14:58.709Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get services -n kube-system
+[2026-08-26T09:15:00.580Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get services -n kube-system -o yaml
+[2026-08-26T09:15:02.542Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get deployment -n kube-system
+[2026-08-26T09:15:04.356Z] [warn] Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-336d-77d2-aed5-f947b9419cd4
+[2026-08-26T09:15:04.571Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get statefulset -n kube-system
+[2026-08-26T09:15:06.592Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get daemonset -n kube-system
+[2026-08-26T09:15:09.319Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get podmetrics
+[2026-08-26T09:15:09.911Z] 
+----- TICK 3/6 -----
+[2026-08-26T09:15:09.911Z] 
+====================================
+[2026-08-26T09:15:09.912Z] ORCHESTRATOR FLEET CYCLE STARTED
+[2026-08-26T09:15:09.912Z] ====================================
+[2026-08-26T09:15:10.988Z] [warn] Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-336d-77d2-aed5-f947b9419cd4
+[2026-08-26T09:15:13.508Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get hpa
+[2026-08-26T09:15:17.774Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test top nodes
+[2026-08-26T09:15:17.833Z] [warn] Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-397d-702a-bc91-dc06f8766a64
+[2026-08-26T09:15:18.304Z] [warn] Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-397d-702a-bc91-dc06f8766a64
+[2026-08-26T09:15:20.187Z] [warn] [ORCHESTRATOR] auto-correcting 4 incident(s) that used scope "cluster" as a shortcut: api-677fcc5689-v8d8t, api-59c55f44f6-jck85, worker-6c764dbcb5-mvnrx, worker-6c764dbcb5-w486v
+[2026-08-26T09:15:21.193Z] [ORCHESTRATOR] 4 incident(s) classified fleet-wide
+[2026-08-26T09:15:21.573Z] [warn] Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-3ed4-7401-bac5-f6d4963b1437
+[2026-08-26T09:15:21.602Z] 
+ORCHESTRATOR FLEET CYCLE COMPLETED — 11.69s (no free workflow slots)
+[2026-08-26T09:15:21.603Z] [harness] sleeping 30000ms before next tick...
+[2026-08-26T09:15:24.604Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test top pods -n kube-system
+[2026-08-26T09:15:29.139Z] [warn] Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-3ed4-7401-bac5-f6d4963b1437
+[2026-08-26T09:15:29.677Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get apiservices -o json
+[2026-08-26T09:15:32.686Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods -n kube-system -l component=kube-apiserver
+[2026-08-26T09:15:34.859Z] [warn] Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-4721-7336-81e1-d46bd34293d2
+[2026-08-26T09:15:35.394Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods -n kube-system -l component=kube-controller-manager
+[2026-08-26T09:15:38.503Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods -n kube-system -l component=kube-scheduler
+[2026-08-26T09:15:38.831Z] [warn] [INVESTIGATOR][staging-cluster] hit the 40-iteration safety cap without reaching confidence/evidenceSufficiency >= 0.9
+[2026-08-26T09:15:38.831Z] [warn] [INVESTIGATOR][staging-cluster] returning best-effort report — never reached the confidence/evidence target (confidence=0, evidenceSufficiency=0)
+[2026-08-26T09:15:38.832Z] [INVESTIGATOR][staging-cluster] FailedScheduling — investigation unavailable, unable to determine specific root cause (layer=pod, conf=0.00, evidence=0.00, commands run=40, incidents=5)
+[2026-08-26T09:15:38.853Z] [warn] [GRAPH] no clusterConfig found for "staging-cluster" — falling back to context=clusterName, tier=dev
+[2026-08-26T09:15:38.854Z] [warn] [GRAPH] no clusterConfig found for "staging-cluster" — falling back to context=clusterName, tier=dev
+[2026-08-26T09:15:38.855Z] [warn] [GRAPH] no clusterConfig found for "staging-cluster" — falling back to context=clusterName, tier=dev
+[2026-08-26T09:15:38.855Z] [warn] [GRAPH] no clusterConfig found for "staging-cluster" — falling back to context=clusterName, tier=dev
+[2026-08-26T09:15:38.855Z] [warn] [GRAPH] no clusterConfig found for "staging-cluster" — falling back to context=clusterName, tier=dev
+[2026-08-26T09:15:41.682Z] [warn] Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-4721-7336-81e1-d46bd34293d2
+[2026-08-26T09:15:42.527Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods -n kube-system --field-selector=status.phase=Pending
+[2026-08-26T09:15:42.819Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test describe pod kube-apiserver-kubepilot-test-control-plane -n kube-system
+[2026-08-26T09:15:43.321Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kube-system --field-selector=reason=FailedScheduling
+[2026-08-26T09:15:43.609Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get nodes
+[2026-08-26T09:15:44.525Z] [warn] Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-4ef3-7562-9cc3-567ce79bef6b
+[2026-08-26T09:15:46.041Z] [warn] Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-4ef3-7562-9cc3-567ce79bef6b
+[2026-08-26T09:15:47.158Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods -n kube-system -l k8s-app=kube-dns
+[2026-08-26T09:15:47.425Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods -n kube-system -l component=etcd
+[2026-08-26T09:15:47.712Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods -n kube-system -l component=kube-proxy
+[2026-08-26T09:15:48.678Z] [warn] Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-5541-700b-a4ca-5a8051d15aec
+[2026-08-26T09:15:51.608Z] 
+----- TICK 4/6 -----
+[2026-08-26T09:15:51.609Z] 
+====================================
+[2026-08-26T09:15:51.609Z] ORCHESTRATOR FLEET CYCLE STARTED
+[2026-08-26T09:15:51.609Z] ====================================
+[2026-08-26T09:15:52.950Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pod kube-apiserver-kubepilot-test-control-plane -n kube-system -o yaml
+[2026-08-26T09:15:54.942Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get nodes -o wide
+[2026-08-26T09:15:55.645Z] [warn] Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a03d59-10d9-739d-a416-4ab47e5c12a5,id=01a03d59-5541-700b-a4ca-5a8051d15aec
+[2026-08-26T09:15:56.573Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get componentstatuses

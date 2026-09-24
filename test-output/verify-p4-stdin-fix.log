@@ -1,0 +1,512 @@
+◇ injected env (36) from .env // tip: ◈ encrypted .env [www.dotenvx.com]
+◇ injected env (36) from .env // tip: ⌁ auth for agents [www.vestauth.com]
+◇ injected env (36) from .env // tip: ⌁ auth for agents [www.vestauth.com]
+◇ injected env (36) from .env // tip: ⌘ custom filepath { path: '/custom/path/.env' }
+[PolicyEngine] DRY-RUN MODE — kubectl commands will be simulated, not executed
+[PolicyEngine] Initialized  dryRun=true
+[INVESTIGATOR] LLM: dedicated (qwen3-235b-a22b-instruct-2507)
+◇ injected env (36) from .env // tip: ⌘ suppress logs { quiet: true }
+[PolicyEngine] DRY-RUN MODE — kubectl commands will be simulated, not executed
+[PolicyEngine] Initialized  dryRun=true
+[PLANNER] LLM: dedicated (qwen3-235b-a22b-instruct-2507)
+◇ injected env (36) from .env // tip: ⌘ custom filepath { path: '/custom/path/.env' }
+[GUARDIAN] LLM: dedicated (mistral-small-3.2-24b-instruct-2506)
+[PolicyEngine] DRY-RUN MODE — kubectl commands will be simulated, not executed
+[PolicyEngine] Initialized  dryRun=true
+
+=== 20-INCIDENT TEST RUN — 2 incident(s) ===
+
+[VectorStore] Probing embedding model "bge-multilingual-gemma2"…
+[VectorStore] Embedding dimension: 3584
+[VectorStore] Collection "incident_episodes" ready (dim=3584)
+[EpisodicMemory] Failed to load from MongoDB: Operation `incidentepisodes.find()` buffering timed out after 10000ms
+[ShortMemory] Connected to Redis (redis://localhost:6379)
+
+################################################################################
+[1/2] P4-config-error-minikube  (cluster=minikube, tier=dev)
+expectation: kubectl can't add a missing config key — likely escalate rather than invent a fix
+################################################################################
+[minikube] [GRAPH] investigator — minikube/shop/notifier (attempt 2/3)
+[RuleEngine] getRules failed: Operation `learnedrules.find()` buffering timed out after 10000ms
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e3-c304-778d-bab3-b2167dd35737; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e3-c33c-77bd-b82e-4daef14d3aec; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e3-c35b-76ae-9511-8fd62707440d
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=minikube get pods notifier-minikube-2q7 -n shop -o yaml
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=minikube describe pod notifier-minikube-2q7 -n shop
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=minikube get configmap notifier-config -n shop -o yaml
+[INVESTIGATOR] [EXEC-LAYER] blocked by sanitizer: "get configmap notifier-config -n shop -o jsonpath='{.data.SMTP_HOST}'" — shell metacharacters detected — possible injection attempt: "kubectl --context=minikube get configmap notifier-config -n shop -o jsonpath='{."
+[INVESTIGATOR] [EXEC-LAYER] blocked by sanitizer: "get configmap notifier-config -n shop -o jsonpath='{.data}'" — shell metacharacters detected — possible injection attempt: "kubectl --context=minikube get configmap notifier-config -n shop -o jsonpath='{."
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=minikube get configmap notifier-config -n shop -o json
+[INVESTIGATOR] [EXEC-LAYER] blocked: "get secret -n shop" — reading Secret values is blocked — use the Config-layer summary (key names only) instead
+[INVESTIGATOR] [EXEC-LAYER] blocked: "get secret -n shop -o json" — reading Secret values is blocked — use the Config-layer summary (key names only) instead
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-05ec-739b-8d5a-a07f8f729faf
+[INVESTIGATOR] [EXEC-LAYER] blocked: "get secret -n shop -o yaml" — reading Secret values is blocked — use the Config-layer summary (key names only) instead
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=minikube get configmap -n shop
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=minikube get pod notifier-minikube-2q7 -n shop -o json
+[INVESTIGATOR][minikube] The pod 'notifier-minikube-2q7' fails to start because the ConfigMap 'notifier-config' in namespace 'shop' is missing the required key 'SMTP_HOST', which is referenced in the pod's environment configuration. (layer=config, conf=0.95, evidence=0.95, commands run=13, incidents=1)
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-3929-774c-a7e2-84d4aa9dac27; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-05ec-739b-8d5a-a07f8f729faf
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-3df8-7184-9bb6-2299b8507a02; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-3929-774c-a7e2-84d4aa9dac27
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-480d-765d-a47c-84d81e28d279; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-439a-7388-bb2d-5f86c84e81c6
+[IssueTracker] track() failed for "minikube/shop/notifier": Operation `issuetrackers.findOne()` buffering timed out after 10000ms
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-439a-7388-bb2d-5f86c84e81c6; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-3df8-7184-9bb6-2299b8507a02
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=minikube get configmap notifier-config -n shop -o json
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-4d3b-768f-b5cf-74bd760035d8; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-480d-765d-a47c-84d81e28d279
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=minikube get configmap notifier-config -n shop -o yaml
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=minikube get configmap notifier-config -n shop -o yaml
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-50c0-7212-aa36-6d2cb9b62084; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-4d3b-768f-b5cf-74bd760035d8
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-5de7-716c-a4c2-0b77dd16b909; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-59f6-7071-8418-0509ed7dca93
+[PLANNER][minikube] plan accepted — 1 step(s): add missing SMTP_HOST key to ConfigMap
+[minikube] [GRAPH] planner — 1 step(s): apply -f - -n shop
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-5517-75a8-901e-732ed5f30a6c; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-50c0-7212-aa36-6d2cb9b62084
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-59f6-7071-8418-0509ed7dca93; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-5517-75a8-901e-732ed5f30a6c
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-61cd-75ac-9e3d-dd88b1228ccf; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-5de7-716c-a4c2-0b77dd16b909
+[RuleEngine] getRules failed: Operation `learnedrules.find()` buffering timed out after 10000ms
+[minikube] [GUARDIAN] Reviewing: action=add missing SMTP_HOST key to ConfigMap  issue=CreateContainerConfigError  attempt=2
+[minikube] [GUARDIAN] Response time: 2510ms  tokens=2510
+[minikube] [GRAPH] guardian — minikube/shop/notifier (apply -f - -n shop) verdict=APPROVE class=SAFE
+[AUDIT] Action logged: apply -f - -n shop
+[minikube] [GRAPH] policy — minikube/shop/notifier (apply -f - -n shop) status=rejected command=
+[minikube] [GRAPH] investigator — minikube/shop/notifier (attempt 3/3) — re-diagnosing after: POLICY_INCOMPLETE_COMMAND: command reads from stdin ("-f -" / "-f /dev/stdin" / "--patch-file -") but no manifest content is ever piped into it — would hang or fail if actually run
+[AUDIT] MongoDB write failed: Operation `auditevents.insertOne()` buffering timed out after 10000ms
+[RuleEngine] getRules failed: Operation `learnedrules.find()` buffering timed out after 10000ms
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-675f-71cb-8038-3ed8e279f613; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-61cd-75ac-9e3d-dd88b1228ccf
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=minikube get pods notifier-minikube-2q7 -n shop -o yaml
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=minikube describe pod notifier-minikube-2q7 -n shop
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=minikube get configmap notifier-config -n shop -o yaml
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-8112-779c-8b8f-915b33337152; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-6d7c-7418-9bcf-c4c84b8d08ce; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e3-c35b-76ae-9511-8fd62707440d
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=minikube get configmap notifier-config -n shop -o json
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-6d7c-7418-9bcf-c4c84b8d08ce; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-675f-71cb-8038-3ed8e279f613
+[INVESTIGATOR] [EXEC-LAYER] blocked: "get secrets -n shop" — reading Secret values is blocked — use the Config-layer summary (key names only) instead
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-af89-734e-95b0-969ebc5de484; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-a84f-723b-91ea-36528a33e367
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-a84f-723b-91ea-36528a33e367
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-bd6f-712f-9f9c-bac7c6f3feff; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-bd7b-7103-8aad-c50839118f79; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-af89-734e-95b0-969ebc5de484
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-cc26-7301-a9f0-e6f8cf647c51; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-cc2a-71c9-a410-d6983f98097d; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-bd7b-7103-8aad-c50839118f79
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-eb6e-727e-8af3-a021e280f017; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-eb77-7641-b573-2eb4e7cf550e; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-dd36-71a8-ae78-9c90136ed7f5
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-cfe3-73aa-8323-08e8663fc3d7; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-cc2a-71c9-a410-d6983f98097d
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-dd33-703d-b0f8-446d1135decd; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-dd36-71a8-ae78-9c90136ed7f5; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-cfe3-73aa-8323-08e8663fc3d7
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-ef28-7629-a727-039a90f13aef; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-eb77-7641-b573-2eb4e7cf550e
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-facf-742c-91d2-329e2b56ee4f; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-fad7-7577-a00a-fee530257550; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-ef28-7629-a727-039a90f13aef; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-8112-779c-8b8f-915b33337152
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-57d4-729d-8e1b-05ad72aee26b
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-2bd2-74dd-9129-cada79721243; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-2bf2-709d-b2a2-289e78395e7c; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-2bf8-72ed-aa80-6ba20e2653c4; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e4-fad7-7577-a00a-fee530257550
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-5f4a-746f-ae1a-67665ca437b0; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-57d4-729d-8e1b-05ad72aee26b
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-642e-7075-904a-0923199ba486; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-5f4a-746f-ae1a-67665ca437b0
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-67ac-7768-a9d1-2f867c55c3b7; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-642e-7075-904a-0923199ba486
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-9559-7648-b81e-f25c0688a656; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-7c68-7368-8030-979da54d5b38
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-6aa7-74af-8c79-6482712ba6eb; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-67ac-7768-a9d1-2f867c55c3b7
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-7c68-7368-8030-979da54d5b38; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-6aa7-74af-8c79-6482712ba6eb
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-b4a0-729c-816a-8fd4555977a4; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-9559-7648-b81e-f25c0688a656
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-d682-77ea-a445-ff3b37cf97d1; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-b4a0-729c-816a-8fd4555977a4
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e6-102c-72bc-b6ca-b57cc5085eea; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-fb5b-73cb-ab7f-33c6fb122546
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-fb5b-73cb-ab7f-33c6fb122546; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-d682-77ea-a445-ff3b37cf97d1
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e6-2fd3-77b5-861b-6d08e86fcd34; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e6-102c-72bc-b6ca-b57cc5085eea
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e6-6c2f-765b-a7e8-d207d338e31e; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e6-2fd3-77b5-861b-6d08e86fcd34
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e6-898c-701b-8367-fa86229d4de3; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e6-6c2f-765b-a7e8-d207d338e31e
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e6-e336-704e-a6c3-aeb82b05b229; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e6-b629-7570-89ec-94c877300c87
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e6-b629-7570-89ec-94c877300c87; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e6-898c-701b-8367-fa86229d4de3
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e7-1355-72ce-ace4-6398dfb6713f; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e6-e336-704e-a6c3-aeb82b05b229
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e7-48db-774b-812d-f35c0875ada8; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e7-1355-72ce-ace4-6398dfb6713f
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e7-6042-71af-a8e6-182d505354ad; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e7-48db-774b-812d-f35c0875ada8
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e7-7eb9-74ee-bf8a-e56ab81a5c04; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e7-6042-71af-a8e6-182d505354ad
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e7-9b69-765c-bafb-48b41d7abff9; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e7-7eb9-74ee-bf8a-e56ab81a5c04
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e7-ba9c-743f-ba4b-300cf5673d1f; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e7-9b69-765c-bafb-48b41d7abff9
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e7-dfd8-779e-a543-7f2bc7d719c3; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e7-ba9c-743f-ba4b-300cf5673d1f
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e7-ff4d-74a9-8a44-451e3f2d4cde; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e7-dfd8-779e-a543-7f2bc7d719c3
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e8-227d-74a2-88f9-292b367231e5; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e7-ff4d-74a9-8a44-451e3f2d4cde
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e8-4363-731c-93b0-eccda71f3610; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e8-227d-74a2-88f9-292b367231e5
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e8-6213-7607-b6ca-91fd84ce8236; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e8-4363-731c-93b0-eccda71f3610
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e8-7ef8-72ed-bbc1-975518def1d3; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e8-6213-7607-b6ca-91fd84ce8236
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e8-9781-74b3-b14a-643274385cb2; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e8-7ef8-72ed-bbc1-975518def1d3
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e8-c03c-70fb-9de2-705fdb8b7a96; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e8-9781-74b3-b14a-643274385cb2
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e9-04f0-7431-88c8-3b4f59374309; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e8-c03c-70fb-9de2-705fdb8b7a96
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e9-55cd-77aa-a212-c10062b5953b; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e9-04f0-7431-88c8-3b4f59374309
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e9-bb7f-723b-81a8-787bf7547834; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e9-55cd-77aa-a212-c10062b5953b
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e9-fc7c-7219-bf9a-27d940fb70c5; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e9-bb7f-723b-81a8-787bf7547834
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056ea-21c9-7518-ab16-50def889bcc3; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e9-fc7c-7219-bf9a-27d940fb70c5
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056ea-4c43-71ba-afea-17e17cce2731; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056ea-21c9-7518-ab16-50def889bcc3
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056ea-6e2f-73d2-9906-64b71d840439; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056ea-4c43-71ba-afea-17e17cce2731
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056ea-98a5-76bf-b809-6c01aed38b19; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056ea-6e2f-73d2-9906-64b71d840439
+[INVESTIGATOR][minikube] hit the 40-iteration safety cap without reaching confidence/evidenceSufficiency >= 0.9
+[INVESTIGATOR][minikube] returning best-effort report — never reached the confidence/evidence target (confidence=0, evidenceSufficiency=0)
+[INVESTIGATOR][minikube] CreateContainerConfigError — investigation unavailable, unable to determine specific root cause (layer=pod, conf=0.00, evidence=0.00, commands run=5, incidents=1)
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056ea-c95b-75ee-9f41-2d7f12b1f8fe; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056ea-98a5-76bf-b809-6c01aed38b19
+[IssueTracker] track() failed for "minikube/shop/notifier": Operation `issuetrackers.findOne()` buffering timed out after 10000ms
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=minikube get configmap notifier-config -n shop -o json
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=minikube describe pod notifier-minikube-2q7 -n shop
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056ea-efb3-718f-a411-bd4ac950f480; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056ea-c95b-75ee-9f41-2d7f12b1f8fe
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056eb-0d69-7012-9a56-4fd13173a4e1; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056ea-efb3-718f-a411-bd4ac950f480; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e5-2bf8-72ed-aa80-6ba20e2653c4
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056eb-3a85-70fd-8e5c-fb8e8ee1b07d; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056eb-3491-75aa-bc1d-d12cf172e2f5
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056eb-3491-75aa-bc1d-d12cf172e2f5
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056eb-4274-74d0-b8b9-8744bb54830b; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056eb-3a85-70fd-8e5c-fb8e8ee1b07d
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=minikube get configmap notifier-config -n shop -o yaml
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056eb-6bf4-715f-8e8c-8e8e22ea17d0; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056eb-6bf8-7218-a641-c182a794e818; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056eb-4274-74d0-b8b9-8744bb54830b
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056eb-94cd-7059-996e-5bd7b90bcaee; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056eb-94d0-712e-8c61-30d40ede00b4; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056eb-6bf8-7218-a641-c182a794e818
+[PLANNER][minikube] plan accepted — 1 step(s): add missing SMTP_HOST key to ConfigMap
+[minikube] [GRAPH] planner — 1 step(s): apply -f - -n shop
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056eb-ad80-7334-859e-91a8eee7cf4d; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056eb-94d0-712e-8c61-30d40ede00b4
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056eb-d37a-76c8-8f09-69945520ab3e; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056eb-d37c-726e-9752-bf537ac290e0; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056eb-ad80-7334-859e-91a8eee7cf4d
+[RuleEngine] getRules failed: Operation `learnedrules.find()` buffering timed out after 10000ms
+[minikube] [GUARDIAN] Reviewing: action=add missing SMTP_HOST key to ConfigMap  issue=CreateContainerConfigError  attempt=3
+[minikube] [GUARDIAN] Response time: 2299ms  tokens=2413
+[minikube] [GRAPH] guardian — minikube/shop/notifier (apply -f - -n shop) verdict=MODIFY class=SAFE
+[AUDIT] Action logged: apply -f - -n shop --local -o yaml --dry-run=client -f configmap/notifier-config.yaml
+[minikube] [GRAPH] policy — minikube/shop/notifier (apply -f - -n shop --local -o yaml --dry-run=client -f configmap/notifier-config.yaml) status=rejected command=
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056eb-fa96-76b3-b740-f6adabf0e2ef; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056eb-fa9b-74c1-88ab-15c2b2df27e7; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056eb-d37c-726e-9752-bf537ac290e0
+[AUDIT] MongoDB write failed: Operation `auditevents.insertOne()` buffering timed out after 10000ms
+[EscalationStore] DB save failed: Operation `escalationhistories.insertOne()` buffering timed out after 10000ms
+[REFLECTION] Analyzing: CreateContainerConfigError resolved=false attempts=0
+[REFLECTION] Done in 876ms  tokens=396
+[REFLECTION] rootCause:  The pod creation failed due to an unspecified configuration error in the container specification.
+[REFLECTION] lesson:     The agent should investigate the pod configuration and deployment manifests more thoroughly to identify specific misconfigurations.
+[REFLECTION] rule:       Always validate pod and container configurations before deployment to prevent CreateContainerConfigError.
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056ec-1943-77ed-ab92-ef6188322cc1; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056ec-1945-73c2-a1db-1240f371f177; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056eb-fa9b-74c1-88ab-15c2b2df27e7; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056eb-0d69-7012-9a56-4fd13173a4e1
+[EscalationStore] Failed to resolve notification targets, falling back to admins: Operation `users.find()` buffering timed out after 10000ms
+[IssueTracker] track() failed for "minikube/shop/notifier": Operation `issuetrackers.findOne()` buffering timed out after 10000ms
+[EpisodicMemory] store failed: Operation `incidentepisodes.insertOne()` buffering timed out after 10000ms
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056ec-495b-751a-8e53-0cdbecb8ab14; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056ec-1945-73c2-a1db-1240f371f177
+[RuleEngine] analyze failed: Operation `incidentepisodes.find()` buffering timed out after 10000ms
+
+>>> RESULT [P4-config-error-minikube]: outcome=escalated attempt=3 guardianVerdict=MODIFY command="apply -f - -n shop" approvalsRequested=0 (589669ms)
+
+################################################################################
+[2/2] P4-config-error-cluster2  (cluster=cluster2, tier=production)
+expectation: kubectl can't add a missing config key — likely escalate rather than invent a fix
+################################################################################
+[cluster2] [GRAPH] investigator — cluster2/shop/notifier (attempt 2/3)
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056ec-7084-7034-b149-cf760b07b4a4; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056ec-7088-7142-b0e0-718386055913; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056ec-495b-751a-8e53-0cdbecb8ab14
+[IssueTracker] resolve() failed for "minikube/shop/notifier": Operation `issuetrackers.findOne()` buffering timed out after 10000ms
+[RuleEngine] getRules failed: Operation `learnedrules.find()` buffering timed out after 10000ms
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=cluster2 get pods notifier-cluster2-2q7 -n shop -o json
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=cluster2 describe pod notifier-cluster2-2q7 -n shop
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=cluster2 get configmap notifier-config -n shop -o yaml
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=cluster2 get configmap notifier-config -n shop -o json
+[INVESTIGATOR] [EXEC-LAYER] blocked: "get secrets -n shop" — reading Secret values is blocked — use the Config-layer summary (key names only) instead
+[NotifEngine] ✓ teams → Escalation: minikube/shop/notifier
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ec-c255-72ba-89f7-dc5ba1fcf033; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ec-c258-77ae-90ea-af63337e1050; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ec-c25c-759b-b81c-9b9909cc2ff0; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056ec-7088-7142-b0e0-718386055913; trace=01a056e3-c304-778d-bab3-b2167dd35737,id=01a056e3-c304-778d-bab3-b2167dd35737
+[INVESTIGATOR][cluster2] The ConfigMap 'notifier-config' in the 'shop' namespace is missing the required 'SMTP_HOST' environment variable, causing the pod to fail during container configuration. (layer=config, conf=0.95, evidence=0.95, commands run=6, incidents=1)
+[NotifEngine] ✓ inApp → Escalation: minikube/shop/notifier
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ec-e97e-7124-840c-c8c39dd58b4d
+[IssueTracker] track() failed for "cluster2/shop/notifier": Operation `issuetrackers.findOne()` buffering timed out after 10000ms
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=cluster2 get configmap notifier-config -n shop -o json
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ec-fbab-7526-b7f8-61b92c559c3e; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ec-f866-7036-8540-55832fa3b8e2
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ec-f3d3-741f-8c42-d547ff6c988e; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ec-e97e-7124-840c-c8c39dd58b4d
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ec-f866-7036-8540-55832fa3b8e2; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ec-f3d3-741f-8c42-d547ff6c988e
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-0016-757f-9075-a5ef177e3c52; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ec-fbab-7526-b7f8-61b92c559c3e
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-0738-751c-ae90-b9a7e93419e3; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-0016-757f-9075-a5ef177e3c52
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=cluster2 get configmap notifier-config -n shop -o yaml
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-50e5-7038-b81f-b347bb4d8e23; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-4994-75a4-b2c8-9d7af72f50a6
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-4994-75a4-b2c8-9d7af72f50a6
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-227e-72e7-bce5-d533ef0a254a; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-0738-751c-ae90-b9a7e93419e3; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ec-c25c-759b-b81c-9b9909cc2ff0
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-6681-741a-99c9-0700d33045ac; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-6687-7002-9740-626da6052bd2; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-50e5-7038-b81f-b347bb4d8e23
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-9072-72ea-b9a3-d3fedbda81d9; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-9073-75fb-8a97-c8aad56aeff0; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-6687-7002-9740-626da6052bd2
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-9aee-71ef-8c35-8cc34b8b30f7; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-9073-75fb-8a97-c8aad56aeff0
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-c5d7-75f0-89ad-c0994a3aef2d; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-c5d9-753b-934f-1ff2ff47cdc7; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-9aee-71ef-8c35-8cc34b8b30f7
+[PLANNER][cluster2] plan accepted — 1 step(s): apply updated ConfigMap with SMTP_HOST
+[cluster2] [GRAPH] planner — 1 step(s): apply -f /dev/stdin -n shop
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-e8c5-726f-bab2-f2e0c5bf0cc1; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-e8c6-7709-a817-395211d8c756; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-c5d9-753b-934f-1ff2ff47cdc7
+[RuleEngine] getRules failed: Operation `learnedrules.find()` buffering timed out after 10000ms
+[cluster2] [GUARDIAN] Reviewing: action=apply updated ConfigMap with SMTP_HOST  issue=CreateContainerConfigError  attempt=2
+[cluster2] [GUARDIAN] Response time: 2577ms  tokens=2497
+[cluster2] [GRAPH] guardian — cluster2/shop/notifier (apply -f /dev/stdin -n shop) verdict=APPROVE class=SAFE
+[AUDIT] Action logged: apply -f /dev/stdin -n shop
+[cluster2] [GRAPH] policy — cluster2/shop/notifier (apply -f /dev/stdin -n shop) status=rejected command=
+[cluster2] [GRAPH] investigator — cluster2/shop/notifier (attempt 3/3) — re-diagnosing after: POLICY_INCOMPLETE_COMMAND: command reads from stdin ("-f -" / "-f /dev/stdin" / "--patch-file -") but no manifest content is ever piped into it — would hang or fail if actually run
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-1156-76ab-8727-53dc1cdb5c1b; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-1159-740b-88c8-e914056b9880; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-e8c6-7709-a817-395211d8c756
+[AUDIT] MongoDB write failed: Operation `auditevents.insertOne()` buffering timed out after 10000ms
+[RuleEngine] getRules failed: Operation `learnedrules.find()` buffering timed out after 10000ms
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-3c93-720a-8f76-80ce8756ffa7; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-3c98-774c-8365-59a11a832e28; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-1159-740b-88c8-e914056b9880; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ed-227e-72e7-bce5-d533ef0a254a
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=cluster2 get pods notifier-cluster2-2q7 -n shop -o yaml
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=cluster2 describe pod notifier-cluster2-2q7 -n shop
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=cluster2 get configmap notifier-config -n shop -o yaml
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=cluster2 get configmap notifier-config -n shop -o json
+[INVESTIGATOR] [EXEC-LAYER] blocked: "get secrets -n shop" — reading Secret values is blocked — use the Config-layer summary (key names only) instead
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-6dc1-76c3-8f70-f39ccf4f49fc; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-6dc3-701d-8f26-09c14506c267; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-6dc4-77ef-9034-8c473c602fb5; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-3c98-774c-8365-59a11a832e28
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=cluster2 get deployment notifier -n shop -o yaml
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=cluster2 get deployment notifier -n shop -o json
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=cluster2 get pod notifier-cluster2-2q7 -n shop -o json
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=cluster2 get configmap -n shop
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=cluster2 get pod notifier-cluster2-2q7 -n shop -o wide
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-9de4-71e8-8810-77b4f839ec50; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-9941-76ff-8525-bd21f6c2f85f
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-94e3-7705-814a-2d9bdaf9bc0e
+[INVESTIGATOR][cluster2] ConfigMap 'notifier-config' in namespace 'shop' is missing the required key 'SMTP_HOST', which is referenced by the pod's configuration but does not exist. (layer=config, conf=0.95, evidence=0.95, commands run=14, incidents=1)
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-a201-711b-aacb-770216c15593; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-9de4-71e8-8810-77b4f839ec50
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-9941-76ff-8525-bd21f6c2f85f; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-94e3-7705-814a-2d9bdaf9bc0e
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-a888-74e7-beb6-f09356f09fc9; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-a201-711b-aacb-770216c15593
+[IssueTracker] track() failed for "cluster2/shop/notifier": Operation `issuetrackers.findOne()` buffering timed out after 10000ms
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=cluster2 get configmap notifier-config -n shop -o json
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=cluster2 get deployment notifier -n shop -o yaml
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-abe2-7651-96c9-d07cfe33175d; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-a888-74e7-beb6-f09356f09fc9
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-bce2-76aa-ae1b-bcd0fe88278c; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-abe2-7651-96c9-d07cfe33175d
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-c1c4-720e-b3b4-4af22bf555f6; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-bce2-76aa-ae1b-bcd0fe88278c
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=cluster2 get configmap notifier-config -n shop -o yaml
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-c577-7513-9169-9962f0c43dd6; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-c1c4-720e-b3b4-4af22bf555f6
+[INVESTIGATOR] [EXEC-LAYER] blocked by sanitizer: "get configmap notifier-config -n shop -o jsonpath='{.data}'" — shell metacharacters detected — possible injection attempt: "kubectl --context=cluster2 get configmap notifier-config -n shop -o jsonpath='{."
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=cluster2 get configmap notifier-config -n shop
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-ca0a-71b1-a972-b47612263382; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-c577-7513-9169-9962f0c43dd6
+[INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=cluster2 get configmap notifier-config -n shop -o json
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-ce0a-73b7-9ac5-8ca5468facb5; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-ca0a-71b1-a972-b47612263382
+[PLANNER][cluster2] plan accepted — 1 step(s): add missing SMTP_HOST to ConfigMap
+[cluster2] [GRAPH] planner — 1 step(s): create configmap notifier-config --from-literal=SMTP_HOST=smtp.example.com --from-literal=SMTP_PORT=redacted --from-literal=SMTP_USER=redacted -n shop --dry-run=server -o yaml | kubectl apply -f -
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-e0a9-71c2-8e65-6af02d5a2247; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-dd44-73c4-9ab9-dfa95a780c90
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-dd44-73c4-9ab9-dfa95a780c90; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-ce0a-73b7-9ac5-8ca5468facb5
+[RuleEngine] getRules failed: Operation `learnedrules.find()` buffering timed out after 10000ms
+[cluster2] [GUARDIAN] Reviewing: action=add missing SMTP_HOST to ConfigMap  issue=CreateContainerConfigError  attempt=3
+[cluster2] [GUARDIAN] Response time: 2135ms  tokens=2513
+[cluster2] [GRAPH] guardian — cluster2/shop/notifier (create configmap notifier-config --from-literal=SMTP_HOST=smtp.example.com --from-literal=SMTP_PORT=redacted --from-literal=SMTP_USER=redacted -n shop --dry-run=server -o yaml | kubectl apply -f -) verdict=APPROVE class=SAFE
+[AUDIT] Action logged: create configmap notifier-config --from-literal=SMTP_HOST=smtp.example.com --from-literal=SMTP_PORT=redacted --from-literal=SMTP_USER=redacted -n shop --dry-run=server -o yaml | kubectl apply -f -
+[cluster2] [GRAPH] policy — cluster2/shop/notifier (create configmap notifier-config --from-literal=SMTP_HOST=smtp.example.com --from-literal=SMTP_PORT=redacted --from-literal=SMTP_USER=redacted -n shop --dry-run=server -o yaml | kubectl apply -f -) status=rejected command=
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-e7f4-746d-a2b8-0eaa2b641e46; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-e4ab-7279-837e-da3af0bd7af7
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-e4ab-7279-837e-da3af0bd7af7; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-e0a9-71c2-8e65-6af02d5a2247
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-ead8-71e4-a2a4-78db572b877a; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-e7f4-746d-a2b8-0eaa2b641e46
+[AUDIT] MongoDB write failed: Operation `auditevents.insertOne()` buffering timed out after 10000ms
+[EscalationStore] DB save failed: Operation `escalationhistories.insertOne()` buffering timed out after 10000ms
+[REFLECTION] Analyzing: CreateContainerConfigError resolved=false attempts=0
+[REFLECTION] Done in 1172ms  tokens=555
+[REFLECTION] rootCause:  The ConfigMap 'notifier-config' in the 'shop' namespace was missing the required key 'SMTP_HOST' due to a typo in the key name during creation.
+[REFLECTION] lesson:     The agent should verify the exact key names and values in the ConfigMap before applying it to ensure all required keys are present.
+[REFLECTION] rule:       Always validate the presence and correctness of all required keys in a ConfigMap before applying it to a namespace.
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-fbe6-70cc-9ade-54a6631c6d20; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-ead8-71e4-a2a4-78db572b877a; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ee-6dc4-77ef-9034-8c473c602fb5
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ef-2300-7238-b68d-7234613084f7
+[EscalationStore] Failed to resolve notification targets, falling back to admins: Operation `users.find()` buffering timed out after 10000ms
+[IssueTracker] track() failed for "cluster2/shop/notifier": Operation `issuetrackers.findOne()` buffering timed out after 10000ms
+[EpisodicMemory] store failed: Operation `incidentepisodes.insertOne()` buffering timed out after 10000ms
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ef-2e14-714d-84a1-e082bc7131d0; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ef-2300-7238-b68d-7234613084f7
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ef-448b-76ed-8e12-808de9da6a59; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ef-448c-754a-a3bb-844c2f527309; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ef-382e-776e-85d7-6e7cb5bb559e
+Failed to Failed to send multipart request. Received status [429]: Too Many Requests. Message: {"error":"Too many requests: tenant exceeded usage limits: Monthly unique traces usage limit exceeded"}
+
+Context: trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ef-382a-709c-b0d9-fd462de95e7f; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ef-382e-776e-85d7-6e7cb5bb559e; trace=01a056ec-c255-72ba-89f7-dc5ba1fcf033,id=01a056ef-2e14-714d-84a1-e082bc7131d0
+[RuleEngine] analyze failed: Operation `incidentepisodes.find()` buffering timed out after 10000ms
+
+>>> RESULT [P4-config-error-cluster2]: outcome=escalated attempt=3 guardianVerdict=APPROVE command="create configmap notifier-config --from-literal=SMTP_HOST=smtp.example.com --from-literal=SMTP_PORT=redacted --from-literal=SMTP_USER=redacted -n shop --dry-run=server -o yaml | kubectl apply -f -" approvalsRequested=0 (230094ms)
+
+
+Done. 2 incidents run.
+JSONL: C:\Users\temp\Desktop\BigApps_PFE\k8s_ai_agent\test-output\20-incidents\run-2026-08-31T08-15-51-350Z.jsonl
+Report: C:\Users\temp\Desktop\BigApps_PFE\k8s_ai_agent\test-output\20-incidents\report-2026-08-31T08-15-51-350Z.md

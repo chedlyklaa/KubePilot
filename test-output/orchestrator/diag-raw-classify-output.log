@@ -1,0 +1,274 @@
+◇ injected env (36) from .env // tip: ⌁ auth for agents [www.vestauth.com]
+◇ injected env (36) from .env // tip: ◈ secrets for agents [www.dotenvx.com]
+◇ injected env (36) from .env // tip: ⌘ multiple files { path: ['.env.local', '.env'] }
+◇ injected env (36) from .env // tip: ⌘ enable debugging { debug: true }
+◇ injected env (36) from .env // tip: ◈ encrypted .env [www.dotenvx.com]
+[PolicyEngine] DRY-RUN MODE — kubectl commands will be simulated, not executed
+[PolicyEngine] Initialized  dryRun=true
+[INVESTIGATOR] LLM: dedicated (qwen3-235b-a22b-instruct-2507)
+◇ injected env (36) from .env // tip: ◈ secrets for agents [www.dotenvx.com]
+[PolicyEngine] DRY-RUN MODE — kubectl commands will be simulated, not executed
+[PolicyEngine] Initialized  dryRun=true
+[PLANNER] LLM: dedicated (qwen3-235b-a22b-instruct-2507)
+◇ injected env (36) from .env // tip: ⌘ enable debugging { debug: true }
+[GUARDIAN] LLM: dedicated (mistral-small-3.2-24b-instruct-2506)
+[PolicyEngine] DRY-RUN MODE — kubectl commands will be simulated, not executed
+[PolicyEngine] Initialized  dryRun=true
+[DB] Connected to MongoDB at mongodb://localhost:27017/K8S-agent-IHM
+=== SIGNALS SENT TO LLM ===
+{
+  "pods": [
+    {
+      "name": "api-59c55f44f6-gb87r",
+      "namespace": "kp-test",
+      "phase": "Pending",
+      "nodeName": "kubepilot-test-control-plane",
+      "ownerKind": "ReplicaSet",
+      "ownerName": "api-59c55f44f6",
+      "containers": [
+        {
+          "name": "nginx",
+          "ready": false,
+          "restartCount": 0,
+          "waitingReason": "ImagePullBackOff",
+          "terminatedReason": null,
+          "exitCode": null
+        }
+      ]
+    },
+    {
+      "name": "cache-76c4dcc448-5qzxc",
+      "namespace": "kp-test",
+      "phase": "Running",
+      "nodeName": "kubepilot-test-control-plane",
+      "ownerKind": "ReplicaSet",
+      "ownerName": "cache-76c4dcc448",
+      "containers": [
+        {
+          "name": "redis",
+          "ready": true,
+          "restartCount": 12,
+          "waitingReason": null,
+          "terminatedReason": null,
+          "exitCode": 128
+        }
+      ]
+    },
+    {
+      "name": "kube-controller-manager-kubepilot-test-control-plane",
+      "namespace": "kube-system",
+      "phase": "Running",
+      "nodeName": "kubepilot-test-control-plane",
+      "ownerKind": "Node",
+      "ownerName": "kubepilot-test-control-plane",
+      "containers": [
+        {
+          "name": "kube-controller-manager",
+          "ready": true,
+          "restartCount": 1,
+          "waitingReason": null,
+          "terminatedReason": null,
+          "exitCode": 1
+        }
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "kubepilot-test-control-plane",
+      "unschedulable": false,
+      "conditions": [
+        {
+          "type": "Ready",
+          "status": "True",
+          "reason": "KubeletReady"
+        }
+      ],
+      "taints": []
+    }
+  ],
+  "events": [
+    {
+      "reason": "PossibleMemoryBackedVolumesOnDisk",
+      "message": "The tmpfs noswap option is not supported. Memory-backed volumes (e.g. secrets, emptyDirs, etc.) might be swapped to disk and should no longer be considered secure.",
+      "count": 1,
+      "lastSeen": "2026-08-21T15:17:43Z",
+      "involved": {
+        "kind": "Node",
+        "name": "kubepilot-test-control-plane"
+      }
+    },
+    {
+      "reason": "CgroupV1",
+      "message": "cgroup v1 support is in maintenance mode, please migrate to cgroup v2",
+      "count": 1,
+      "lastSeen": "2026-08-21T15:17:44Z",
+      "involved": {
+        "kind": "Node",
+        "name": "kubepilot-test-control-plane"
+      }
+    },
+    {
+      "reason": "PossibleMemoryBackedVolumesOnDisk",
+      "message": "The tmpfs noswap option is not supported. Memory-backed volumes (e.g. secrets, emptyDirs, etc.) might be swapped to disk and should no longer be considered secure.",
+      "count": 1,
+      "lastSeen": "2026-08-21T15:17:52Z",
+      "involved": {
+        "kind": "Node",
+        "name": "kubepilot-test-control-plane"
+      }
+    },
+    {
+      "reason": "CgroupV1",
+      "message": "cgroup v1 support is in maintenance mode, please migrate to cgroup v2",
+      "count": 1,
+      "lastSeen": "2026-08-21T15:17:52Z",
+      "involved": {
+        "kind": "Node",
+        "name": "kubepilot-test-control-plane"
+      }
+    },
+    {
+      "reason": "Failed",
+      "message": "Failed to pull image \"nginx:doesnotexist\": rpc error: code = NotFound desc = failed to pull and unpack image \"docker.io/library/nginx:doesnotexist\": failed to resolve reference \"docker.io/library/nginx:doesnotexist\": docker.io/library/nginx:doesnotexist: not found",
+      "count": 5,
+      "lastSeen": "2026-08-21T15:21:46Z",
+      "involved": {
+        "kind": "Pod",
+        "name": "api-59c55f44f6-gb87r",
+        "namespace": "kp-test"
+      }
+    },
+    {
+      "reason": "Failed",
+      "message": "Error: ErrImagePull",
+      "count": 5,
+      "lastSeen": "2026-08-21T15:21:46Z",
+      "involved": {
+        "kind": "Pod",
+        "name": "api-59c55f44f6-gb87r",
+        "namespace": "kp-test"
+      }
+    },
+    {
+      "reason": "Failed",
+      "message": "Error: ImagePullBackOff",
+      "count": 218,
+      "lastSeen": "2026-08-24T07:36:35Z",
+      "involved": {
+        "kind": "Pod",
+        "name": "api-59c55f44f6-gb87r",
+        "namespace": "kp-test"
+      }
+    },
+    {
+      "reason": "Failed",
+      "message": "Error: failed to create containerd task: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: container init was OOM-killed (memory limit too low?)",
+      "count": 9,
+      "lastSeen": "2026-08-24T07:07:44Z",
+      "involved": {
+        "kind": "Pod",
+        "name": "cache-76c4dcc448-5qzxc",
+        "namespace": "kp-test"
+      }
+    },
+    {
+      "reason": "BackOff",
+      "message": "Back-off restarting failed container redis in pod cache-76c4dcc448-5qzxc_kp-test(1f6cd080-1d67-42e5-b099-7296ffe6978b)",
+      "count": 160,
+      "lastSeen": "2026-08-24T07:22:38Z",
+      "involved": {
+        "kind": "Pod",
+        "name": "cache-76c4dcc448-5qzxc",
+        "namespace": "kp-test"
+      }
+    },
+    {
+      "reason": "FailedScheduling",
+      "message": "0/1 nodes are available: 1 node(s) had untolerated taint {node.kubernetes.io/not-ready: }. preemption: 0/1 nodes are available: 1 Preemption is not helpful for scheduling.",
+      "count": 1,
+      "lastSeen": "2026-08-21T15:17:57Z",
+      "involved": {
+        "kind": "Pod",
+        "name": "coredns-668d6bf9bc-srhtl",
+        "namespace": "kube-system"
+      }
+    },
+    {
+      "reason": "FailedScheduling",
+      "message": "0/1 nodes are available: 1 node(s) had untolerated taint {node.kubernetes.io/not-ready: }. preemption: 0/1 nodes are available: 1 Preemption is not helpful for scheduling.",
+      "count": 1,
+      "lastSeen": "2026-08-21T15:17:57Z",
+      "involved": {
+        "kind": "Pod",
+        "name": "coredns-668d6bf9bc-v98f8",
+        "namespace": "kube-system"
+      }
+    },
+    {
+      "reason": "Unhealthy",
+      "message": "Readiness probe failed: HTTP probe failed with statuscode: 500",
+      "count": 4,
+      "lastSeen": "2026-08-24T07:07:25Z",
+      "involved": {
+        "kind": "Pod",
+        "name": "kube-apiserver-kubepilot-test-control-plane",
+        "namespace": "kube-system"
+      }
+    },
+    {
+      "reason": "Unhealthy",
+      "message": "Liveness probe failed: Get \"https://127.0.0.1:10257/healthz\": dial tcp 127.0.0.1:10257: connect: connection refused",
+      "count": 2,
+      "lastSeen": "2026-08-24T07:07:40Z",
+      "involved": {
+        "kind": "Pod",
+        "name": "kube-controller-manager-kubepilot-test-control-plane",
+        "namespace": "kube-system"
+      }
+    },
+    {
+      "reason": "FailedScheduling",
+      "message": "0/1 nodes are available: 1 node(s) had untolerated taint {node.kubernetes.io/not-ready: }. preemption: 0/1 nodes are available: 1 Preemption is not helpful for scheduling.",
+      "count": 1,
+      "lastSeen": "2026-08-21T15:17:57Z",
+      "involved": {
+        "kind": "Pod",
+        "name": "local-path-provisioner-7dc846544d-g6w67",
+        "namespace": "local-path-storage"
+      }
+    }
+  ]
+}
+
+=== CALLING LLM (no structured-output schema) ===
+
+=== RAW MODEL RESPONSE (content) ===
+[
+  {
+    "scope": "pod",
+    "namespace": "kp-test",
+    "podName": "api-59c55f44f6-gb87r",
+    "evidenceSummary": "Pod is in Pending state with ImagePullBackOff due to failure to pull non-existent image 'nginx:doesnotexist'. Multiple failed pull attempts and ImagePullBackOff events confirm a persistent image pull issue."
+  },
+  {
+    "scope": "pod",
+    "namespace": "kp-test",
+    "podName": "cache-76c4dcc448-5qzxc",
+    "evidenceSummary": "Pod is Running but container 'redis' has restarted 12 times and is OOM-killed during container creation. Event indicates 'container init was OOM-killed (memory limit too low?)' and is in a BackOff restart loop."
+  },
+  {
+    "scope": "pod",
+    "namespace": "kube-system",
+    "podName": "kube-controller-manager-kubepilot-test-control-plane",
+    "evidenceSummary": "Container 'kube-controller-manager' has restartCount of 1 and recent liveness probe failure due to connection refusal on healthz endpoint, indicating a potential control plane issue."
+  },
+  {
+    "scope": "node",
+    "nodeName": "kubepilot-test-control-plane",
+    "evidenceSummary": "Node has emitted warnings about cgroup v1 usage and tmpfs noswap not being supported, indicating insecure memory-backed volumes may be swapped and outdated cgroup version in use."
+  }
+]
+
+=== RAW MODEL RESPONSE (tool_calls, if any) ===
+[]

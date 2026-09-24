@@ -1,0 +1,17 @@
+[2026-08-24T08:16:16.453Z] 
+=== test-orchestrator-conflict-live: starting (context=kind-kubepilot-test cluster=kubepilot-test namespaces=kp-test ticks=5 interval=25000ms) ===
+
+[2026-08-24T08:16:16.523Z] [DB] Connected to MongoDB at mongodb://localhost:27017/K8S-agent-IHM
+[2026-08-24T08:16:16.593Z] [ShortMemory] Connected to Redis (redis://localhost:6379)
+[2026-08-24T08:16:16.593Z] [VectorStore] Probing embedding model "bge-multilingual-gemma2"…
+[2026-08-24T08:16:17.125Z] [VectorStore] Embedding dimension: 3584
+[2026-08-24T08:16:17.283Z] [VectorStore] Collection "incident_episodes" ready (dim=3584)
+[2026-08-24T08:16:17.665Z] [EpisodicMemory] Loaded 982 resolved episode(s) into memory index
+[2026-08-24T08:16:17.665Z] [harness] shortMemory.ready = true (Redis) — conflict detection requires this to be true
+[2026-08-24T08:16:17.666Z] 
+----- TICK 1/5 -----
+[2026-08-24T08:16:18.102Z] [stderr] [kubepilot-test] [ORCHESTRATOR] kubectl get pods failed: No active cluster!
+[2026-08-24T08:16:18.102Z] [warn] [kubepilot-test] [ORCHESTRATOR] kubectl get nodes failed: Error in configuration: context was not found for specified context: kind-kubepilot-test
+[2026-08-24T08:16:18.102Z] [warn] [kubepilot-test] [ORCHESTRATOR] kubectl get events failed: Error in configuration: context was not found for specified context: kind-kubepilot-test
+[2026-08-24T08:16:18.103Z] [kubepilot-test] [ORCHESTRATOR] All pods/nodes healthy
+[2026-08-24T08:16:18.384Z] [harness] sleeping 25000ms before next tick...

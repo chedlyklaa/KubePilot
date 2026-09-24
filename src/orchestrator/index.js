@@ -8,6 +8,14 @@ const clusterConfig    = require('../config/clusterConfig');
 const rbacWatcher      = require('../services/rbacWatcher');
 const { loadConfig }   = require('../config');
 
+// Legacy fleet scheduler for the deterministic ClusterAgent pipeline — no longer
+// invoked from the main autonomous entrypoint (index.js always runs the v5 pipeline
+// via OrchestratorAgent.start() now), kept only for the standalone `--task` CLI mode
+// which still uses ClusterAgent directly. The v5 pipeline does NOT run through this
+// class — OrchestratorAgent.start() (src/agents/orchestratorAgent.js) owns its own
+// fleet-level scheduling directly, per the two-independent-workflows isolation
+// pattern: a new orchestration pipeline gets its own standalone lifecycle rather than
+// being wired through the existing fleet class.
 class FleetOrchestrator {
   constructor() {
     this.clusterAgents  = [];

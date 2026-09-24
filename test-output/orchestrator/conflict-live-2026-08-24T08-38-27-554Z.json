@@ -1,0 +1,361 @@
+{
+  "generatedAt": "2026-08-24T09:12:28.145Z",
+  "context": "kind-kubepilot-test",
+  "cluster": "kubepilot-test",
+  "namespaces": [
+    "kp-test"
+  ],
+  "ticks": 5,
+  "tickIntervalMs": 25000,
+  "cycleLog": [
+    {
+      "tick": 1,
+      "startedAt": "2026-08-24T08:38:31.218Z",
+      "durationMs": 123572,
+      "newToolCalls": 3,
+      "newLockDecisions": [],
+      "newGroupEvents": 0
+    },
+    {
+      "tick": 2,
+      "startedAt": "2026-08-24T08:40:59.791Z",
+      "durationMs": 495095,
+      "newToolCalls": 3,
+      "newLockDecisions": [],
+      "newGroupEvents": 0
+    },
+    {
+      "tick": 3,
+      "startedAt": "2026-08-24T08:49:39.884Z",
+      "durationMs": 375244,
+      "newToolCalls": 3,
+      "newLockDecisions": [],
+      "newGroupEvents": 0
+    },
+    {
+      "tick": 4,
+      "startedAt": "2026-08-24T08:56:20.130Z",
+      "durationMs": 299308,
+      "newToolCalls": 3,
+      "newLockDecisions": [],
+      "newGroupEvents": 0
+    },
+    {
+      "tick": 5,
+      "startedAt": "2026-08-24T09:01:44.437Z",
+      "durationMs": 623579,
+      "newToolCalls": 3,
+      "newLockDecisions": [],
+      "newGroupEvents": 0
+    }
+  ],
+  "toolCalls": [
+    {
+      "seq": 1,
+      "ts": "2026-08-24T08:38:31.359Z",
+      "fn": "kubectl.getPods",
+      "args": [
+        "*",
+        "kind-kubepilot-test",
+        true
+      ],
+      "ok": true,
+      "result": "{\"items\":[{\"metadata\":{\"creationTimestamp\":\"2026-08-24T08:38:06.000Z\",\"generateName\":\"api-59c55f44f6-\",\"labels\":{\"app\":\"api\",\"pod-template-hash\":\"59c55f44f6\"},\"managedFields\":[{\"apiVersion\":\"v1\",\"fieldsType\":\"FieldsV1\",\"fieldsV1\":{\"f:metadata\":{\"f:generateName\":{},\"f:labels\":{\".\":{},\"f:app\":{},\"f:pod-template-hash\":{}},\"f:ownerReferences\":{\".\":{},\"k:{\\\"uid\\\":\\\"d7eea9e8-17a3-42e9-ac76-cf7d48560ee3\\\"}\":{}}},\"f:spec\":{\"f:containers\":{\"k:{\\\"name\\\":\\\"nginx\\\"}\":{\".\":{},\"f:image\":{},\"f:imagePullPolicy\":{},\"f:name\":{},\"f:resources\":{},\"f:terminationMessagePath\":{},\"f:terminationMessagePolicy\":{}}},\"f:dnsPolicy\":{},\"f:enableServiceLinks\":{},\"f:restartPolicy\":{},\"f:schedulerName\":{},\"f:securityContext\":{},\"f:terminationGracePeriodSeconds\":{}}},\"manager\":\"kube-controller-manager\",\"operation\":\"Update\",\"time\":\"2026-08-24T08:38:06.000Z\"},{\"apiVersion\":\"v1\",\"fieldsType\":\"FieldsV1\",\"fieldsV1\":{\"f:status\":{\"f:conditions\":{\"k:{\\\"type\\\":\\\"ContainersReady\\\"}\":{\".\":{},\"f:lastProbeTime\":{},\"f:lastTransitionTime\":{},\"f:message\":{},\"f:reason\":{},\"f:status\":{},\"f:type\":{}},\"k:{\\\"type\\\":\\\"Initialized\\\"}\":{\".\":{},\"f:lastProbeTime\":{},\"f:lastTransitionTime\":{},\"f:status\":{},\"f:type\":{}},\"k:{\\\"type\\\":\\\"PodReadyToStartContainers\\\"}\":{\".\":{},\"f:lastProbeTime\":{},\"f:lastTransitionTime\":{},\"f:status\":{},\"f:type\":{}},\"k:{\\\"type\\\":\\\"Ready\\\"}\":{\".\":{},\"f:lastProbeTime\":{},\"f:lastTransitionTime\":{},\"f:message\":{},\"f:reason\":{},\"f:status\":{},\"f:type\":{}}},\"f:containerStatuses\":{},\"f:hostIP\":{},\"f:hostIPs\":{},\"f:podIP\":{},\"f:podIPs\":{\".\":{},\"k:{\\\"ip\\\":\\\"10.244.0.10\\\"}\":{\".\":{},\"f:ip\":{}}},\"f:startTime\":{}}},\"manager\":\"kubelet\",\"operation\":\"Update\",\"subresource\":\"status\",\"time\":\"2026-08-24T08:38:19.000Z\"}],\"name\":\"api-59c55f44f6-fkg7f\",\"namespace\":\"kp-test\",\"ownerReferences\":[{\"apiVersion\":\"apps/v1\",\"blockOwnerDeletion\":true,\"controller\":true,\"kind\":\"ReplicaSet\",\"name\":\"api-59c55f44f6\",\"uid\":\"d7eea9e8-17a3-42e9-ac76-cf7d48560ee3\"}],\"resourceVersion\":\"1005\",\"uid\":\"c7eef6d6-663a-4365-84f5-f2d0ce59b9dc\"},\"sp...[truncated 99867 chars]"
+    },
+    {
+      "seq": 2,
+      "ts": "2026-08-24T08:38:31.834Z",
+      "fn": "kubectl.getNodes",
+      "args": [
+        "kind-kubepilot-test"
+      ],
+      "ok": true,
+      "result": "{\"apiVersion\":\"v1\",\"items\":[{\"apiVersion\":\"v1\",\"kind\":\"Node\",\"metadata\":{\"annotations\":{\"kubeadm.alpha.kubernetes.io/cri-socket\":\"unix:///run/containerd/containerd.sock\",\"node.alpha.kubernetes.io/ttl\":\"0\",\"volumes.kubernetes.io/controller-managed-attach-detach\":\"true\"},\"creationTimestamp\":\"2026-08-24T08:32:24Z\",\"labels\":{\"beta.kubernetes.io/arch\":\"amd64\",\"beta.kubernetes.io/os\":\"linux\",\"kubernetes.io/arch\":\"amd64\",\"kubernetes.io/hostname\":\"kubepilot-test-control-plane\",\"kubernetes.io/os\":\"linux\",\"node-role.kubernetes.io/control-plane\":\"\"},\"name\":\"kubepilot-test-control-plane\",\"resourceVersion\":\"782\",\"uid\":\"e503aef3-af99-4fb7-85df-cc6648ab8965\"},\"spec\":{\"podCIDR\":\"10.244.0.0/24\",\"podCIDRs\":[\"10.244.0.0/24\"],\"providerID\":\"kind://docker/kubepilot-test/kubepilot-test-control-plane\"},\"status\":{\"addresses\":[{\"address\":\"172.18.0.2\",\"type\":\"InternalIP\"},{\"address\":\"kubepilot-test-control-plane\",\"type\":\"Hostname\"}],\"allocatable\":{\"cpu\":\"12\",\"ephemeral-storage\":\"1055762868Ki\",\"hugepages-1Gi\":\"0\",\"hugepages-2Mi\":\"0\",\"memory\":\"7976116Ki\",\"pods\":\"110\"},\"capacity\":{\"cpu\":\"12\",\"ephemeral-storage\":\"1055762868Ki\",\"hugepages-1Gi\":\"0\",\"hugepages-2Mi\":\"0\",\"memory\":\"7976116Ki\",\"pods\":\"110\"},\"conditions\":[{\"lastHeartbeatTime\":\"2026-08-24T08:36:02Z\",\"lastTransitionTime\":\"2026-08-24T08:32:23Z\",\"message\":\"kubelet has sufficient memory available\",\"reason\":\"KubeletHasSufficientMemory\",\"status\":\"False\",\"type\":\"MemoryPressure\"},{\"lastHeartbeatTime\":\"2026-08-24T08:36:02Z\",\"lastTransitionTime\":\"2026-08-24T08:32:23Z\",\"message\":\"kubelet has no disk pressure\",\"reason\":\"KubeletHasNoDiskPressure\",\"status\":\"False\",\"type\":\"DiskPressure\"},{\"lastHeartbeatTime\":\"2026-08-24T08:36:02Z\",\"lastTransitionTime\":\"2026-08-24T08:32:23Z\",\"message\":\"kubelet has sufficient PID available\",\"reason\":\"KubeletHasSufficientPID\",\"status\":\"False\",\"type\":\"PIDPressure\"},{\"lastHeartbeatTime\":\"2026-08-24T08:36:02Z\",\"lastTransitionTime\":\"2026-08-24T08:32:52Z\",\"message\":\"kubelet is posting ready status\",\"reason\":\"KubeletReady\",\"stat...[truncated 2097 chars]"
+    },
+    {
+      "seq": 3,
+      "ts": "2026-08-24T08:38:31.895Z",
+      "fn": "kubectl.getEvents",
+      "args": [
+        "kind-kubepilot-test"
+      ],
+      "ok": true,
+      "result": "{\"apiVersion\":\"v1\",\"items\":[{\"apiVersion\":\"v1\",\"count\":1,\"eventTime\":null,\"firstTimestamp\":\"2026-08-24T08:32:28Z\",\"involvedObject\":{\"kind\":\"Node\",\"name\":\"kubepilot-test-control-plane\",\"uid\":\"kubepilot-test-control-plane\"},\"kind\":\"Event\",\"lastTimestamp\":\"2026-08-24T08:32:28Z\",\"message\":\"The tmpfs noswap option is not supported. Memory-backed volumes (e.g. secrets, emptyDirs, etc.) might be swapped to disk and should no longer be considered secure.\",\"metadata\":{\"creationTimestamp\":\"2026-08-24T08:32:28Z\",\"name\":\"kubepilot-test-control-plane.18ceb0aa7641bb45\",\"namespace\":\"default\",\"resourceVersion\":\"229\",\"uid\":\"1bbe8147-e84a-404e-8848-acdb84d65238\"},\"reason\":\"PossibleMemoryBackedVolumesOnDisk\",\"reportingComponent\":\"kubelet\",\"reportingInstance\":\"kubepilot-test-control-plane\",\"source\":{\"component\":\"kubelet\",\"host\":\"kubepilot-test-control-plane\"},\"type\":\"Warning\"},{\"apiVersion\":\"v1\",\"count\":1,\"eventTime\":null,\"firstTimestamp\":\"2026-08-24T08:32:28Z\",\"involvedObject\":{\"kind\":\"Node\",\"name\":\"kubepilot-test-control-plane\",\"uid\":\"kubepilot-test-control-plane\"},\"kind\":\"Event\",\"lastTimestamp\":\"2026-08-24T08:32:28Z\",\"message\":\"Starting kubelet.\",\"metadata\":{\"creationTimestamp\":\"2026-08-24T08:32:28Z\",\"name\":\"kubepilot-test-control-plane.18ceb0aa766ad2b2\",\"namespace\":\"default\",\"resourceVersion\":\"230\",\"uid\":\"0ccec448-ea86-485d-aeda-79eedae5758c\"},\"reason\":\"Starting\",\"reportingComponent\":\"kubelet\",\"reportingInstance\":\"kubepilot-test-control-plane\",\"source\":{\"component\":\"kubelet\",\"host\":\"kubepilot-test-control-plane\"},\"type\":\"Normal\"},{\"apiVersion\":\"v1\",\"count\":1,\"eventTime\":null,\"firstTimestamp\":\"2026-08-24T08:32:28Z\",\"involvedObject\":{\"kind\":\"Node\",\"name\":\"kubepilot-test-control-plane\",\"uid\":\"kubepilot-test-control-plane\"},\"kind\":\"Event\",\"lastTimestamp\":\"2026-08-24T08:32:28Z\",\"message\":\"cgroup v1 support is in maintenance mode, please migrate to cgroup v2\",\"metadata\":{\"creationTimestamp\":\"2026-08-24T08:32:28Z\",\"name\":\"kubepilot-test-control-plane.18ceb0aa76fbc9ce\",\"namespace\":\"default...[truncated 68681 chars]"
+    },
+    {
+      "seq": 4,
+      "ts": "2026-08-24T08:40:59.862Z",
+      "fn": "kubectl.getPods",
+      "args": [
+        "*",
+        "kind-kubepilot-test",
+        true
+      ],
+      "ok": true,
+      "result": "{\"items\":[{\"metadata\":{\"creationTimestamp\":\"2026-08-24T08:38:06.000Z\",\"generateName\":\"api-59c55f44f6-\",\"labels\":{\"app\":\"api\",\"pod-template-hash\":\"59c55f44f6\"},\"managedFields\":[{\"apiVersion\":\"v1\",\"fieldsType\":\"FieldsV1\",\"fieldsV1\":{\"f:metadata\":{\"f:generateName\":{},\"f:labels\":{\".\":{},\"f:app\":{},\"f:pod-template-hash\":{}},\"f:ownerReferences\":{\".\":{},\"k:{\\\"uid\\\":\\\"d7eea9e8-17a3-42e9-ac76-cf7d48560ee3\\\"}\":{}}},\"f:spec\":{\"f:containers\":{\"k:{\\\"name\\\":\\\"nginx\\\"}\":{\".\":{},\"f:image\":{},\"f:imagePullPolicy\":{},\"f:name\":{},\"f:resources\":{},\"f:terminationMessagePath\":{},\"f:terminationMessagePolicy\":{}}},\"f:dnsPolicy\":{},\"f:enableServiceLinks\":{},\"f:restartPolicy\":{},\"f:schedulerName\":{},\"f:securityContext\":{},\"f:terminationGracePeriodSeconds\":{}}},\"manager\":\"kube-controller-manager\",\"operation\":\"Update\",\"time\":\"2026-08-24T08:38:06.000Z\"},{\"apiVersion\":\"v1\",\"fieldsType\":\"FieldsV1\",\"fieldsV1\":{\"f:status\":{\"f:conditions\":{\"k:{\\\"type\\\":\\\"ContainersReady\\\"}\":{\".\":{},\"f:lastProbeTime\":{},\"f:lastTransitionTime\":{},\"f:message\":{},\"f:reason\":{},\"f:status\":{},\"f:type\":{}},\"k:{\\\"type\\\":\\\"Initialized\\\"}\":{\".\":{},\"f:lastProbeTime\":{},\"f:lastTransitionTime\":{},\"f:status\":{},\"f:type\":{}},\"k:{\\\"type\\\":\\\"PodReadyToStartContainers\\\"}\":{\".\":{},\"f:lastProbeTime\":{},\"f:lastTransitionTime\":{},\"f:status\":{},\"f:type\":{}},\"k:{\\\"type\\\":\\\"Ready\\\"}\":{\".\":{},\"f:lastProbeTime\":{},\"f:lastTransitionTime\":{},\"f:message\":{},\"f:reason\":{},\"f:status\":{},\"f:type\":{}}},\"f:containerStatuses\":{},\"f:hostIP\":{},\"f:hostIPs\":{},\"f:podIP\":{},\"f:podIPs\":{\".\":{},\"k:{\\\"ip\\\":\\\"10.244.0.10\\\"}\":{\".\":{},\"f:ip\":{}}},\"f:startTime\":{}}},\"manager\":\"kubelet\",\"operation\":\"Update\",\"subresource\":\"status\",\"time\":\"2026-08-24T08:39:53.000Z\"}],\"name\":\"api-59c55f44f6-fkg7f\",\"namespace\":\"kp-test\",\"ownerReferences\":[{\"apiVersion\":\"apps/v1\",\"blockOwnerDeletion\":true,\"controller\":true,\"kind\":\"ReplicaSet\",\"name\":\"api-59c55f44f6\",\"uid\":\"d7eea9e8-17a3-42e9-ac76-cf7d48560ee3\"}],\"resourceVersion\":\"1172\",\"uid\":\"c7eef6d6-663a-4365-84f5-f2d0ce59b9dc\"},\"sp...[truncated 99790 chars]"
+    },
+    {
+      "seq": 5,
+      "ts": "2026-08-24T08:41:00.308Z",
+      "fn": "kubectl.getNodes",
+      "args": [
+        "kind-kubepilot-test"
+      ],
+      "ok": true,
+      "result": "{\"apiVersion\":\"v1\",\"items\":[{\"apiVersion\":\"v1\",\"kind\":\"Node\",\"metadata\":{\"annotations\":{\"kubeadm.alpha.kubernetes.io/cri-socket\":\"unix:///run/containerd/containerd.sock\",\"node.alpha.kubernetes.io/ttl\":\"0\",\"volumes.kubernetes.io/controller-managed-attach-detach\":\"true\"},\"creationTimestamp\":\"2026-08-24T08:32:24Z\",\"labels\":{\"beta.kubernetes.io/arch\":\"amd64\",\"beta.kubernetes.io/os\":\"linux\",\"kubernetes.io/arch\":\"amd64\",\"kubernetes.io/hostname\":\"kubepilot-test-control-plane\",\"kubernetes.io/os\":\"linux\",\"node-role.kubernetes.io/control-plane\":\"\"},\"name\":\"kubepilot-test-control-plane\",\"resourceVersion\":\"1141\",\"uid\":\"e503aef3-af99-4fb7-85df-cc6648ab8965\"},\"spec\":{\"podCIDR\":\"10.244.0.0/24\",\"podCIDRs\":[\"10.244.0.0/24\"],\"providerID\":\"kind://docker/kubepilot-test/kubepilot-test-control-plane\"},\"status\":{\"addresses\":[{\"address\":\"172.18.0.2\",\"type\":\"InternalIP\"},{\"address\":\"kubepilot-test-control-plane\",\"type\":\"Hostname\"}],\"allocatable\":{\"cpu\":\"12\",\"ephemeral-storage\":\"1055762868Ki\",\"hugepages-1Gi\":\"0\",\"hugepages-2Mi\":\"0\",\"memory\":\"7976116Ki\",\"pods\":\"110\"},\"capacity\":{\"cpu\":\"12\",\"ephemeral-storage\":\"1055762868Ki\",\"hugepages-1Gi\":\"0\",\"hugepages-2Mi\":\"0\",\"memory\":\"7976116Ki\",\"pods\":\"110\"},\"conditions\":[{\"lastHeartbeatTime\":\"2026-08-24T08:39:37Z\",\"lastTransitionTime\":\"2026-08-24T08:32:23Z\",\"message\":\"kubelet has sufficient memory available\",\"reason\":\"KubeletHasSufficientMemory\",\"status\":\"False\",\"type\":\"MemoryPressure\"},{\"lastHeartbeatTime\":\"2026-08-24T08:39:37Z\",\"lastTransitionTime\":\"2026-08-24T08:32:23Z\",\"message\":\"kubelet has no disk pressure\",\"reason\":\"KubeletHasNoDiskPressure\",\"status\":\"False\",\"type\":\"DiskPressure\"},{\"lastHeartbeatTime\":\"2026-08-24T08:39:37Z\",\"lastTransitionTime\":\"2026-08-24T08:32:23Z\",\"message\":\"kubelet has sufficient PID available\",\"reason\":\"KubeletHasSufficientPID\",\"status\":\"False\",\"type\":\"PIDPressure\"},{\"lastHeartbeatTime\":\"2026-08-24T08:39:37Z\",\"lastTransitionTime\":\"2026-08-24T08:32:52Z\",\"message\":\"kubelet is posting ready status\",\"reason\":\"KubeletReady\",\"sta...[truncated 2098 chars]"
+    },
+    {
+      "seq": 6,
+      "ts": "2026-08-24T08:41:00.330Z",
+      "fn": "kubectl.getEvents",
+      "args": [
+        "kind-kubepilot-test"
+      ],
+      "ok": true,
+      "result": "{\"apiVersion\":\"v1\",\"items\":[{\"apiVersion\":\"v1\",\"count\":1,\"eventTime\":null,\"firstTimestamp\":\"2026-08-24T08:32:28Z\",\"involvedObject\":{\"kind\":\"Node\",\"name\":\"kubepilot-test-control-plane\",\"uid\":\"kubepilot-test-control-plane\"},\"kind\":\"Event\",\"lastTimestamp\":\"2026-08-24T08:32:28Z\",\"message\":\"The tmpfs noswap option is not supported. Memory-backed volumes (e.g. secrets, emptyDirs, etc.) might be swapped to disk and should no longer be considered secure.\",\"metadata\":{\"creationTimestamp\":\"2026-08-24T08:32:28Z\",\"name\":\"kubepilot-test-control-plane.18ceb0aa7641bb45\",\"namespace\":\"default\",\"resourceVersion\":\"229\",\"uid\":\"1bbe8147-e84a-404e-8848-acdb84d65238\"},\"reason\":\"PossibleMemoryBackedVolumesOnDisk\",\"reportingComponent\":\"kubelet\",\"reportingInstance\":\"kubepilot-test-control-plane\",\"source\":{\"component\":\"kubelet\",\"host\":\"kubepilot-test-control-plane\"},\"type\":\"Warning\"},{\"apiVersion\":\"v1\",\"count\":1,\"eventTime\":null,\"firstTimestamp\":\"2026-08-24T08:32:28Z\",\"involvedObject\":{\"kind\":\"Node\",\"name\":\"kubepilot-test-control-plane\",\"uid\":\"kubepilot-test-control-plane\"},\"kind\":\"Event\",\"lastTimestamp\":\"2026-08-24T08:32:28Z\",\"message\":\"Starting kubelet.\",\"metadata\":{\"creationTimestamp\":\"2026-08-24T08:32:28Z\",\"name\":\"kubepilot-test-control-plane.18ceb0aa766ad2b2\",\"namespace\":\"default\",\"resourceVersion\":\"230\",\"uid\":\"0ccec448-ea86-485d-aeda-79eedae5758c\"},\"reason\":\"Starting\",\"reportingComponent\":\"kubelet\",\"reportingInstance\":\"kubepilot-test-control-plane\",\"source\":{\"component\":\"kubelet\",\"host\":\"kubepilot-test-control-plane\"},\"type\":\"Normal\"},{\"apiVersion\":\"v1\",\"count\":1,\"eventTime\":null,\"firstTimestamp\":\"2026-08-24T08:32:28Z\",\"involvedObject\":{\"kind\":\"Node\",\"name\":\"kubepilot-test-control-plane\",\"uid\":\"kubepilot-test-control-plane\"},\"kind\":\"Event\",\"lastTimestamp\":\"2026-08-24T08:32:28Z\",\"message\":\"cgroup v1 support is in maintenance mode, please migrate to cgroup v2\",\"metadata\":{\"creationTimestamp\":\"2026-08-24T08:32:28Z\",\"name\":\"kubepilot-test-control-plane.18ceb0aa76fbc9ce\",\"namespace\":\"default...[truncated 68686 chars]"
+    },
+    {
+      "seq": 7,
+      "ts": "2026-08-24T08:49:40.007Z",
+      "fn": "kubectl.getPods",
+      "args": [
+        "*",
+        "kind-kubepilot-test",
+        true
+      ],
+      "ok": true,
+      "result": "{\"items\":[{\"metadata\":{\"creationTimestamp\":\"2026-08-24T08:38:06.000Z\",\"generateName\":\"api-59c55f44f6-\",\"labels\":{\"app\":\"api\",\"pod-template-hash\":\"59c55f44f6\"},\"managedFields\":[{\"apiVersion\":\"v1\",\"fieldsType\":\"FieldsV1\",\"fieldsV1\":{\"f:metadata\":{\"f:generateName\":{},\"f:labels\":{\".\":{},\"f:app\":{},\"f:pod-template-hash\":{}},\"f:ownerReferences\":{\".\":{},\"k:{\\\"uid\\\":\\\"d7eea9e8-17a3-42e9-ac76-cf7d48560ee3\\\"}\":{}}},\"f:spec\":{\"f:containers\":{\"k:{\\\"name\\\":\\\"nginx\\\"}\":{\".\":{},\"f:image\":{},\"f:imagePullPolicy\":{},\"f:name\":{},\"f:resources\":{},\"f:terminationMessagePath\":{},\"f:terminationMessagePolicy\":{}}},\"f:dnsPolicy\":{},\"f:enableServiceLinks\":{},\"f:restartPolicy\":{},\"f:schedulerName\":{},\"f:securityContext\":{},\"f:terminationGracePeriodSeconds\":{}}},\"manager\":\"kube-controller-manager\",\"operation\":\"Update\",\"time\":\"2026-08-24T08:38:06.000Z\"},{\"apiVersion\":\"v1\",\"fieldsType\":\"FieldsV1\",\"fieldsV1\":{\"f:status\":{\"f:conditions\":{\"k:{\\\"type\\\":\\\"ContainersReady\\\"}\":{\".\":{},\"f:lastProbeTime\":{},\"f:lastTransitionTime\":{},\"f:message\":{},\"f:reason\":{},\"f:status\":{},\"f:type\":{}},\"k:{\\\"type\\\":\\\"Initialized\\\"}\":{\".\":{},\"f:lastProbeTime\":{},\"f:lastTransitionTime\":{},\"f:status\":{},\"f:type\":{}},\"k:{\\\"type\\\":\\\"PodReadyToStartContainers\\\"}\":{\".\":{},\"f:lastProbeTime\":{},\"f:lastTransitionTime\":{},\"f:status\":{},\"f:type\":{}},\"k:{\\\"type\\\":\\\"Ready\\\"}\":{\".\":{},\"f:lastProbeTime\":{},\"f:lastTransitionTime\":{},\"f:message\":{},\"f:reason\":{},\"f:status\":{},\"f:type\":{}}},\"f:containerStatuses\":{},\"f:hostIP\":{},\"f:hostIPs\":{},\"f:podIP\":{},\"f:podIPs\":{\".\":{},\"k:{\\\"ip\\\":\\\"10.244.0.10\\\"}\":{\".\":{},\"f:ip\":{}}},\"f:startTime\":{}}},\"manager\":\"kubelet\",\"operation\":\"Update\",\"subresource\":\"status\",\"time\":\"2026-08-24T08:49:30.000Z\"}],\"name\":\"api-59c55f44f6-fkg7f\",\"namespace\":\"kp-test\",\"ownerReferences\":[{\"apiVersion\":\"apps/v1\",\"blockOwnerDeletion\":true,\"controller\":true,\"kind\":\"ReplicaSet\",\"name\":\"api-59c55f44f6\",\"uid\":\"d7eea9e8-17a3-42e9-ac76-cf7d48560ee3\"}],\"resourceVersion\":\"1982\",\"uid\":\"c7eef6d6-663a-4365-84f5-f2d0ce59b9dc\"},\"sp...[truncated 99787 chars]"
+    },
+    {
+      "seq": 8,
+      "ts": "2026-08-24T08:49:40.481Z",
+      "fn": "kubectl.getNodes",
+      "args": [
+        "kind-kubepilot-test"
+      ],
+      "ok": true,
+      "result": "{\"apiVersion\":\"v1\",\"items\":[{\"apiVersion\":\"v1\",\"kind\":\"Node\",\"metadata\":{\"annotations\":{\"kubeadm.alpha.kubernetes.io/cri-socket\":\"unix:///run/containerd/containerd.sock\",\"node.alpha.kubernetes.io/ttl\":\"0\",\"volumes.kubernetes.io/controller-managed-attach-detach\":\"true\"},\"creationTimestamp\":\"2026-08-24T08:32:24Z\",\"labels\":{\"beta.kubernetes.io/arch\":\"amd64\",\"beta.kubernetes.io/os\":\"linux\",\"kubernetes.io/arch\":\"amd64\",\"kubernetes.io/hostname\":\"kubepilot-test-control-plane\",\"kubernetes.io/os\":\"linux\",\"node-role.kubernetes.io/control-plane\":\"\"},\"name\":\"kubepilot-test-control-plane\",\"resourceVersion\":\"1602\",\"uid\":\"e503aef3-af99-4fb7-85df-cc6648ab8965\"},\"spec\":{\"podCIDR\":\"10.244.0.0/24\",\"podCIDRs\":[\"10.244.0.0/24\"],\"providerID\":\"kind://docker/kubepilot-test/kubepilot-test-control-plane\"},\"status\":{\"addresses\":[{\"address\":\"172.18.0.2\",\"type\":\"InternalIP\"},{\"address\":\"kubepilot-test-control-plane\",\"type\":\"Hostname\"}],\"allocatable\":{\"cpu\":\"12\",\"ephemeral-storage\":\"1055762868Ki\",\"hugepages-1Gi\":\"0\",\"hugepages-2Mi\":\"0\",\"memory\":\"7976116Ki\",\"pods\":\"110\"},\"capacity\":{\"cpu\":\"12\",\"ephemeral-storage\":\"1055762868Ki\",\"hugepages-1Gi\":\"0\",\"hugepages-2Mi\":\"0\",\"memory\":\"7976116Ki\",\"pods\":\"110\"},\"conditions\":[{\"lastHeartbeatTime\":\"2026-08-24T08:44:43Z\",\"lastTransitionTime\":\"2026-08-24T08:32:23Z\",\"message\":\"kubelet has sufficient memory available\",\"reason\":\"KubeletHasSufficientMemory\",\"status\":\"False\",\"type\":\"MemoryPressure\"},{\"lastHeartbeatTime\":\"2026-08-24T08:44:43Z\",\"lastTransitionTime\":\"2026-08-24T08:32:23Z\",\"message\":\"kubelet has no disk pressure\",\"reason\":\"KubeletHasNoDiskPressure\",\"status\":\"False\",\"type\":\"DiskPressure\"},{\"lastHeartbeatTime\":\"2026-08-24T08:44:43Z\",\"lastTransitionTime\":\"2026-08-24T08:32:23Z\",\"message\":\"kubelet has sufficient PID available\",\"reason\":\"KubeletHasSufficientPID\",\"status\":\"False\",\"type\":\"PIDPressure\"},{\"lastHeartbeatTime\":\"2026-08-24T08:44:43Z\",\"lastTransitionTime\":\"2026-08-24T08:32:52Z\",\"message\":\"kubelet is posting ready status\",\"reason\":\"KubeletReady\",\"sta...[truncated 2098 chars]"
+    },
+    {
+      "seq": 9,
+      "ts": "2026-08-24T08:49:40.510Z",
+      "fn": "kubectl.getEvents",
+      "args": [
+        "kind-kubepilot-test"
+      ],
+      "ok": true,
+      "result": "{\"apiVersion\":\"v1\",\"items\":[{\"apiVersion\":\"v1\",\"count\":1,\"eventTime\":null,\"firstTimestamp\":\"2026-08-24T08:32:28Z\",\"involvedObject\":{\"kind\":\"Node\",\"name\":\"kubepilot-test-control-plane\",\"uid\":\"kubepilot-test-control-plane\"},\"kind\":\"Event\",\"lastTimestamp\":\"2026-08-24T08:32:28Z\",\"message\":\"The tmpfs noswap option is not supported. Memory-backed volumes (e.g. secrets, emptyDirs, etc.) might be swapped to disk and should no longer be considered secure.\",\"metadata\":{\"creationTimestamp\":\"2026-08-24T08:32:28Z\",\"name\":\"kubepilot-test-control-plane.18ceb0aa7641bb45\",\"namespace\":\"default\",\"resourceVersion\":\"229\",\"uid\":\"1bbe8147-e84a-404e-8848-acdb84d65238\"},\"reason\":\"PossibleMemoryBackedVolumesOnDisk\",\"reportingComponent\":\"kubelet\",\"reportingInstance\":\"kubepilot-test-control-plane\",\"source\":{\"component\":\"kubelet\",\"host\":\"kubepilot-test-control-plane\"},\"type\":\"Warning\"},{\"apiVersion\":\"v1\",\"count\":1,\"eventTime\":null,\"firstTimestamp\":\"2026-08-24T08:32:28Z\",\"involvedObject\":{\"kind\":\"Node\",\"name\":\"kubepilot-test-control-plane\",\"uid\":\"kubepilot-test-control-plane\"},\"kind\":\"Event\",\"lastTimestamp\":\"2026-08-24T08:32:28Z\",\"message\":\"Starting kubelet.\",\"metadata\":{\"creationTimestamp\":\"2026-08-24T08:32:28Z\",\"name\":\"kubepilot-test-control-plane.18ceb0aa766ad2b2\",\"namespace\":\"default\",\"resourceVersion\":\"230\",\"uid\":\"0ccec448-ea86-485d-aeda-79eedae5758c\"},\"reason\":\"Starting\",\"reportingComponent\":\"kubelet\",\"reportingInstance\":\"kubepilot-test-control-plane\",\"source\":{\"component\":\"kubelet\",\"host\":\"kubepilot-test-control-plane\"},\"type\":\"Normal\"},{\"apiVersion\":\"v1\",\"count\":1,\"eventTime\":null,\"firstTimestamp\":\"2026-08-24T08:32:28Z\",\"involvedObject\":{\"kind\":\"Node\",\"name\":\"kubepilot-test-control-plane\",\"uid\":\"kubepilot-test-control-plane\"},\"kind\":\"Event\",\"lastTimestamp\":\"2026-08-24T08:32:28Z\",\"message\":\"cgroup v1 support is in maintenance mode, please migrate to cgroup v2\",\"metadata\":{\"creationTimestamp\":\"2026-08-24T08:32:28Z\",\"name\":\"kubepilot-test-control-plane.18ceb0aa76fbc9ce\",\"namespace\":\"default...[truncated 68686 chars]"
+    },
+    {
+      "seq": 10,
+      "ts": "2026-08-24T08:56:20.299Z",
+      "fn": "kubectl.getPods",
+      "args": [
+        "*",
+        "kind-kubepilot-test",
+        true
+      ],
+      "ok": true,
+      "result": "{\"items\":[{\"metadata\":{\"creationTimestamp\":\"2026-08-24T08:38:06.000Z\",\"generateName\":\"api-59c55f44f6-\",\"labels\":{\"app\":\"api\",\"pod-template-hash\":\"59c55f44f6\"},\"managedFields\":[{\"apiVersion\":\"v1\",\"fieldsType\":\"FieldsV1\",\"fieldsV1\":{\"f:metadata\":{\"f:generateName\":{},\"f:labels\":{\".\":{},\"f:app\":{},\"f:pod-template-hash\":{}},\"f:ownerReferences\":{\".\":{},\"k:{\\\"uid\\\":\\\"d7eea9e8-17a3-42e9-ac76-cf7d48560ee3\\\"}\":{}}},\"f:spec\":{\"f:containers\":{\"k:{\\\"name\\\":\\\"nginx\\\"}\":{\".\":{},\"f:image\":{},\"f:imagePullPolicy\":{},\"f:name\":{},\"f:resources\":{},\"f:terminationMessagePath\":{},\"f:terminationMessagePolicy\":{}}},\"f:dnsPolicy\":{},\"f:enableServiceLinks\":{},\"f:restartPolicy\":{},\"f:schedulerName\":{},\"f:securityContext\":{},\"f:terminationGracePeriodSeconds\":{}}},\"manager\":\"kube-controller-manager\",\"operation\":\"Update\",\"time\":\"2026-08-24T08:38:06.000Z\"},{\"apiVersion\":\"v1\",\"fieldsType\":\"FieldsV1\",\"fieldsV1\":{\"f:status\":{\"f:conditions\":{\"k:{\\\"type\\\":\\\"ContainersReady\\\"}\":{\".\":{},\"f:lastProbeTime\":{},\"f:lastTransitionTime\":{},\"f:message\":{},\"f:reason\":{},\"f:status\":{},\"f:type\":{}},\"k:{\\\"type\\\":\\\"Initialized\\\"}\":{\".\":{},\"f:lastProbeTime\":{},\"f:lastTransitionTime\":{},\"f:status\":{},\"f:type\":{}},\"k:{\\\"type\\\":\\\"PodReadyToStartContainers\\\"}\":{\".\":{},\"f:lastProbeTime\":{},\"f:lastTransitionTime\":{},\"f:status\":{},\"f:type\":{}},\"k:{\\\"type\\\":\\\"Ready\\\"}\":{\".\":{},\"f:lastProbeTime\":{},\"f:lastTransitionTime\":{},\"f:message\":{},\"f:reason\":{},\"f:status\":{},\"f:type\":{}}},\"f:containerStatuses\":{},\"f:hostIP\":{},\"f:hostIPs\":{},\"f:podIP\":{},\"f:podIPs\":{\".\":{},\"k:{\\\"ip\\\":\\\"10.244.0.10\\\"}\":{\".\":{},\"f:ip\":{}}},\"f:startTime\":{}}},\"manager\":\"kubelet\",\"operation\":\"Update\",\"subresource\":\"status\",\"time\":\"2026-08-24T08:54:41.000Z\"}],\"name\":\"api-59c55f44f6-fkg7f\",\"namespace\":\"kp-test\",\"ownerReferences\":[{\"apiVersion\":\"apps/v1\",\"blockOwnerDeletion\":true,\"controller\":true,\"kind\":\"ReplicaSet\",\"name\":\"api-59c55f44f6\",\"uid\":\"d7eea9e8-17a3-42e9-ac76-cf7d48560ee3\"}],\"resourceVersion\":\"2394\",\"uid\":\"c7eef6d6-663a-4365-84f5-f2d0ce59b9dc\"},\"sp...[truncated 99789 chars]"
+    },
+    {
+      "seq": 11,
+      "ts": "2026-08-24T08:56:20.380Z",
+      "fn": "kubectl.getNodes",
+      "args": [
+        "kind-kubepilot-test"
+      ],
+      "ok": true,
+      "result": "{\"apiVersion\":\"v1\",\"items\":[{\"apiVersion\":\"v1\",\"kind\":\"Node\",\"metadata\":{\"annotations\":{\"kubeadm.alpha.kubernetes.io/cri-socket\":\"unix:///run/containerd/containerd.sock\",\"node.alpha.kubernetes.io/ttl\":\"0\",\"volumes.kubernetes.io/controller-managed-attach-detach\":\"true\"},\"creationTimestamp\":\"2026-08-24T08:32:24Z\",\"labels\":{\"beta.kubernetes.io/arch\":\"amd64\",\"beta.kubernetes.io/os\":\"linux\",\"kubernetes.io/arch\":\"amd64\",\"kubernetes.io/hostname\":\"kubepilot-test-control-plane\",\"kubernetes.io/os\":\"linux\",\"node-role.kubernetes.io/control-plane\":\"\"},\"name\":\"kubepilot-test-control-plane\",\"resourceVersion\":\"2416\",\"uid\":\"e503aef3-af99-4fb7-85df-cc6648ab8965\"},\"spec\":{\"podCIDR\":\"10.244.0.0/24\",\"podCIDRs\":[\"10.244.0.0/24\"],\"providerID\":\"kind://docker/kubepilot-test/kubepilot-test-control-plane\"},\"status\":{\"addresses\":[{\"address\":\"172.18.0.2\",\"type\":\"InternalIP\"},{\"address\":\"kubepilot-test-control-plane\",\"type\":\"Hostname\"}],\"allocatable\":{\"cpu\":\"12\",\"ephemeral-storage\":\"1055762868Ki\",\"hugepages-1Gi\":\"0\",\"hugepages-2Mi\":\"0\",\"memory\":\"7976116Ki\",\"pods\":\"110\"},\"capacity\":{\"cpu\":\"12\",\"ephemeral-storage\":\"1055762868Ki\",\"hugepages-1Gi\":\"0\",\"hugepages-2Mi\":\"0\",\"memory\":\"7976116Ki\",\"pods\":\"110\"},\"conditions\":[{\"lastHeartbeatTime\":\"2026-08-24T08:54:56Z\",\"lastTransitionTime\":\"2026-08-24T08:32:23Z\",\"message\":\"kubelet has sufficient memory available\",\"reason\":\"KubeletHasSufficientMemory\",\"status\":\"False\",\"type\":\"MemoryPressure\"},{\"lastHeartbeatTime\":\"2026-08-24T08:54:56Z\",\"lastTransitionTime\":\"2026-08-24T08:32:23Z\",\"message\":\"kubelet has no disk pressure\",\"reason\":\"KubeletHasNoDiskPressure\",\"status\":\"False\",\"type\":\"DiskPressure\"},{\"lastHeartbeatTime\":\"2026-08-24T08:54:56Z\",\"lastTransitionTime\":\"2026-08-24T08:32:23Z\",\"message\":\"kubelet has sufficient PID available\",\"reason\":\"KubeletHasSufficientPID\",\"status\":\"False\",\"type\":\"PIDPressure\"},{\"lastHeartbeatTime\":\"2026-08-24T08:54:56Z\",\"lastTransitionTime\":\"2026-08-24T08:32:52Z\",\"message\":\"kubelet is posting ready status\",\"reason\":\"KubeletReady\",\"sta...[truncated 2098 chars]"
+    },
+    {
+      "seq": 12,
+      "ts": "2026-08-24T08:56:20.406Z",
+      "fn": "kubectl.getEvents",
+      "args": [
+        "kind-kubepilot-test"
+      ],
+      "ok": true,
+      "result": "{\"apiVersion\":\"v1\",\"items\":[{\"apiVersion\":\"v1\",\"count\":1,\"eventTime\":null,\"firstTimestamp\":\"2026-08-24T08:32:28Z\",\"involvedObject\":{\"kind\":\"Node\",\"name\":\"kubepilot-test-control-plane\",\"uid\":\"kubepilot-test-control-plane\"},\"kind\":\"Event\",\"lastTimestamp\":\"2026-08-24T08:32:28Z\",\"message\":\"The tmpfs noswap option is not supported. Memory-backed volumes (e.g. secrets, emptyDirs, etc.) might be swapped to disk and should no longer be considered secure.\",\"metadata\":{\"creationTimestamp\":\"2026-08-24T08:32:28Z\",\"name\":\"kubepilot-test-control-plane.18ceb0aa7641bb45\",\"namespace\":\"default\",\"resourceVersion\":\"229\",\"uid\":\"1bbe8147-e84a-404e-8848-acdb84d65238\"},\"reason\":\"PossibleMemoryBackedVolumesOnDisk\",\"reportingComponent\":\"kubelet\",\"reportingInstance\":\"kubepilot-test-control-plane\",\"source\":{\"component\":\"kubelet\",\"host\":\"kubepilot-test-control-plane\"},\"type\":\"Warning\"},{\"apiVersion\":\"v1\",\"count\":1,\"eventTime\":null,\"firstTimestamp\":\"2026-08-24T08:32:28Z\",\"involvedObject\":{\"kind\":\"Node\",\"name\":\"kubepilot-test-control-plane\",\"uid\":\"kubepilot-test-control-plane\"},\"kind\":\"Event\",\"lastTimestamp\":\"2026-08-24T08:32:28Z\",\"message\":\"Starting kubelet.\",\"metadata\":{\"creationTimestamp\":\"2026-08-24T08:32:28Z\",\"name\":\"kubepilot-test-control-plane.18ceb0aa766ad2b2\",\"namespace\":\"default\",\"resourceVersion\":\"230\",\"uid\":\"0ccec448-ea86-485d-aeda-79eedae5758c\"},\"reason\":\"Starting\",\"reportingComponent\":\"kubelet\",\"reportingInstance\":\"kubepilot-test-control-plane\",\"source\":{\"component\":\"kubelet\",\"host\":\"kubepilot-test-control-plane\"},\"type\":\"Normal\"},{\"apiVersion\":\"v1\",\"count\":1,\"eventTime\":null,\"firstTimestamp\":\"2026-08-24T08:32:28Z\",\"involvedObject\":{\"kind\":\"Node\",\"name\":\"kubepilot-test-control-plane\",\"uid\":\"kubepilot-test-control-plane\"},\"kind\":\"Event\",\"lastTimestamp\":\"2026-08-24T08:32:28Z\",\"message\":\"cgroup v1 support is in maintenance mode, please migrate to cgroup v2\",\"metadata\":{\"creationTimestamp\":\"2026-08-24T08:32:28Z\",\"name\":\"kubepilot-test-control-plane.18ceb0aa76fbc9ce\",\"namespace\":\"default...[truncated 68686 chars]"
+    },
+    {
+      "seq": 13,
+      "ts": "2026-08-24T09:01:44.520Z",
+      "fn": "kubectl.getPods",
+      "args": [
+        "*",
+        "kind-kubepilot-test",
+        true
+      ],
+      "ok": true,
+      "result": "{\"items\":[{\"metadata\":{\"creationTimestamp\":\"2026-08-24T08:38:06.000Z\",\"generateName\":\"api-59c55f44f6-\",\"labels\":{\"app\":\"api\",\"pod-template-hash\":\"59c55f44f6\"},\"managedFields\":[{\"apiVersion\":\"v1\",\"fieldsType\":\"FieldsV1\",\"fieldsV1\":{\"f:metadata\":{\"f:generateName\":{},\"f:labels\":{\".\":{},\"f:app\":{},\"f:pod-template-hash\":{}},\"f:ownerReferences\":{\".\":{},\"k:{\\\"uid\\\":\\\"d7eea9e8-17a3-42e9-ac76-cf7d48560ee3\\\"}\":{}}},\"f:spec\":{\"f:containers\":{\"k:{\\\"name\\\":\\\"nginx\\\"}\":{\".\":{},\"f:image\":{},\"f:imagePullPolicy\":{},\"f:name\":{},\"f:resources\":{},\"f:terminationMessagePath\":{},\"f:terminationMessagePolicy\":{}}},\"f:dnsPolicy\":{},\"f:enableServiceLinks\":{},\"f:restartPolicy\":{},\"f:schedulerName\":{},\"f:securityContext\":{},\"f:terminationGracePeriodSeconds\":{}}},\"manager\":\"kube-controller-manager\",\"operation\":\"Update\",\"time\":\"2026-08-24T08:38:06.000Z\"},{\"apiVersion\":\"v1\",\"fieldsType\":\"FieldsV1\",\"fieldsV1\":{\"f:status\":{\"f:conditions\":{\"k:{\\\"type\\\":\\\"ContainersReady\\\"}\":{\".\":{},\"f:lastProbeTime\":{},\"f:lastTransitionTime\":{},\"f:message\":{},\"f:reason\":{},\"f:status\":{},\"f:type\":{}},\"k:{\\\"type\\\":\\\"Initialized\\\"}\":{\".\":{},\"f:lastProbeTime\":{},\"f:lastTransitionTime\":{},\"f:status\":{},\"f:type\":{}},\"k:{\\\"type\\\":\\\"PodReadyToStartContainers\\\"}\":{\".\":{},\"f:lastProbeTime\":{},\"f:lastTransitionTime\":{},\"f:status\":{},\"f:type\":{}},\"k:{\\\"type\\\":\\\"Ready\\\"}\":{\".\":{},\"f:lastProbeTime\":{},\"f:lastTransitionTime\":{},\"f:message\":{},\"f:reason\":{},\"f:status\":{},\"f:type\":{}}},\"f:containerStatuses\":{},\"f:hostIP\":{},\"f:hostIPs\":{},\"f:podIP\":{},\"f:podIPs\":{\".\":{},\"k:{\\\"ip\\\":\\\"10.244.0.10\\\"}\":{\".\":{},\"f:ip\":{}}},\"f:startTime\":{}}},\"manager\":\"kubelet\",\"operation\":\"Update\",\"subresource\":\"status\",\"time\":\"2026-08-24T08:59:45.000Z\"}],\"name\":\"api-59c55f44f6-fkg7f\",\"namespace\":\"kp-test\",\"ownerReferences\":[{\"apiVersion\":\"apps/v1\",\"blockOwnerDeletion\":true,\"controller\":true,\"kind\":\"ReplicaSet\",\"name\":\"api-59c55f44f6\",\"uid\":\"d7eea9e8-17a3-42e9-ac76-cf7d48560ee3\"}],\"resourceVersion\":\"2797\",\"uid\":\"c7eef6d6-663a-4365-84f5-f2d0ce59b9dc\"},\"sp...[truncated 99789 chars]"
+    },
+    {
+      "seq": 14,
+      "ts": "2026-08-24T09:01:44.962Z",
+      "fn": "kubectl.getNodes",
+      "args": [
+        "kind-kubepilot-test"
+      ],
+      "ok": true,
+      "result": "{\"apiVersion\":\"v1\",\"items\":[{\"apiVersion\":\"v1\",\"kind\":\"Node\",\"metadata\":{\"annotations\":{\"kubeadm.alpha.kubernetes.io/cri-socket\":\"unix:///run/containerd/containerd.sock\",\"node.alpha.kubernetes.io/ttl\":\"0\",\"volumes.kubernetes.io/controller-managed-attach-detach\":\"true\"},\"creationTimestamp\":\"2026-08-24T08:32:24Z\",\"labels\":{\"beta.kubernetes.io/arch\":\"amd64\",\"beta.kubernetes.io/os\":\"linux\",\"kubernetes.io/arch\":\"amd64\",\"kubernetes.io/hostname\":\"kubepilot-test-control-plane\",\"kubernetes.io/os\":\"linux\",\"node-role.kubernetes.io/control-plane\":\"\"},\"name\":\"kubepilot-test-control-plane\",\"resourceVersion\":\"2819\",\"uid\":\"e503aef3-af99-4fb7-85df-cc6648ab8965\"},\"spec\":{\"podCIDR\":\"10.244.0.0/24\",\"podCIDRs\":[\"10.244.0.0/24\"],\"providerID\":\"kind://docker/kubepilot-test/kubepilot-test-control-plane\"},\"status\":{\"addresses\":[{\"address\":\"172.18.0.2\",\"type\":\"InternalIP\"},{\"address\":\"kubepilot-test-control-plane\",\"type\":\"Hostname\"}],\"allocatable\":{\"cpu\":\"12\",\"ephemeral-storage\":\"1055762868Ki\",\"hugepages-1Gi\":\"0\",\"hugepages-2Mi\":\"0\",\"memory\":\"7976116Ki\",\"pods\":\"110\"},\"capacity\":{\"cpu\":\"12\",\"ephemeral-storage\":\"1055762868Ki\",\"hugepages-1Gi\":\"0\",\"hugepages-2Mi\":\"0\",\"memory\":\"7976116Ki\",\"pods\":\"110\"},\"conditions\":[{\"lastHeartbeatTime\":\"2026-08-24T09:00:01Z\",\"lastTransitionTime\":\"2026-08-24T08:32:23Z\",\"message\":\"kubelet has sufficient memory available\",\"reason\":\"KubeletHasSufficientMemory\",\"status\":\"False\",\"type\":\"MemoryPressure\"},{\"lastHeartbeatTime\":\"2026-08-24T09:00:01Z\",\"lastTransitionTime\":\"2026-08-24T08:32:23Z\",\"message\":\"kubelet has no disk pressure\",\"reason\":\"KubeletHasNoDiskPressure\",\"status\":\"False\",\"type\":\"DiskPressure\"},{\"lastHeartbeatTime\":\"2026-08-24T09:00:01Z\",\"lastTransitionTime\":\"2026-08-24T08:32:23Z\",\"message\":\"kubelet has sufficient PID available\",\"reason\":\"KubeletHasSufficientPID\",\"status\":\"False\",\"type\":\"PIDPressure\"},{\"lastHeartbeatTime\":\"2026-08-24T09:00:01Z\",\"lastTransitionTime\":\"2026-08-24T08:32:52Z\",\"message\":\"kubelet is posting ready status\",\"reason\":\"KubeletReady\",\"sta...[truncated 2098 chars]"
+    },
+    {
+      "seq": 15,
+      "ts": "2026-08-24T09:01:45.003Z",
+      "fn": "kubectl.getEvents",
+      "args": [
+        "kind-kubepilot-test"
+      ],
+      "ok": true,
+      "result": "{\"apiVersion\":\"v1\",\"items\":[{\"apiVersion\":\"v1\",\"count\":1,\"eventTime\":null,\"firstTimestamp\":\"2026-08-24T08:32:28Z\",\"involvedObject\":{\"kind\":\"Node\",\"name\":\"kubepilot-test-control-plane\",\"uid\":\"kubepilot-test-control-plane\"},\"kind\":\"Event\",\"lastTimestamp\":\"2026-08-24T08:32:28Z\",\"message\":\"The tmpfs noswap option is not supported. Memory-backed volumes (e.g. secrets, emptyDirs, etc.) might be swapped to disk and should no longer be considered secure.\",\"metadata\":{\"creationTimestamp\":\"2026-08-24T08:32:28Z\",\"name\":\"kubepilot-test-control-plane.18ceb0aa7641bb45\",\"namespace\":\"default\",\"resourceVersion\":\"229\",\"uid\":\"1bbe8147-e84a-404e-8848-acdb84d65238\"},\"reason\":\"PossibleMemoryBackedVolumesOnDisk\",\"reportingComponent\":\"kubelet\",\"reportingInstance\":\"kubepilot-test-control-plane\",\"source\":{\"component\":\"kubelet\",\"host\":\"kubepilot-test-control-plane\"},\"type\":\"Warning\"},{\"apiVersion\":\"v1\",\"count\":1,\"eventTime\":null,\"firstTimestamp\":\"2026-08-24T08:32:28Z\",\"involvedObject\":{\"kind\":\"Node\",\"name\":\"kubepilot-test-control-plane\",\"uid\":\"kubepilot-test-control-plane\"},\"kind\":\"Event\",\"lastTimestamp\":\"2026-08-24T08:32:28Z\",\"message\":\"Starting kubelet.\",\"metadata\":{\"creationTimestamp\":\"2026-08-24T08:32:28Z\",\"name\":\"kubepilot-test-control-plane.18ceb0aa766ad2b2\",\"namespace\":\"default\",\"resourceVersion\":\"230\",\"uid\":\"0ccec448-ea86-485d-aeda-79eedae5758c\"},\"reason\":\"Starting\",\"reportingComponent\":\"kubelet\",\"reportingInstance\":\"kubepilot-test-control-plane\",\"source\":{\"component\":\"kubelet\",\"host\":\"kubepilot-test-control-plane\"},\"type\":\"Normal\"},{\"apiVersion\":\"v1\",\"count\":1,\"eventTime\":null,\"firstTimestamp\":\"2026-08-24T08:32:28Z\",\"involvedObject\":{\"kind\":\"Node\",\"name\":\"kubepilot-test-control-plane\",\"uid\":\"kubepilot-test-control-plane\"},\"kind\":\"Event\",\"lastTimestamp\":\"2026-08-24T08:32:28Z\",\"message\":\"cgroup v1 support is in maintenance mode, please migrate to cgroup v2\",\"metadata\":{\"creationTimestamp\":\"2026-08-24T08:32:28Z\",\"name\":\"kubepilot-test-control-plane.18ceb0aa76fbc9ce\",\"namespace\":\"default...[truncated 68688 chars]"
+    }
+  ],
+  "lockDecisions": [],
+  "groupEvents": [],
+  "finalShortMemory": {
+    "ready": true,
+    "keys": [
+      {
+        "key": "sm:group:ns:staging-cluster:default",
+        "type": "set",
+        "value": [
+          "default/unknown"
+        ],
+        "pttlMs": -1
+      },
+      {
+        "key": "sm:active:cluster2",
+        "type": "set",
+        "value": [
+          "8f641c18-1383-4cf9-8402-196cf14191f8",
+          "43b5a23e-21df-40e7-8c99-950a7fa1e60b",
+          "bb1ca0ca-d954-495c-b61e-332ec953c032"
+        ],
+        "pttlMs": -1
+      },
+      {
+        "key": "sm:queue:cluster2",
+        "type": "zset",
+        "value": [
+          {
+            "value": "node:undefined",
+            "score": 3
+          },
+          {
+            "value": "ns:cluster2:default",
+            "score": 3
+          }
+        ],
+        "pttlMs": -1
+      },
+      {
+        "key": "sm:queue:staging-cluster",
+        "type": "zset",
+        "value": [
+          {
+            "value": "node:undefined",
+            "score": 4
+          },
+          {
+            "value": "ns:staging-cluster:default",
+            "score": 4
+          }
+        ],
+        "pttlMs": -1
+      },
+      {
+        "key": "sm:group:ns:cluster2:default",
+        "type": "set",
+        "value": [
+          "default/unknown"
+        ],
+        "pttlMs": -1
+      },
+      {
+        "key": "sm:group:node:undefined",
+        "type": "set",
+        "value": [
+          "node:undefined"
+        ],
+        "pttlMs": -1
+      },
+      {
+        "key": "sm:queue:cluster3",
+        "type": "zset",
+        "value": [
+          {
+            "value": "node:undefined",
+            "score": 4
+          },
+          {
+            "value": "ns:cluster3:default",
+            "score": 4
+          }
+        ],
+        "pttlMs": -1
+      },
+      {
+        "key": "sm:group:ns:cluster3:default",
+        "type": "set",
+        "value": [
+          "default/unknown"
+        ],
+        "pttlMs": -1
+      },
+      {
+        "key": "sm:queue:minikube",
+        "type": "zset",
+        "value": [
+          {
+            "value": "node:undefined",
+            "score": 4
+          },
+          {
+            "value": "ns:minikube:default",
+            "score": 4
+          }
+        ],
+        "pttlMs": -1
+      },
+      {
+        "key": "sm:active:cluster3",
+        "type": "set",
+        "value": [
+          "3f30b8e5-5659-4bb4-b31a-f4c05fae6b65",
+          "04cd2be6-a266-46c0-9033-82db8be41086",
+          "0142a9c2-fe9a-4e2a-9502-dc801e802320"
+        ],
+        "pttlMs": -1
+      },
+      {
+        "key": "sm:active:minikube",
+        "type": "set",
+        "value": [
+          "ada284d7-8230-431a-b51d-fb4cafcaf847",
+          "5e657551-e523-4f38-9591-31d9fc764bc9",
+          "0a61496a-81c9-4050-8fa7-30b34a433d2b"
+        ],
+        "pttlMs": -1
+      },
+      {
+        "key": "sm:group:ns:minikube:default",
+        "type": "set",
+        "value": [
+          "default/unknown"
+        ],
+        "pttlMs": -1
+      },
+      {
+        "key": "sm:active:staging-cluster",
+        "type": "set",
+        "value": [
+          "5b560493-c5f7-4643-bce7-65bdf5a9b3fc",
+          "b7d342c0-ffa7-4c45-8671-71619c1013bc",
+          "e21f1aa0-a836-4581-8151-599a5a1132a6"
+        ],
+        "pttlMs": -1
+      }
+    ]
+  }
+}

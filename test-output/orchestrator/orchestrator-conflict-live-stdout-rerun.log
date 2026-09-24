@@ -1,0 +1,69 @@
+◇ injected env (36) from .env // tip: ⌁ auth for agents [www.vestauth.com]
+◇ injected env (36) from .env // tip: ⌘ enable debugging { debug: true }
+◇ injected env (36) from .env // tip: ⌁ auth for agents [www.vestauth.com]
+◇ injected env (36) from .env // tip: ◈ secrets for agents [www.dotenvx.com]
+◇ injected env (36) from .env // tip: ⌁ auth for agents [www.vestauth.com]
+[PolicyEngine] DRY-RUN MODE — kubectl commands will be simulated, not executed
+[PolicyEngine] Initialized  dryRun=true
+[INVESTIGATOR] LLM: dedicated (qwen3-235b-a22b-instruct-2507)
+◇ injected env (36) from .env // tip: ◈ encrypted .env [www.dotenvx.com]
+[PolicyEngine] DRY-RUN MODE — kubectl commands will be simulated, not executed
+[PolicyEngine] Initialized  dryRun=true
+[PLANNER] LLM: dedicated (qwen3-235b-a22b-instruct-2507)
+◇ injected env (36) from .env // tip: ⌘ suppress logs { quiet: true }
+[GUARDIAN] LLM: dedicated (mistral-small-3.2-24b-instruct-2506)
+[PolicyEngine] DRY-RUN MODE — kubectl commands will be simulated, not executed
+[PolicyEngine] Initialized  dryRun=true
+
+=== test-orchestrator-conflict-live: starting (context=kind-kubepilot-test cluster=kubepilot-test namespaces=kp-test ticks=5 interval=25000ms) ===
+
+[DB] Connected to MongoDB at mongodb://localhost:27017/K8S-agent-IHM
+[ShortMemory] Connected to Redis (redis://localhost:6379)
+[VectorStore] Probing embedding model "bge-multilingual-gemma2"…
+[VectorStore] Embedding dimension: 3584
+[VectorStore] Collection "incident_episodes" ready (dim=3584)
+[EpisodicMemory] Loaded 982 resolved episode(s) into memory index
+[harness] shortMemory.ready = true (Redis) — conflict detection requires this to be true
+
+----- TICK 1/5 -----
+[kubepilot-test] [ORCHESTRATOR] classification failed: [
+  {
+    "code": "custom",
+    "path": [
+      "incidents",
+      0,
+      "namespace"
+    ],
+    "message": "namespace is required when scope is \"pod\""
+  },
+  {
+    "code": "custom",
+    "path": [
+      "incidents",
+      0,
+      "podName"
+    ],
+    "message": "podName or deployment is required when scope is \"pod\""
+  },
+  {
+    "code": "custom",
+    "path": [
+      "incidents",
+      1,
+      "namespace"
+    ],
+    "message": "namespace is required when scope is \"pod\""
+  },
+  {
+    "code": "custom",
+    "path": [
+      "incidents",
+      1,
+      "podName"
+    ],
+    "message": "podName or deployment is required when scope is \"pod\""
+  }
+]
+[harness] sleeping 25000ms before next tick...
+
+[killed]

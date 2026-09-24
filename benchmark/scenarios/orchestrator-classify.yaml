@@ -1,0 +1,185 @@
+# Fixtures for scripts/test-orchestrator-classify.js — canned "kubectl get pods/nodes
+# /events -o json"-shaped snapshots fed through the REAL OrchestratorAgent pipeline
+# (_summarizePods/_summarizeNodes/_summarizeEvents -> _classify() -> _dispatchKey() /
+# _computeGroupPriorities()). Unlike benchmark/scenarios/scenarios.yaml (PolicyEngine/
+# RiskEngine, no LLM), classification IS the LLM call — these scenarios don't assert
+# exact output, they exist so a human can eyeball whether the classifier's behavior
+# (incident merging, severity, scope, dispatch grouping) matches the intent noted in
+# each `expect` field. No kubectl, no shortMemory, no runWorkflow — nothing is dispatched.
+#
+# Shape: `pods`/`nodes`/`events` are arrays of (sparse) real Kubernetes API objects —
+# only the fields the summarizers actually read need to be present.
+
+scenarios:
+
+  - name: "Healthy cluster — nothing should be classified as an incident"
+    expect: "0 incidents"
+    pods: []
+    nodes:
+      - metadata: { name: node-1 }
+        spec: { unschedulable: false }
+        status:
+          conditions:
+            - { type: Ready, status: "True" }
+    events: []
+
+  - name: "CrashLoopBackOff pod + its own BackOff event merge into ONE incident"
+    expect: "1 incident, scope=pod, severity=high|critical, namespace=payments"
+    pods:
+      - metadata:
+          name: api-7f9d6c8b-x2z4q
+          namespace: payments
+          ownerReferences: [{ kind: ReplicaSet, name: api-7f9d6c8b }]
+        spec: { nodeName: node-1 }
+        status:
+          phase: Running
+          containerStatuses:
+            - name: api
+              ready: false
+              restartCount: 12
+              state: { waiting: { reason: CrashLoopBackOff } }
+              lastState: { terminated: { exitCode: 1, reason: Error } }
+    nodes:
+      - metadata: { name: node-1 }
+        spec: { unschedulable: false }
+        status:
+          conditions:
+            - { type: Ready, status: "True" }
+    events:
+      - type: Warning
+        reason: BackOff
+        message: "Back-off restarting failed container api in pod api-7f9d6c8b-x2z4q"
+        count: 12
+        lastTimestamp: "2026-08-18T10:00:00Z"
+        involvedObject: { kind: Pod, name: api-7f9d6c8b-x2z4q, namespace: payments }
+
+  - name: "Two unrelated pods failing in the SAME namespace — 2 incidents, 1 dispatch group"
+    expect: "2 incidents (checkout ns), but _dispatchKey collapses both to ns:test-cluster:checkout"
+    pods:
+      - metadata:
+          name: cart-6d9f8-abcde
+          namespace: checkout
+          ownerReferences: [{ kind: ReplicaSet, name: cart-6d9f8 }]
+        spec: { nodeName: node-1 }
+        status:
+          phase: Running
+          containerStatuses:
+            - name: cart
+              ready: false
+              restartCount: 5
+              state: { waiting: { reason: CrashLoopBackOff } }
+      - metadata:
+          name: pricing-5c7b9-fghij
+          namespace: checkout
+          ownerReferences: [{ kind: ReplicaSet, name: pricing-5c7b9 }]
+        spec: { nodeName: node-1 }
+        status:
+          phase: Pending
+          containerStatuses:
+            - name: pricing
+              ready: false
+              restartCount: 0
+              state: { waiting: { reason: ImagePullBackOff } }
+    nodes:
+      - metadata: { name: node-1 }
+        spec: { unschedulable: false }
+        status:
+          conditions:
+            - { type: Ready, status: "True" }
+    events:
+      - type: Warning
+        reason: BackOff
+        message: "Back-off restarting failed container cart in pod cart-6d9f8-abcde"
+        count: 5
+        involvedObject: { kind: Pod, name: cart-6d9f8-abcde, namespace: checkout }
+      - type: Warning
+        reason: Failed
+        message: "Failed to pull image \"pricing:bad-tag\": not found"
+        count: 3
+        involvedObject: { kind: Pod, name: pricing-5c7b9-fghij, namespace: checkout }
+
+  - name: "OOMKilled pod is classified with oomKilled=true"
+    expect: "1 incident, type mentions OOM, oomKilled=true, evidence cites exitCode 137"
+    pods:
+      - metadata:
+          name: worker-9b8c7-lmnop
+          namespace: batch
+          ownerReferences: [{ kind: ReplicaSet, name: worker-9b8c7 }]
+        spec: { nodeName: node-2 }
+        status:
+          phase: Running
+          containerStatuses:
+            - name: worker
+              ready: false
+              restartCount: 4
+              state: { waiting: { reason: CrashLoopBackOff } }
+              lastState: { terminated: { exitCode: 137, reason: OOMKilled } }
+    nodes:
+      - metadata: { name: node-2 }
+        spec: { unschedulable: false }
+        status:
+          conditions:
+            - { type: Ready, status: "True" }
+    events:
+      - type: Warning
+        reason: OOMKilling
+        message: "Memory cgroup out of memory: Killed process worker"
+        count: 4
+        involvedObject: { kind: Pod, name: worker-9b8c7-lmnop, namespace: batch }
+
+  - name: "Node NotReady with no failing pods — node-scoped incident, own dispatch key"
+    expect: "1 incident, scope=node, nodeName=node-3, dispatchKey=node:node-3"
+    pods: []
+    nodes:
+      - metadata: { name: node-1 }
+        spec: { unschedulable: false }
+        status:
+          conditions:
+            - { type: Ready, status: "True" }
+      - metadata: { name: node-3 }
+        spec: { unschedulable: false }
+        status:
+          conditions:
+            - { type: Ready, status: "False", reason: KubeletNotPosting }
+            - { type: DiskPressure, status: "Unknown", reason: NodeStatusUnknown }
+    events:
+      - type: Warning
+        reason: NodeNotReady
+        message: "Node node-3 status is now: NodeNotReady"
+        count: 1
+        involvedObject: { kind: Node, name: node-3 }
+
+  - name: "Incidents in different namespaces stay independent dispatch groups"
+    expect: "2 incidents, 2 distinct ns:test-cluster:* dispatch keys (no cross-namespace merging)"
+    pods:
+      - metadata:
+          name: auth-1a2b3-qrstu
+          namespace: auth
+          ownerReferences: [{ kind: ReplicaSet, name: auth-1a2b3 }]
+        spec: { nodeName: node-1 }
+        status:
+          phase: Running
+          containerStatuses:
+            - name: auth
+              ready: false
+              restartCount: 9
+              state: { waiting: { reason: CrashLoopBackOff } }
+      - metadata:
+          name: billing-4c5d6-vwxyz
+          namespace: billing
+          ownerReferences: [{ kind: ReplicaSet, name: billing-4c5d6 }]
+        spec: { nodeName: node-1 }
+        status:
+          phase: Running
+          containerStatuses:
+            - name: billing
+              ready: false
+              restartCount: 2
+              state: { waiting: { reason: CrashLoopBackOff } }
+    nodes:
+      - metadata: { name: node-1 }
+        spec: { unschedulable: false }
+        status:
+          conditions:
+            - { type: Ready, status: "True" }
+    events: []

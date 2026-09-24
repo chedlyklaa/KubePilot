@@ -1,0 +1,7 @@
+{
+  "node_version": "20",
+  "graphs": {
+    "kubepilot": "./src/orchestrator/graph.js:graph"
+  },
+  "env": ".env"
+}

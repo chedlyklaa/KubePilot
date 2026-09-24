@@ -42,11 +42,10 @@ function classifyError(err) {
   return REASON.UNAVAILABLE;
 }
 
-// Collect all chunks from an OpenAI streaming call into { raw, usage },
-// racing against a wall-clock timeout.
-async function collectWithTimeout(createStreamFn, timeoutMs) {
+// Race any promise against a wall-clock timeout — shared by the streaming collector
+// and the plain-Promise structured-output path.
+function _raceTimeout(promise, timeoutMs) {
   let handle;
-
   const timeout = new Promise((_, reject) => {
     handle = setTimeout(() => {
       const e = new Error(`LLM call timed out after ${timeoutMs}ms`);
@@ -54,8 +53,13 @@ async function collectWithTimeout(createStreamFn, timeoutMs) {
       reject(e);
     }, timeoutMs);
   });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(handle));
+}
 
-  const collect = (async () => {
+// Collect all chunks from an OpenAI streaming call into { raw, usage },
+// racing against a wall-clock timeout.
+function collectWithTimeout(createStreamFn, timeoutMs) {
+  return _raceTimeout((async () => {
     const stream = await createStreamFn();
     let raw = '', usage = null;
     for await (const chunk of stream) {
@@ -63,13 +67,7 @@ async function collectWithTimeout(createStreamFn, timeoutMs) {
       if (chunk.usage) usage = chunk.usage;
     }
     return { raw, usage };
-  })();
-
-  try {
-    return await Promise.race([collect, timeout]);
-  } finally {
-    clearTimeout(handle);
-  }
+  })(), timeoutMs);
 }
 
 // Verify that raw contains parseable JSON that includes every required field.
@@ -97,6 +95,45 @@ function validateRaw(raw, requiredFields) {
       throw e;
     }
   }
+}
+
+// Shared retry/backoff core for both call shapes below: runs attemptFn() up to
+// MAX_ATTEMPTS times with exponential backoff between attempts, and throws
+// CircuitOpenError on exhaustion. Tuning MAX_ATTEMPTS, the backoff curve, or
+// classifyError now only needs to happen here, instead of being mirrored across the
+// streaming (runLLMCall) and structured-output (runStructuredLLMCall) paths.
+async function _withRetry(attemptFn) {
+  let lastErr, lastReason;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      return await attemptFn();
+    } catch (err) {
+      lastErr    = err;
+      lastReason = classifyError(err);
+      console.warn(
+        `[CircuitBreaker] attempt ${attempt}/${MAX_ATTEMPTS} failed` +
+        ` — ${lastReason}: ${err.message}`
+      );
+      if (attempt < MAX_ATTEMPTS) await sleep(1000 * Math.pow(2, attempt - 1));
+    }
+  }
+
+  const openErr     = new Error(`LLM circuit open after ${MAX_ATTEMPTS} attempts (${lastReason})`);
+  openErr.name      = 'CircuitOpenError';
+  openErr.reason    = lastReason;
+  openErr.lastError = lastErr;
+  throw openErr;
+}
+
+// Same timeout/retry/backoff policy as runLLMCall, adapted for a plain Promise-returning
+// call instead of a raw OpenAI stream — this is what LangChain's `withStructuredOutput()`
+// calls use (KubePilot v5 graph nodes): structured-output parsing/validation already
+// happens inside LangChain via the zod schema, so there's no raw-JSON `validateRaw()` step
+// here, just timeout + retry + backoff around the same MAX_ATTEMPTS/REASON policy.
+async function runStructuredLLMCall(invokeFn, { timeoutMs = TIMEOUT_MS } = {}) {
+  if (!FALLBACK_ENABLED) return invokeFn();
+  return _withRetry(() => _raceTimeout(invokeFn(), timeoutMs));
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -136,40 +173,11 @@ async function runLLMCall(createStreamFn, { requiredFields = [], timeoutMs = TIM
   }
 
   // ── Enabled mode: retry loop with timeout + backoff ───────────────────────
-  let lastErr, lastReason;
-
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    try {
-      const { raw, usage } = await collectWithTimeout(createStreamFn, timeoutMs);
-
-      if (requiredFields.length > 0) validateRaw(raw, requiredFields);
-
-      return { raw, usage };
-
-    } catch (err) {
-      lastErr    = err;
-      lastReason = classifyError(err);
-
-      console.warn(
-        `[CircuitBreaker] attempt ${attempt}/${MAX_ATTEMPTS} failed` +
-        ` — ${lastReason}: ${err.message}`
-      );
-
-      if (attempt < MAX_ATTEMPTS) {
-        // Exponential backoff: 1 000 ms after attempt 1, 2 000 ms after attempt 2
-        await sleep(1000 * Math.pow(2, attempt - 1));
-      }
-    }
-  }
-
-  // All retries exhausted — open the circuit
-  const openErr       = new Error(
-    `LLM circuit open after ${MAX_ATTEMPTS} attempts (${lastReason})`
-  );
-  openErr.name        = 'CircuitOpenError';
-  openErr.reason      = lastReason;
-  openErr.lastError   = lastErr;
-  throw openErr;
+  return _withRetry(async () => {
+    const { raw, usage } = await collectWithTimeout(createStreamFn, timeoutMs);
+    if (requiredFields.length > 0) validateRaw(raw, requiredFields);
+    return { raw, usage };
+  });
 }
 
-module.exports = { runLLMCall, REASON };
+module.exports = { runLLMCall, runStructuredLLMCall, REASON };

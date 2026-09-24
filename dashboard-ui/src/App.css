@@ -3468,6 +3468,28 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
 
 .issue-pager { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 14px; }
 
+/* Live Pipeline page — one workflow's incidents stacked, each with its own step trail */
+.live-incident-block { display: flex; flex-direction: column; gap: 10px; padding: 12px 0; }
+.live-incident-block + .live-incident-block { border-top: 1px solid var(--border); }
+.live-incident-head  { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 12px; font-weight: 600; color: var(--text-head); }
+
+/* Live Pipeline page — step-order chip strip + per-step free-form output fields */
+.live-step-order  { display: flex; flex-wrap: wrap; gap: 8px; }
+.live-step-chip   { font-size: 11px; padding: 3px 9px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text-dim); }
+.live-step-chip-done    { color: var(--text-head); border-color: var(--primary); }
+.live-step-chip-current { color: var(--primary); border-color: var(--primary); background: var(--primary-dim); font-weight: 600; }
+
+.live-step-row     { padding-bottom: 4px; }
+.live-step-fields  { margin-left: 28px; display: flex; flex-direction: column; gap: 2px; padding: 2px 0 8px; }
+.live-step-field   { display: flex; gap: 8px; font-size: 11px; align-items: baseline; }
+.live-step-field-key { font-family: var(--mono); color: var(--text-dim); min-width: 140px; flex-shrink: 0; }
+.live-step-field-val { color: var(--text); word-break: break-word; }
+
+/* Live Pipeline page — Short Memory section: stacked sub-tables + a chip list for the
+   active-workflow-id set */
+.live-shortmem   { display: flex; flex-direction: column; gap: 18px; }
+.live-chip-list  { display: flex; flex-wrap: wrap; gap: 6px; }
+
 [data-theme="light"] .issue-badge-info    { background: #DCEAFE; color: #2563EB; }
 [data-theme="light"] .issue-badge-dim     { background: #ECECEC; color: #666; }
 [data-theme="light"] .issue-log-dump      { background: #F6F8FD; border-color: #DDE1EE; }

@@ -1,0 +1,29 @@
+[2026-08-24T09:56:41.434Z] 
+=== test-orchestrator-conflict-live: starting (context=kind-kubepilot-test cluster=kubepilot-test namespaces=kp-test ticks=1 interval=1000ms) ===
+
+[2026-08-24T09:56:41.609Z] [DB] Connected to MongoDB at mongodb://localhost:27017/K8S-agent-IHM
+[2026-08-24T09:56:41.779Z] [ShortMemory] Connected to Redis (redis://localhost:6379)
+[2026-08-24T09:56:41.779Z] [VectorStore] Probing embedding model "bge-multilingual-gemma2"…
+[2026-08-24T09:56:42.247Z] [VectorStore] Embedding dimension: 3584
+[2026-08-24T09:56:42.308Z] [VectorStore] Collection "incident_episodes" ready (dim=3584)
+[2026-08-24T09:56:42.589Z] [EpisodicMemory] Loaded 982 resolved episode(s) into memory index
+[2026-08-24T09:56:42.589Z] [harness] shortMemory.ready = true (Redis) — conflict detection requires this to be true
+[2026-08-24T09:56:42.590Z] 
+----- TICK 1/1 -----
+[2026-08-24T09:56:50.474Z] [kubepilot-test] [ORCHESTRATOR] 2 incident(s) classified
+[2026-08-24T09:56:50.508Z] [kubepilot-test] [ORCHESTRATOR] launching workflow d74d3505-d9f3-4de7-ad5a-fc28d9f1fc69 for ns:kubepilot-test:default (1 incident(s))
+[2026-08-24T09:56:50.529Z] 
+[harness] all 1 ticks issued — waiting 20s for in-flight workflows to progress before final snapshot...
+[2026-08-24T09:56:50.554Z] [kubepilot-test] [GRAPH] investigator — default/unknown (attempt 1/3)
+[2026-08-24T09:56:51.810Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods -n default
+[2026-08-24T09:56:52.710Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods -n default -o wide
+[2026-08-24T09:56:55.518Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test describe pod -n default
+[2026-08-24T09:56:59.537Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get deployments -n default
+[2026-08-24T09:57:00.976Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get statefulsets -n default
+[2026-08-24T09:57:03.336Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get daemonsets -n default
+[2026-08-24T09:57:04.780Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n default --sort-by=.metadata.creationTimestamp
+[2026-08-24T09:57:06.626Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods -n default -o json
+[2026-08-24T09:57:07.861Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get namespaces
+[2026-08-24T09:57:08.834Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods -n kp-test
+[2026-08-24T09:57:10.563Z] 
+[harness] wrote report to C:\Users\temp\Desktop\BigApps_PFE\k8s_ai_agent\test-output\orchestrator\conflict-live-2026-08-24T09-56-39-419Z.json

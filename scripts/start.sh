@@ -8,24 +8,21 @@
 #
 # Usage:
 #   chmod +x scripts/start.sh
-#   ./scripts/start.sh [--no-monitoring] [--no-test-pods] [--skip-existing]
+#   ./scripts/start.sh [--no-monitoring] [--skip-existing]
 #
 # Options:
 #   --no-monitoring   Skip Prometheus + Grafana installation
-#   --no-test-pods    Skip deploying test workloads on minikube
 #   --skip-existing   Skip clusters that are already Running (faster restarts)
 # =============================================================================
 set -euo pipefail
 
 # ── Flags ────────────────────────────────────────────────────────────────────
 INSTALL_MONITORING=true
-DEPLOY_TEST_PODS=true
 SKIP_EXISTING=false
 
 for arg in "$@"; do
   case $arg in
     --no-monitoring)  INSTALL_MONITORING=false ;;
-    --no-test-pods)   DEPLOY_TEST_PODS=false   ;;
     --skip-existing)  SKIP_EXISTING=true        ;;
   esac
 done
@@ -102,6 +99,47 @@ else
     else
       err "Failed to start Qdrant container — see ${QDRANT_LOG}"
       tail -20 "${QDRANT_LOG}" || true
+    fi
+  fi
+fi
+
+# ── Redis (short-term memory: dedup / namespace grouping / dispatch queue / locks) ──
+# Same independent-of-minikube rationale as Qdrant above.
+section "Redis"
+
+REDIS_CONTAINER="redis"
+REDIS_PORT=6379
+REDIS_LOG="${ROOT_DIR}/.pf-logs/redis-start.log"
+mkdir -p "${ROOT_DIR}/.pf-logs"
+
+if ! command -v docker &>/dev/null; then
+  warn "docker not found — skipping Redis startup (set REDIS_URL to an external instance)"
+elif ! docker info &>/dev/null; then
+  err "Docker daemon not reachable — is Docker Desktop running?"
+  warn "  Start Docker Desktop, then re-run this script (Redis startup skipped)"
+else
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${REDIS_CONTAINER}$"; then
+    ok "Redis already running (container: ${REDIS_CONTAINER})"
+  elif docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${REDIS_CONTAINER}$"; then
+    log "Starting existing Redis container (${REDIS_CONTAINER})..."
+    if docker start "${REDIS_CONTAINER}" >"${REDIS_LOG}" 2>&1; then
+      ok "Redis container started"
+    else
+      err "Failed to start Redis container — see ${REDIS_LOG}"
+      tail -20 "${REDIS_LOG}" || true
+    fi
+  else
+    log "No existing '${REDIS_CONTAINER}' container found — creating one (port ${REDIS_PORT})..."
+    if docker run -d \
+      --name "${REDIS_CONTAINER}" \
+      -p "${REDIS_PORT}:6379" \
+      --restart unless-stopped \
+      redis:latest \
+      >"${REDIS_LOG}" 2>&1; then
+      ok "Redis container created"
+    else
+      err "Failed to start Redis container — see ${REDIS_LOG}"
+      tail -20 "${REDIS_LOG}" || true
     fi
   fi
 fi
@@ -253,19 +291,6 @@ if [[ "${INSTALL_MONITORING}" == "true" ]]; then
     | awk '{printf "     %-45s %s\n", $1, $3}'
 fi
 
-# ── Deploy test workloads on minikube ─────────────────────────────────────────
-if [[ "${DEPLOY_TEST_PODS}" == "true" ]]; then
-  section "Test Workloads (minikube)"
-
-  if [[ -f "${SCRIPT_DIR}/reset-test-pods.sh" ]]; then
-    kubectl config use-context minikube &>/dev/null
-    log "Deploying test pods across namespaces..."
-    bash "${SCRIPT_DIR}/reset-test-pods.sh"
-  else
-    warn "reset-test-pods.sh not found — skipping test workloads"
-  fi
-fi
-
 # ── Port-forwards ─────────────────────────────────────────────────────────────
 section "Port-Forwards"
 
@@ -338,6 +363,14 @@ if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${QDRANT_CONTAINER}$"
   fi
 fi
 
+# ── Redis connectivity check ──────────────────────────────────────────────────
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${REDIS_CONTAINER}$"; then
+  log "Waiting for Redis to accept connections..."
+  if wait_port "${REDIS_PORT}" "redis" 30; then
+    ok "Redis       → redis://localhost:${REDIS_PORT}  (container: ${REDIS_CONTAINER})"
+  fi
+fi
+
 # ── Cluster status summary ────────────────────────────────────────────────────
 section "Cluster Status"
 
@@ -360,6 +393,7 @@ echo ""
 echo -e "  ${DIM}PROMETHEUS_URL${NC}=http://localhost:9090"
 echo -e "  ${DIM}GRAFANA_URL${NC}=http://localhost:3000"
 echo -e "  ${DIM}QDRANT_URL${NC}=http://localhost:6333"
+echo -e "  ${DIM}REDIS_URL${NC}=redis://localhost:6379"
 echo ""
 echo -e "  Grafana login: ${BOLD}admin / kubepilot${NC}"
 echo -e "  Qdrant UI:     ${BOLD}http://localhost:6333/dashboard${NC}"
@@ -374,5 +408,5 @@ echo ""
 # ── Stop helper reminder ──────────────────────────────────────────────────────
 sep
 echo -e "  To stop everything:  ${DIM}./scripts/stop.sh${NC}"
-echo -e "  To reset test pods:  ${DIM}./scripts/reset-test-pods.sh${NC}"
+echo -e "  To deploy test pods: ${DIM}./scripts/reset-test-pods.sh${NC}"
 echo ""

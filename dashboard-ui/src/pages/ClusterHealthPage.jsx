@@ -328,6 +328,17 @@ export default function ClusterHealthPage() {
       if (nowOpen) {
         const nsObj = data?.clusters.find(c => c.name === clusterName)?.namespaces.find(n => n.name === ns)
         if (nsObj && !nsObj.loaded && !nsObj.loading) loadNamespacePods(clusterName, ns)
+      } else {
+        // Closing discards whatever was loaded rather than just hiding it — reopening
+        // this namespace later must always pull live state from Kubernetes again, not
+        // show however stale the last-seen pod list has become in the meantime.
+        setData(prevData => prevData && {
+          ...prevData,
+          clusters: prevData.clusters.map(c => c.name !== clusterName ? c : {
+            ...c,
+            namespaces: c.namespaces.map(n => n.name === ns ? { name: ns, pods: null, loading: false, loaded: false, error: null } : n),
+          }),
+        })
       }
       return { ...prev, [key]: nowOpen }
     })
@@ -339,6 +350,26 @@ export default function ClusterHealthPage() {
     const iv = setInterval(fetchData, refreshSeconds * 1000)
     return () => clearInterval(iv)
   }, [fetchData, refreshSeconds])
+
+  // Every completed fetchData() run (manual "↻ Refresh" click or an auto-refresh
+  // tick — both funnel through fetchData, both end by bumping lastSync) also
+  // re-fetches pods for every namespace currently OPEN, not just the namespace list
+  // itself — so an expanded namespace stays live on the same refresh you already
+  // triggered, instead of needing to be closed and reopened to see current state.
+  // Namespaces that aren't expanded are left alone (still lazy).
+  useEffect(() => {
+    if (!lastSync) return
+    Object.entries(expandedNs)
+      .filter(([, open]) => open)
+      .forEach(([key]) => {
+        const slash = key.indexOf('/')
+        loadNamespacePods(key.slice(0, slash), key.slice(slash + 1))
+      })
+    // Deliberately keyed on lastSync alone — expandedNs/loadNamespacePods are read
+    // fresh via closure each time this fires, not tracked as reactive deps, so
+    // toggling a namespace between refresh ticks doesn't tear down/rebuild this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastSync])
 
   useEffect(() => {
     if (refreshSeconds <= 0) return

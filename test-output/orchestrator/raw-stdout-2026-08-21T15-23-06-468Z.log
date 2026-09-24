@@ -1,0 +1,137 @@
+[2026-08-21T15:23:38.094Z] 
+=== test-orchestrator-conflict-live: starting (context=kind-kubepilot-test cluster=kubepilot-test namespaces=kp-test ticks=5 interval=25000ms) ===
+
+[2026-08-21T15:23:38.199Z] [warn] Failed to obtain server version. Unable to check client-server compatibility. Set checkCompatibility=false to skip version check.
+[2026-08-21T15:23:38.362Z] [DB] Connected to MongoDB at mongodb://localhost:27017/K8S-agent-IHM
+[2026-08-21T15:23:38.517Z] [ShortMemory] Connected to Redis (redis://localhost:6379)
+[2026-08-21T15:23:38.518Z] [VectorStore] Probing embedding model "bge-multilingual-gemma2"…
+[2026-08-21T15:23:39.014Z] [VectorStore] Embedding dimension: 3584
+[2026-08-21T15:23:39.023Z] [stderr] [VectorStore] Init failed: fetch failed
+[2026-08-21T15:23:39.024Z] [warn] [VectorStore] Semantic search disabled — QDRANT_URL=http://localhost:6333
+[2026-08-21T15:23:39.463Z] [EpisodicMemory] Loaded 982 resolved episode(s) into memory index
+[2026-08-21T15:23:39.464Z] [harness] shortMemory.ready = true (Redis) — conflict detection requires this to be true
+[2026-08-21T15:23:39.464Z] 
+----- TICK 1/5 -----
+[2026-08-21T15:31:33.896Z] [stderr] [kubepilot-test] [ORCHESTRATOR] classification failed: [
+  {
+    "code": "custom",
+    "path": [
+      "incidents",
+      0,
+      "namespace"
+    ],
+    "message": "namespace is required when scope is \"pod\""
+  },
+  {
+    "code": "custom",
+    "path": [
+      "incidents",
+      0,
+      "podName"
+    ],
+    "message": "podName or deployment is required when scope is \"pod\""
+  },
+  {
+    "code": "custom",
+    "path": [
+      "incidents",
+      1,
+      "namespace"
+    ],
+    "message": "namespace is required when scope is \"pod\""
+  },
+  {
+    "code": "custom",
+    "path": [
+      "incidents",
+      1,
+      "podName"
+    ],
+    "message": "podName or deployment is required when scope is \"pod\""
+  }
+]
+[2026-08-21T15:31:33.898Z] [harness] sleeping 25000ms before next tick...
+[2026-08-21T15:31:58.913Z] 
+----- TICK 2/5 -----
+[2026-08-21T15:34:02.354Z] [stderr] [kubepilot-test] [ORCHESTRATOR] classification failed: [
+  {
+    "code": "custom",
+    "path": [
+      "incidents",
+      0,
+      "namespace"
+    ],
+    "message": "namespace is required when scope is \"pod\""
+  },
+  {
+    "code": "custom",
+    "path": [
+      "incidents",
+      0,
+      "podName"
+    ],
+    "message": "podName or deployment is required when scope is \"pod\""
+  },
+  {
+    "code": "custom",
+    "path": [
+      "incidents",
+      1,
+      "namespace"
+    ],
+    "message": "namespace is required when scope is \"pod\""
+  },
+  {
+    "code": "custom",
+    "path": [
+      "incidents",
+      1,
+      "podName"
+    ],
+    "message": "podName or deployment is required when scope is \"pod\""
+  }
+]
+[2026-08-21T15:34:02.354Z] [harness] sleeping 25000ms before next tick...
+[2026-08-21T15:34:27.364Z] 
+----- TICK 3/5 -----
+[2026-08-21T15:37:48.780Z] [stderr] [kubepilot-test] [ORCHESTRATOR] classification failed: [
+  {
+    "code": "custom",
+    "path": [
+      "incidents",
+      0,
+      "namespace"
+    ],
+    "message": "namespace is required when scope is \"pod\""
+  },
+  {
+    "code": "custom",
+    "path": [
+      "incidents",
+      0,
+      "podName"
+    ],
+    "message": "podName or deployment is required when scope is \"pod\""
+  },
+  {
+    "code": "custom",
+    "path": [
+      "incidents",
+      1,
+      "namespace"
+    ],
+    "message": "namespace is required when scope is \"pod\""
+  },
+  {
+    "code": "custom",
+    "path": [
+      "incidents",
+      1,
+      "podName"
+    ],
+    "message": "podName or deployment is required when scope is \"pod\""
+  }
+]
+[2026-08-21T15:37:48.781Z] [harness] sleeping 25000ms before next tick...
+[2026-08-21T15:38:13.794Z] 
+----- TICK 4/5 -----

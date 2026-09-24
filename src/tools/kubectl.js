@@ -27,6 +27,13 @@ function _parseArgs(command) {
 // what keeps every pre-existing cluster (context already in the shared file) working
 // unchanged.
 async function runCommand(command) {
+  // Restores the timeout this function had before a refactor collapsed its second
+  // (options) parameter without updating the body — every call was throwing
+  // "timeoutMs is not defined" (confirmed live: `kubectl version --client` failed with
+  // exactly that error). Original default was 60s via a destructured `{ timeoutMs = 60_000 }`
+  // parameter that nothing actually called with an override, so a plain constant here
+  // is behavior-equivalent, not a scope change.
+  const timeoutMs = 60_000;
   const args = _parseArgs(command);
   // if (impersonateAs) {
   //   args.unshift(`--as=${impersonateAs}`);
@@ -448,6 +455,8 @@ module.exports = {
   getDeploymentsFull,
   getStatefulSetsFull,
   getDaemonSetsFull,
+  getConfigMaps,
+  getSecretsMetadata,
 };
 
 async function getPersistentVolumes(context) {
@@ -551,4 +560,27 @@ async function getDaemonSetsFull(namespace, context) {
   const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
   const out = await runCommand(`kubectl --context="${context}" get daemonsets ${nsFlag} -o json`);
   return JSON.parse(out).items ?? [];
+}
+
+// ── Config layer (Investigator) ───────────────────────────────────────────────
+
+async function getConfigMaps(namespace, context) {
+  const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
+  const out = await runCommand(`kubectl --context="${context}" get configmaps ${nsFlag} -o json`);
+  return JSON.parse(out).items ?? [];
+}
+
+// Secret KEYS only — never returns `.data`/`.stringData` values. The Investigator's
+// Config-layer inspection only ever needs to know a key exists (e.g. "the app expects
+// API_KEY but this Secret only has DB_PASSWORD"), never the secret's actual value.
+async function getSecretsMetadata(namespace, context) {
+  const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
+  const out = await runCommand(`kubectl --context="${context}" get secrets ${nsFlag} -o json`);
+  const items = JSON.parse(out).items ?? [];
+  return items.map(s => ({
+    name:      s.metadata?.name,
+    namespace: s.metadata?.namespace,
+    type:      s.type,
+    keys:      Object.keys(s.data ?? s.stringData ?? {}),
+  }));
 }

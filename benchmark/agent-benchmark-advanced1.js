@@ -33,8 +33,21 @@ const ARGS = process.argv.slice(2).reduce((o, a) => {
 const CTX          = ARGS.context  || 'minikube';
 const API          = ARGS.api      || 'http://localhost:3001';
 const NS           = ARGS.ns       || 'bench-adv';
-const TIMEOUT      = parseInt(ARGS.timeout || '400', 10);
+// TIMEOUT is now a SAFETY CAP, not the expected run length — the poll loop's real
+// stopping condition is Short Memory going idle (see fetchShortMemoryState() and the
+// poll loop in main()), so this only matters if the system is genuinely stuck (Redis
+// down, a hung workflow that never releases its concurrency slot, etc.). Raised well
+// past the old 2000s default, which was being hit as a normal, expected occurrence on
+// any run with more failing tests than ISSUE_CONCURRENCY allows through at once —
+// misreporting real-but-still-queued incidents as "not detected" (see IDLE_CONFIRM_TICKS
+// below for the actual completion signal).
+const TIMEOUT      = parseInt(ARGS.timeout || '5400', 10); // 90 min hard cap
 const POLL         = parseInt(ARGS.poll    || '10', 10);
+// Consecutive idle poll ticks (queue empty + no active workflows + no pending groups)
+// required before concluding "nothing left will ever be detected" — more than one tick
+// so a brief lull between fleet cycles (dispatch happens once per CYCLE_INTERVAL_MS,
+// not continuously) can't be mistaken for real completion.
+const IDLE_CONFIRM_TICKS = parseInt(ARGS.idleTicks || '3', 10);
 const RESULTS_DIR  = path.join(__dirname, 'results');
 // Friendly cluster name registered in clusters.yaml — usually the same string as CTX
 // (true for a plain "minikube" entry), but override with --cluster= if yours differs.
@@ -905,93 +918,130 @@ const HPA_CHECKS = [
 // =============================================================================
 // DECISION FINDER
 // =============================================================================
-async function findDecision(podName, namespace, afterIso) {
-  const searchNs = namespace || NS;
-  let action = null, rootCause = null, risk = null, status = null;
-
+// Reads /api/live-workflows — the SAME structured, per-component decision events
+// IncidentTracer.step() feeds at every src/orchestrator/graph.js node (see
+// src/monitoring/liveWorkflowStore.js), i.e. exactly what the dashboard's Live
+// Pipeline page renders. This REPLACES the old approach of scraping /api/audit's
+// metadata.issueKey/metadata.action and /api/logs for "[PLANNER] raw:"-style
+// strings — those were legacy ClusterAgent/plannerAgent.js artifacts that the v5
+// pipeline (graph.js/planner.js) never produces, which is why detection silently
+// never fired for anything the orchestrator actually picked up (found live,
+// 2026-09-09: an orchestrator-detected, fully-resolved incident still scored as
+// "not detected" every time).
+//
+// Fetched ONCE per poll tick (see main()'s poll loop) and matched in-memory against
+// every still-undetected test, instead of one /api/live-workflows call per test per
+// tick — cheaper, and keeps every test's view of "what's in flight right now"
+// perfectly consistent within a tick.
+async function fetchLiveWorkflows() {
   try {
-    const audit = await api(`/api/audit?limit=500&cluster=${CTX}`);
-    for (const d of (audit.docs ?? [])) {
-      const ts = d.createdAt ?? d.timestamp ?? '';
-      if (ts && ts < afterIso) continue;
-      const meta = d.metadata ?? {};
-      const key = meta.issueKey ?? d.issueKey ?? '';
-      if (key.includes(podName) && key.includes(searchNs)) {
-        const a = meta.action ?? d.action ?? null;
-        const finalAction = meta.finalAction ?? a;
-        action = finalAction ?? a;
-        risk   = meta.risk ?? d.risk ?? null;
-        status = d.status ?? null;
-        break;
-      }
-    }
-  } catch {}
-
-  try {
-    const logs = await api('/api/logs');
-    if (Array.isArray(logs)) {
-      for (let i = logs.length - 1; i >= 0; i--) {
-        const logTs = logs[i].timestamp ?? '';
-        if (logTs && logTs < afterIso) continue;
-        const msg = logs[i].message ?? '';
-        if (!msg.includes(podName)) continue;
-
-        if (!rootCause && msg.includes('[PLANNER] raw:')) {
-          try {
-            const parsed = JSON.parse(msg.slice(msg.indexOf('{')).match(/\{[\s\S]*\}/)?.[0] ?? '{}');
-            if (parsed.rootCause) rootCause = parsed.rootCause;
-            if (!action && parsed.action) action = parsed.action;
-            if (!risk && parsed.risk) risk = parsed.risk;
-          } catch {}
-        }
-        if (!rootCause && msg.includes('[PLANNER]') && msg.includes('rootCause')) {
-          const m = msg.match(/rootCause\s*:\s*(.+)/);
-          if (m) rootCause = m[1].trim();
-        }
-        if (!action && msg.includes('[PLANNER]') && msg.includes('action')) {
-          const m = msg.match(/action\s*[:=]\s*(\S+)/);
-          if (m) action = m[1];
-        }
-      }
-    }
-  } catch {}
-
-  if (action) return { action, rootCause, risk, status };
-
-  try {
-    const escs = await api('/api/escalations');
-    if (Array.isArray(escs)) {
-      for (const e of escs) {
-        if ((e.issueKey ?? '').includes(podName) && (e.issueKey ?? '').includes(searchNs)) {
-          return { action: 'ESCALATED', rootCause: e.rca?.suspected_cause ?? null, risk: null, status: e.status };
-        }
-      }
-    }
-  } catch {}
-
-  return null;
+    const d = await api('/api/live-workflows');
+    return Array.isArray(d.items) ? d.items : [];
+  } catch { return []; }
 }
 
-// PolicyEngine's blocked/modified audit entries aren't keyed by issueKey (unlike
-// ClusterAgent's own audit/log writes), so findDecision's generic search can't find
-// them — this looks them up directly by target name/namespace instead. Returns a
-// decision shaped like findDecision's result (action: 'BLOCKED') so the same generic
-// scoring logic in main() can score a "policy" test the same way as any other.
-async function findPolicyBlock(deploymentName, namespace, rulePattern, afterIso) {
-  const searchNs = namespace || NS;
+// Short Memory's own dispatch-side state (src/memory/shortMemory.js's dumpState(), via
+// GET /api/live-workflows/short-memory) — the REAL signal for "is the orchestrator still
+// working through a backlog, or genuinely done". Used to replace a blind elapsed-time
+// cutoff (see main()'s poll loop): with ISSUE_CONCURRENCY defaulting to 3 and every
+// uncorrelated incident getting its own solo dispatch key, a burst of N failing test
+// pods takes ceil(N/3) dispatch "waves" to clear — a fixed timeout picked independent of
+// N and the live queue depth will always either be too short (misreporting a still-
+// queued incident as "not detected") or wastefully long. Polling this instead lets the
+// benchmark wait exactly as long as real work is happening, no more, no less.
+async function fetchShortMemoryState() {
   try {
-    const audit = await api(`/api/audit?limit=500&cluster=${CTX}&agent=PolicyEngine&status=blocked`);
-    for (const d of (audit.docs ?? [])) {
-      const ts = d.createdAt ?? d.timestamp ?? '';
-      if (ts && ts < afterIso) continue;
-      const target = d.metadata?.target ?? {};
-      if (target.name !== deploymentName || target.namespace !== searchNs) continue;
-      const rules = d.metadata?.blockedRules ?? [];
-      if (!rules.some(r => rulePattern.test(r))) continue;
-      return { action: 'BLOCKED', rootCause: rules.join('; '), risk: null, status: 'blocked' };
-    }
-  } catch {}
-  return null;
+    return await api('/api/live-workflows/short-memory');
+  } catch { return null; }
+}
+
+// Finds the most-recently-updated live-workflow incident whose resource matches this
+// test's target, started at/after this benchmark run began (so a leftover incident
+// from an earlier run/session — liveWorkflowStore keeps a finished one visible for 30
+// min — never gets misattributed to this run). `.includes()` rather than an exact
+// name match on purpose: t.pod is usually the Deployment name (e.g. "oom-dep"), but
+// resourceFromIssue() may carry either that or the literal generated pod name
+// ("oom-dep-7f9c6d-x2k4l") depending on how far the incident got — same substring-match
+// philosophy the old issueKey-scraping version used.
+function matchIncident(items, podName, namespace, afterIso) {
+  const searchNs = namespace || NS;
+  const afterMs = new Date(afterIso).getTime();
+  const candidates = items.filter(it => {
+    const r = it.resource ?? {};
+    if ((r.namespace ?? '') !== searchNs) return false;
+    if (!r.name || !r.name.includes(podName)) return false;
+    const startedMs = new Date(it.startedAt).getTime();
+    return Number.isFinite(startedMs) && startedMs >= afterMs;
+  });
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  return candidates[0];
+}
+
+// Best-effort translation of v5's free-form kubectl command/plan summary onto the
+// short legacy action labels this file's TESTS[].expected.action still uses.
+// schemas.js's PlanStepSchema comment explains why there's no literal label to read
+// anymore: "the Planner writes the complete kubectl command itself... instead of
+// picking from a closed action set" — so this is pattern-matching command TEXT, an
+// approximation, not something the pipeline reports directly. Kept intentionally
+// narrow/explicit rather than guessing broadly, so a genuinely novel command falls
+// through to 'restart' (the closest "some remediation ran" bucket) instead of being
+// silently mislabeled as a specific action it isn't.
+function classifyAction(planSummary, executorAction) {
+  const text = `${planSummary ?? ''} ${executorAction ?? ''}`.toLowerCase();
+  if (!text.trim()) return 'noop';
+  if (/rollout undo|set image|patch.*image/.test(text)) return 'rollback';
+  if (/(set resources|patch).*memory/.test(text)) return 'increase_memory';
+  if (/rollout restart/.test(text)) return 'restart';
+  if (/delete pod/.test(text)) return 'delete_pod';
+  if (/scale.*--replicas=0/.test(text)) return 'scale_down';
+  if (/\bscale\b/.test(text)) return 'scale_down';
+  return 'restart';
+}
+
+// Derives a findDecision()-shaped result from a live-workflow incident record, plus
+// the raw `steps` trail (kept on the returned object) so main() can render it into
+// the HTML report without a second lookup.
+function decisionFromIncident(incident) {
+  const byComponent = {};
+  for (const s of incident.steps) byComponent[s.component] = s.output ?? {}; // last write wins — steps are chronological
+  const inv = byComponent.investigator, plan = byComponent.planner;
+  const guard = byComponent.guardian, pol = byComponent.policy, exec = byComponent.executor;
+  const refl = byComponent.reflector;
+
+  const rootCause = [
+    (inv?.sub_events ?? []).map(e => e.issue).filter(Boolean).join(' '),
+    inv?.root_cause_layer,
+  ].filter(Boolean).join(' ') || null;
+
+  const action = (incident.outcome === 'escalated' || refl?.outcome === 'escalated') ? 'ESCALATED'
+    : pol?.status === 'FAIL' ? 'BLOCKED'
+    : classifyAction(plan?.plan_summary, exec?.action);
+
+  return {
+    action, rootCause, risk: guard?.risk_tier ?? null,
+    status: incident.outcome ?? (incident.finishedAt ? 'finished' : 'in_progress'),
+    incident,
+  };
+}
+
+async function findDecision(items, podName, namespace, afterIso) {
+  const incident = matchIncident(items, podName, namespace, afterIso);
+  return incident ? decisionFromIncident(incident) : null;
+}
+
+// "policy" tests need to see PolicyEngine actually FAIL a step (not just any
+// decision) — checked against the same live-workflow incident's own 'policy' step
+// output rather than a separate query, since that step is exactly where
+// PolicyEngine's verdict for this incident already landed.
+async function findPolicyBlock(items, deploymentName, namespace, rulePattern, afterIso) {
+  const incident = matchIncident(items, deploymentName, namespace, afterIso);
+  if (!incident) return null;
+  const policyStep = incident.steps.find(s => s.component === 'policy' && s.output?.status === 'FAIL');
+  if (!policyStep) return null;
+  const rules = policyStep.output.blockedRules ?? [];
+  if (!rules.some(r => rulePattern.test(r))) return null;
+  return { action: 'BLOCKED', rootCause: rules.join('; '), risk: null, status: 'blocked', incident };
 }
 
 function checkResolved(podName) {
@@ -1004,6 +1054,151 @@ function checkResolved(podName) {
     if (out.includes('Running')) return true;
   } catch {}
   return false;
+}
+
+// =============================================================================
+// HTML REPORT — one page mirroring the app's own Live Pipeline table
+// (dashboard-ui/src/pages/LiveWorkflowPage.jsx): same step icons/labels/order
+// (WORKFLOW_STEP/WORKFLOW_STEP_ORDER, dashboard-ui/src/constants/index.js) and the
+// same dark palette (dashboard-ui/src/App.css's :root vars), so a benchmark result
+// reads like an extension of the dashboard instead of a foreign report format.
+// Self-contained (no external assets, no JS framework) — <details> gives free
+// expand/collapse for each test's step trail without needing any script at all.
+// =============================================================================
+const WORKFLOW_STEP = {
+  orchestrator: { icon: '🛰',  label: 'Detected' },
+  investigator: { icon: '🔎', label: 'Investigator' },
+  planner:      { icon: '🧩', label: 'Planner' },
+  guardian:     { icon: '🛡',  label: 'Guardian' },
+  policy:       { icon: '📋', label: 'Policy' },
+  executor:     { icon: '⚙',  label: 'Executor' },
+  reflector:    { icon: '🪞', label: 'Reflexion' },
+};
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function badge(pass, label) {
+  return `<span class="badge ${pass ? 'badge-success' : 'badge-danger'}">${esc(label)}</span>`;
+}
+
+// Same generic "render whatever fields this component's output happens to carry"
+// approach as StepOutput in LiveWorkflowPage.jsx, for the same reason: it keeps
+// working as those per-component payloads evolve, with zero changes here.
+function stepFieldsHtml(output) {
+  const entries = Object.entries(output ?? {}).filter(([, v]) => v !== null && v !== undefined && v !== '');
+  if (entries.length === 0) return '<div class="no-decision">(no additional output)</div>';
+  return `<div class="step-fields">${entries.map(([k, v]) =>
+    `<div class="step-field"><span class="step-field-key">${esc(k)}</span><span class="step-field-val">${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</span></div>`
+  ).join('')}</div>`;
+}
+
+function stepsHtml(incident) {
+  if (!incident?.steps?.length) return '<div class="no-decision">No live-pipeline steps recorded for this resource.</div>';
+  return `<div class="steps">${incident.steps.map(s => {
+    const meta = WORKFLOW_STEP[s.component] ?? { icon: '•', label: s.component };
+    const dur = s.durationMs != null ? ` <span class="step-time">(${s.durationMs}ms)</span>` : '';
+    return `<div class="step">
+      <div class="step-head">${meta.icon} ${esc(meta.label)} <span class="step-time">${esc(s.ts)}</span>${dur}</div>
+      ${stepFieldsHtml(s.output)}
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function buildHtmlReport(report, results, decisions) {
+  const m = report.metrics;
+  const metric = (val, lbl) => `<div class="metric"><div class="val">${esc(val)}</div><div class="lbl">${esc(lbl)}</div></div>`;
+
+  const categories = [...new Set(results.map(r => r.category))];
+  const rowsHtml = categories.map(cat => {
+    const rows = results.filter(r => r.category === cat).map(r => {
+      const dec = decisions[r.dKey] ?? null;
+      const latency = r.latencyMs != null ? `${(r.latencyMs / 1000).toFixed(1)}s` : '—';
+      const resolutionCell = r.resolution.skipped
+        ? '<span class="badge badge-dim">n/a</span>'
+        : badge(r.resolution.pass, r.resolution.pass ? 'resolved' : 'not resolved');
+      const overallBadge = r.unknown
+        ? '<span class="badge badge-warn">UNKNOWN</span>'
+        : badge(r.detection.pass && r.action.pass, r.detection.pass && r.action.pass ? 'PASS' : 'FAIL');
+      const detectionBadge = r.unknown
+        ? '<span class="badge badge-warn">pending</span>'
+        : r.kind === 'healthy' ? badge(r.detection.pass, r.detection.pass ? 'no false alarm' : 'FALSE POSITIVE') : badge(r.detection.pass, r.detection.pass ? 'detected' : 'missed');
+      return `<tr>
+        <td>${overallBadge}</td>
+        <td>
+          <div>${esc(r.name)}</div>
+          <div class="mono">${esc(r.pod)}${r.ns ? ` · ns/${esc(r.ns)}` : ''} · weight ${r.weight} · earned ${r.earned.toFixed(1)}</div>
+          <details><summary>Live pipeline steps ▸</summary>${stepsHtml(dec?.incident)}</details>
+        </td>
+        <td>${detectionBadge}</td>
+        <td>${r.kind === 'healthy' ? '<span class="badge badge-dim">n/a</span>' : badge(r.diagnosis.pass, r.diagnosis.pass ? 'correct' : 'off')}</td>
+        <td>${r.kind === 'healthy' ? '<span class="badge badge-dim">n/a</span>' : `${badge(r.action.pass, r.action.pass ? 'correct' : 'wrong')}<div class="mono">${esc(r.action.detail)}</div>`}</td>
+        <td>${resolutionCell}</td>
+        <td class="mono">${latency}</td>
+      </tr>`;
+    }).join('');
+    return `<div class="cat-title">${esc(cat)}</div>
+    <table>
+      <thead><tr><th></th><th>Test</th><th>Detection</th><th>Diagnosis</th><th>Action</th><th>Resolution</th><th>Latency</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  }).join('');
+
+  return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>KubePilot Benchmark Report</title>
+<style>
+  :root { --bg:#0d0f14; --surface:#13161f; --surface-2:#1c1f2e; --border:#2a2d3e; --text:#c8cdd8; --text-dim:#6b7280; --text-head:#f0f2f8; --primary:#6366f1; --success:#22c55e; --warn:#f59e0b; --danger:#ef4444; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:13px/1.5 -apple-system,Segoe UI,sans-serif; padding:28px; }
+  h1 { color:var(--text-head); font-size:20px; margin:0 0 4px; }
+  .subtitle { color:var(--text-dim); margin:0 0 24px; font-size:12.5px; }
+  .metrics { display:flex; flex-wrap:wrap; gap:12px; margin-bottom:28px; }
+  .metric { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:12px 16px; min-width:130px; }
+  .metric .val { font-size:20px; font-weight:700; color:var(--text-head); }
+  .metric .lbl { font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.03em; }
+  .cat-title { color:var(--primary); font-weight:700; font-size:12.5px; text-transform:uppercase; letter-spacing:.05em; margin:26px 0 8px; }
+  table { width:100%; border-collapse:collapse; background:var(--surface); border:1px solid var(--border); border-radius:10px; overflow:hidden; margin-bottom:4px; }
+  th, td { padding:9px 12px; text-align:left; border-bottom:1px solid var(--border); font-size:12.5px; vertical-align:top; }
+  th { color:var(--text-dim); text-transform:uppercase; font-size:10.5px; letter-spacing:.04em; background:var(--surface-2); }
+  tr:last-child td { border-bottom:none; }
+  .badge { display:inline-block; padding:2px 9px; border-radius:99px; font-size:11px; font-weight:600; white-space:nowrap; }
+  .badge-success { background:rgba(34,197,94,.15); color:var(--success); }
+  .badge-danger  { background:rgba(239,68,68,.15); color:var(--danger); }
+  .badge-warn    { background:rgba(245,158,11,.15); color:var(--warn); }
+  .badge-dim     { background:rgba(107,114,128,.15); color:var(--text-dim); }
+  .mono { font-family:ui-monospace,Consolas,monospace; font-size:11px; color:var(--text-dim); margin-top:2px; word-break:break-word; }
+  details > summary { cursor:pointer; color:var(--primary); font-size:11.5px; margin-top:6px; }
+  .steps { margin-top:8px; display:flex; flex-direction:column; gap:6px; }
+  .step { border:1px solid var(--border); border-radius:8px; padding:8px 10px; background:var(--surface-2); }
+  .step-head { font-weight:600; color:var(--text-head); font-size:12px; }
+  .step-time { color:var(--text-dim); font-weight:400; font-size:10.5px; }
+  .step-fields { margin-top:6px; display:flex; flex-direction:column; gap:2px; }
+  .step-field { display:flex; gap:6px; font-size:11.5px; }
+  .step-field-key { color:var(--text-dim); min-width:130px; flex-shrink:0; }
+  .step-field-val { color:var(--text); word-break:break-word; }
+  .no-decision { color:var(--text-dim); font-style:italic; font-size:12px; margin-top:6px; }
+</style>
+</head>
+<body>
+  <h1>KubePilot Advanced Agent Benchmark</h1>
+  <p class="subtitle">cluster=${esc(report.cluster)} &middot; ${esc(report.date)} (UTC) &middot; commit ${esc(report.commit)} &middot; model ${esc(report.model)}</p>
+  <p class="subtitle">stop reason: <b>${esc(report.stopReason)}</b>${report.unknownCount > 0 ? ` &mdash; <span style="color:var(--warn)">${report.unknownCount} test(s) UNKNOWN (not confirmed misses — the system hadn't finished or couldn't be reached when polling stopped)</span>` : ' — every result below is a confirmed, real outcome (system verifiably idle or all tests detected)'}</p>
+  <div class="metrics">
+    ${metric(`${m.weightedScore}%`, 'Weighted score')}
+    ${metric(`${(m.detectionAcc * 100).toFixed(0)}%`, 'Detection')}
+    ${metric(m.diagnosisAcc != null ? `${(m.diagnosisAcc * 100).toFixed(0)}%` : 'n/a', 'Diagnosis')}
+    ${metric(m.actionAcc != null ? `${(m.actionAcc * 100).toFixed(0)}%` : 'n/a', 'Action')}
+    ${metric(m.resolutionRate != null ? `${(m.resolutionRate * 100).toFixed(0)}%` : 'n/a', 'Resolution')}
+    ${metric(`${(m.falsePositiveRate * 100).toFixed(1)}%`, 'False positives')}
+    ${metric(m.avgLatencyMs != null ? `${(m.avgLatencyMs / 1000).toFixed(1)}s` : 'n/a', 'Avg latency')}
+  </div>
+  ${rowsHtml}
+</body>
+</html>`;
 }
 
 // =============================================================================
@@ -1041,11 +1236,13 @@ async function main() {
   }
 
   // Poll
-  console.log(`\n${C.b}[poll]${C.n} Waiting for agent decisions (max ${TIMEOUT}s)...\n`);
+  console.log(`\n${C.b}[poll]${C.n} Waiting for real agent decisions (idle-detection, ${TIMEOUT}s hard cap)...\n`);
 
   const decisions = {};
   const detectionTimes = {};
   let elapsed = 0;
+  let idleTicks = 0;
+  let stopReason = 'safety-cap'; // overwritten below on any other exit path
   const failureTests = TESTS.filter(t => t.expected.detected !== false);
   const healthyTests = TESTS.filter(t => t.expected.detected === false);
 
@@ -1053,35 +1250,71 @@ async function main() {
     await sleep(POLL * 1000);
     elapsed += POLL;
 
-    let detectedCount = 0;
+    const liveItems = await fetchLiveWorkflows();
+
     for (const t of TESTS) {
       const dKey = t.pod + (t.ns || '');
-      if (decisions[dKey]) { detectedCount++; continue; }
+      if (decisions[dKey]) continue;
       const dec = t.kind === 'policyBlock'
-        ? await findPolicyBlock(t.pod, t.ns, t.expectedRule, benchStartIso)
-        : await findDecision(t.pod, t.ns, benchStartIso);
+        ? await findPolicyBlock(liveItems, t.pod, t.ns, t.expectedRule, benchStartIso)
+        : await findDecision(liveItems, t.pod, t.ns, benchStartIso);
       if (dec) {
         decisions[dKey] = dec;
         detectionTimes[dKey] = Date.now() - startTimes[dKey];
-        detectedCount++;
       }
     }
 
     const failureDetected = failureTests.filter(t => decisions[t.pod + (t.ns || '')]).length;
-    process.stdout.write(`\r  ${elapsed}s — failures: ${failureDetected}/${failureTests.length} detected `);
+    const sm = await fetchShortMemoryState();
+    const queueDepth = sm?.queue?.length ?? '?';
+    const activeCount = sm?.activeWorkflows?.length ?? '?';
+    process.stdout.write(`\r  ${elapsed}s — failures: ${failureDetected}/${failureTests.length} detected   queue=${queueDepth} active=${activeCount}   `);
 
     if (failureDetected >= failureTests.length) {
-      await sleep(POLL * 1000);
-      elapsed += POLL;
-      for (const t of healthyTests) {
-        const dKey = t.pod + (t.ns || '');
-        if (!decisions[dKey]) {
-          const dec = await findDecision(t.pod, t.ns, benchStartIso);
-          if (dec) { decisions[dKey] = dec; detectionTimes[dKey] = Date.now() - startTimes[dKey]; }
-        }
-      }
+      stopReason = 'all-detected';
       break;
     }
+
+    // Redis unreachable means shortMemory.ready is false fleet-wide — enqueue/dequeue
+    // silently no-op (see orchestratorAgent.js's own loud per-cycle warning for this
+    // exact condition), so NOTHING will ever be dispatched from here on. Waiting out
+    // the rest of the safety cap would just misreport "still queued" as the reason for
+    // what's actually a total dispatch outage — stop immediately and say so plainly.
+    if (sm && sm.ready === false) {
+      console.log(`\n\n  ${C.r}${C.B}Short Memory (Redis) is unreachable${C.n} — dispatch is fleet-wide disabled, nothing further will be detected this run.`);
+      stopReason = 'shortmemory-offline';
+      break;
+    }
+
+    // The REAL completion signal, replacing a blind elapsed-time guess: nothing queued,
+    // nothing actively running, nothing grouped-but-not-yet-dispatched. Confirmed for
+    // IDLE_CONFIRM_TICKS consecutive polls (not just one) so a normal ~30s gap between
+    // fleet cycles — dispatch only happens once per CYCLE_INTERVAL_MS, not continuously —
+    // can't be mistaken for the orchestrator being done.
+    const isIdle = sm?.ready && (sm.queue?.length ?? 0) === 0 && (sm.activeWorkflows?.length ?? 0) === 0 && (sm.groups?.length ?? 0) === 0;
+    idleTicks = isIdle ? idleTicks + 1 : 0;
+    if (idleTicks >= IDLE_CONFIRM_TICKS) {
+      console.log(`\n\n  ${C.y}System idle for ${IDLE_CONFIRM_TICKS * POLL}s${C.n} with ${failureTests.length - failureDetected} test(s) still undetected — concluding these are real misses, not stragglers.`);
+      stopReason = 'idle-confirmed';
+      break;
+    }
+  }
+  if (stopReason === 'safety-cap') {
+    console.log(`\n\n  ${C.r}${C.B}Hit the ${TIMEOUT}s safety cap${C.n} while the system was STILL actively working (queue/active workflows non-empty) — remaining undetected tests are genuinely unknown, not confirmed misses. Re-run with a higher --timeout if this keeps happening.`);
+  }
+
+  // One final authoritative fetch regardless of which condition stopped the loop above —
+  // catches anything that finished in the gap between the last tick and here, so the
+  // report reflects the system's real state at the moment we actually stop watching it,
+  // not a stale mid-poll snapshot.
+  const finalItems = await fetchLiveWorkflows();
+  for (const t of TESTS) {
+    const dKey = t.pod + (t.ns || '');
+    if (decisions[dKey]) continue;
+    const dec = t.kind === 'policyBlock'
+      ? await findPolicyBlock(finalItems, t.pod, t.ns, t.expectedRule, benchStartIso)
+      : await findDecision(finalItems, t.pod, t.ns, benchStartIso);
+    if (dec) { decisions[dKey] = dec; detectionTimes[dKey] = Date.now() - startTimes[dKey]; }
   }
   console.log('\n');
 
@@ -1109,10 +1342,17 @@ async function main() {
     const latencyMs = detectionTimes[dKey] ?? null;
     const latencySec = latencyMs ? (latencyMs / 1000).toFixed(1) : null;
 
+    // A failure/policyBlock test with no decision is only a CONFIRMED miss if the poll
+    // loop stopped because the system genuinely went idle (or all other tests were
+    // already detected) — if it stopped on the safety cap or a Redis outage instead, the
+    // system was still working (or unable to work at all) and this is honestly unknown,
+    // not a real false negative. See the stopReason logging above the poll loop.
+    const unknown = t.kind !== 'healthy' && !dec && (stopReason === 'safety-cap' || stopReason === 'shortmemory-offline');
+
     const r = {
-      name: t.name, pod: t.pod, kind: t.kind, weight: t.weight, category: t.category,
+      name: t.name, pod: t.pod, ns: t.ns ?? null, dKey, kind: t.kind, weight: t.weight, category: t.category,
       detection: { pass: false }, diagnosis: { pass: false }, action: { pass: false, detail: '' },
-      resolution: { pass: false, skipped: true }, latencyMs, earned: 0,
+      resolution: { pass: false, skipped: true }, latencyMs, earned: 0, unknown,
     };
 
     if (t.kind === 'healthy') {
@@ -1155,7 +1395,10 @@ async function main() {
     categoryScores[t.category].earned += r.earned;
     categoryScores[t.category].total += t.weight;
 
-    const icon = r.detection.pass && r.action.pass ? `${C.g}PASS` : !r.detection.pass && t.kind === 'failure' ? `${C.y}SKIP` : `${C.r}FAIL`;
+    // UNKNOWN (not FAIL) only when the poll loop couldn't confirm one way or the other
+    // (safety-cap hit while the system was still working, or Redis was offline) — once
+    // idle-confirmed or all-detected, a missing decision is a real, scored miss.
+    const icon = r.unknown ? `${C.y}UNKNOWN` : r.detection.pass && r.action.pass ? `${C.g}PASS` : `${C.r}FAIL`;
     console.log(`    ${icon}${C.n}  ${t.name} ${C.d}(w=${t.weight})${C.n}`);
     if (t.kind !== 'healthy') {
       console.log(`         ${r.detection.pass ? C.g+'D' : C.r+'D'}${C.n} ${r.diagnosis.pass ? C.g+'Dx' : C.r+'Dx'}${C.n} ${r.action.pass ? C.g+'A' : C.r+'A'}${C.n}${!r.resolution.skipped ? (r.resolution.pass ? ` ${C.g}R${C.n}` : ` ${C.r}R${C.n}`) : ''} ${C.d}${r.action.detail}${latencySec ? ` ${latencySec}s` : ''}${C.n}`);
@@ -1168,7 +1411,9 @@ async function main() {
   const p95Lat = latencies.length >= 2 ? (latencies.sort((a,b) => a-b)[Math.floor(latencies.length * 0.95)] / 1000).toFixed(1) : avgLat;
   const fpRate = healthyTests.length > 0 ? ((falsePositives / healthyTests.length) * 100).toFixed(1) : '0.0';
 
+  const unknownCountForLog = results.filter(r => r.unknown).length;
   console.log(`\n${C.B}${C.b}━━━ Metrics ━━━${C.n}\n`);
+  console.log(`  Stop reason:          ${stopReason === 'idle-confirmed' || stopReason === 'all-detected' ? C.g : C.y}${stopReason}${C.n}${unknownCountForLog > 0 ? `  ${C.y}(${unknownCountForLog} test(s) UNKNOWN, not confirmed misses — see report)${C.n}` : ''}`);
   console.log(`  Weighted Score:       ${C.B}${ws}%${C.n}`);
   console.log(`  Detection:            ${results.filter(r => r.detection.pass).length}/${TESTS.length}`);
   console.log(`  Diagnosis:            ${correctDiag}/${totalDiag}`);
@@ -1190,9 +1435,16 @@ async function main() {
   let commit = 'unknown';
   try { commit = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim(); } catch {}
 
+  const unknownCount = results.filter(r => r.unknown).length;
   const report = {
     date: new Date().toISOString(), commit, cluster: CTX, model: process.env.OPENAI_MODEL ?? 'unknown',
     benchmark: 'advanced', timeout: TIMEOUT,
+    // stopReason tells you whether "not detected" below means anything: 'all-detected'/
+    // 'idle-confirmed' are real, trustworthy results (the system was verifiably done);
+    // 'safety-cap'/'shortmemory-offline' mean the run stopped before the system finished
+    // or could even start, so any test with unknown:true in `tests` below is NOT a
+    // confirmed miss — see main()'s poll loop for how this is decided.
+    stopReason, unknownCount,
     metrics: {
       weightedScore: parseFloat(ws), detectionAcc: results.filter(r => r.detection.pass).length / TESTS.length,
       diagnosisAcc: totalDiag > 0 ? correctDiag / totalDiag : null,
@@ -1207,13 +1459,17 @@ async function main() {
       name: r.name, pod: r.pod, kind: r.kind, weight: r.weight, category: r.category,
       earned: r.earned, detection: r.detection.pass, diagnosis: r.diagnosis.pass,
       action: r.action.pass, resolution: r.resolution.skipped ? null : r.resolution.pass,
-      latencyMs: r.latencyMs, actionDetail: r.action.detail,
+      latencyMs: r.latencyMs, actionDetail: r.action.detail, unknown: r.unknown,
     })),
   };
 
   const filename = `bench-adv-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.json`;
   fs.writeFileSync(path.join(RESULTS_DIR, filename), JSON.stringify(report, null, 2));
   console.log(`\n${C.d}Report: benchmark/results/${filename}${C.n}`);
+
+  const htmlFilename = filename.replace('.json', '.html');
+  fs.writeFileSync(path.join(RESULTS_DIR, htmlFilename), buildHtmlReport(report, results, decisions));
+  console.log(`${C.d}HTML:   benchmark/results/${htmlFilename}${C.n}`);
 
   // Regression
   const prevFiles = fs.existsSync(RESULTS_DIR)

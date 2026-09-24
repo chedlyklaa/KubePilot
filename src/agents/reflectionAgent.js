@@ -4,6 +4,8 @@ const OpenAI         = require('openai');
 const tokenStore     = require('../api/tokenStore');
 const { runLLMCall } = require('../resilience/llmCircuitBreaker');
 const { loadConfig } = require('../config');
+const ruleEngine     = require('../memory/ruleEngine');
+const episodicMemory = require('../memory/episodicMemory');
 
 // Reuse the Guardian LLM (Mistral) — fast, structured JSON, different family from Planner
 const _config = loadConfig();
@@ -25,6 +27,21 @@ const FALLBACK = {
 };
 
 class ReflectionAgent {
+  // ── Sole gateway to the Vector DB / learned-rule store (architecture-doc §3.7) ──
+  // Investigator (and, eventually, Guardian) request historical incidents and rules
+  // THROUGH Reflexion rather than reading ruleEngine/episodicMemory directly — this
+  // keeps the "single owner controls the knowledge base's schema and quality"
+  // property real instead of just a description in the report. `ruleEngine`/
+  // `episodicMemory` themselves are unchanged; this only adds one mediated read path.
+  async getContext({ fingerprint, queryText, issueType }) {
+    const [rules, structuralMatches, semanticMatches] = await Promise.all([
+      issueType ? ruleEngine.getRules(issueType) : Promise.resolve([]),
+      Promise.resolve(fingerprint ? episodicMemory.findByFingerprint(fingerprint) : []),
+      queryText ? episodicMemory.findSemantic(queryText) : Promise.resolve([]),
+    ]);
+    return { rules, structuralMatches, semanticMatches };
+  }
+
   async reflect({ issue, planAction, rootCauseDiagnosis, timeline, resolved, podLogs, rca = null }) {
     const timelineText = (timeline || [])
       .map((t, i) => `  ${i + 1}. action=${t.action}  outcome=${t.outcome}${t.note ? `  (${t.note})` : ''}`)

@@ -1,0 +1,55 @@
+◇ injected env (35) from .env // tip: ⌘ suppress logs { quiet: true }
+[DB] Connected to MongoDB at mongodb://localhost:27017/K8S-agent-IHM
+[IssueTracker] Resuming from seq=519
+=== Preflight: checking cluster reachability ===
+  OK   minikube
+  OK   cluster2
+
+=== Pre-soaking P9 for 120s before creating the rest ===
+
+=== Creating remaining 8 scenarios on 2 cluster(s) ===
+  minikube/P1-transient-crash... created
+  minikube/P2-oomkilled... created
+  minikube/P3-imagepull... created
+  minikube/P4-config-error... created
+  minikube/P5-bare-pod... created
+  minikube/P6-flaky-dependency... created
+  minikube/P8-already-resolved... created
+  minikube/P10-external-outage... created
+  cluster2/P1-transient-crash... created
+  cluster2/P2-oomkilled... created
+  cluster2/P3-imagepull... created
+  cluster2/P4-config-error... created
+  cluster2/P5-bare-pod... created
+  cluster2/P6-flaky-dependency... created
+  cluster2/P8-already-resolved... created
+  cluster2/P10-external-outage... created
+
+=== Waiting for the running project to detect + resolve all 18 scenarios (max 2000s) ===
+  15s — detected: 13/18  resolved: 13/18   30s — detected: 13/18  resolved: 13/18   45s — detected: 13/18  resolved: 13/18   60s — detected: 13/18  resolved: 13/18   75s — detected: 13/18  resolved: 13/18   90s — detected: 13/18  resolved: 13/18   105s — detected: 13/18  resolved: 13/18   120s — detected: 14/18  resolved: 14/18   135s — detected: 14/18  resolved: 14/18   150s — detected: 14/18  resolved: 14/18   165s — detected: 14/18  resolved: 14/18   180s — detected: 14/18  resolved: 14/18   195s — detected: 14/18  resolved: 14/18   210s — detected: 15/18  resolved: 14/18   225s — detected: 15/18  resolved: 14/18   240s — detected: 15/18  resolved: 14/18   255s — detected: 15/18  resolved: 14/18   270s — detected: 15/18  resolved: 14/18   285s — detected: 15/18  resolved: 14/18   300s — detected: 15/18  resolved: 14/18   315s — detected: 15/18  resolved: 14/18   330s — detected: 15/18  resolved: 14/18   345s — detected: 15/18  resolved: 14/18   360s — detected: 15/18  resolved: 14/18   375s — detected: 15/18  resolved: 14/18   390s — detected: 15/18  resolved: 14/18   405s — detected: 15/18  resolved: 14/18   420s — detected: 15/18  resolved: 14/18   435s — detected: 15/18  resolved: 14/18   450s — detected: 15/18  resolved: 15/18   465s — detected: 15/18  resolved: 15/18   480s — detected: 15/18  resolved: 15/18   495s — detected: 15/18  resolved: 15/18   510s — detected: 15/18  resolved: 15/18   525s — detected: 15/18  resolved: 15/18   540s — detected: 15/18  resolved: 15/18   555s — detected: 15/18  resolved: 15/18   570s — detected: 15/18  resolved: 15/18   585s — detected: 15/18  resolved: 15/18   600s — detected: 15/18  resolved: 15/18   615s — detected: 15/18  resolved: 15/18   630s — detected: 15/18  resolved: 15/18   645s — detected: 15/18  resolved: 15/18   660s — detected: 15/18  resolved: 15/18   675s — detected: 15/18  resolved: 15/18   690s — detected: 15/18  resolved: 15/18   705s — detected: 16/18  resolved: 15/18   720s — detected: 16/18  resolved: 16/18   735s — detected: 16/18  resolved: 16/18   750s — detected: 16/18  resolved: 16/18   765s — detected: 16/18  resolved: 16/18   780s — detected: 16/18  resolved: 16/18   795s — detected: 16/18  resolved: 16/18   810s — detected: 16/18  resolved: 16/18   825s — detected: 16/18  resolved: 16/18   840s — detected: 16/18  resolved: 16/18   855s — detected: 16/18  resolved: 16/18   870s — detected: 16/18  resolved: 16/18   885s — detected: 16/18  resolved: 16/18   900s — detected: 16/18  resolved: 16/18   915s — detected: 16/18  resolved: 16/18   930s — detected: 16/18  resolved: 16/18   945s — detected: 16/18  resolved: 16/18   960s — detected: 16/18  resolved: 16/18   975s — detected: 16/18  resolved: 16/18   990s — detected: 16/18  resolved: 16/18   1005s — detected: 16/18  resolved: 16/18   1020s — detected: 16/18  resolved: 16/18   1035s — detected: 16/18  resolved: 16/18   1050s — detected: 16/18  resolved: 16/18   1065s — detected: 16/18  resolved: 16/18   1080s — detected: 16/18  resolved: 16/18   1095s — detected: 16/18  resolved: 16/18   1110s — detected: 16/18  resolved: 16/18   1125s — detected: 16/18  resolved: 16/18   1140s — detected: 16/18  resolved: 16/18   1155s — detected: 16/18  resolved: 16/18   1170s — detected: 16/18  resolved: 16/18   1185s — detected: 16/18  resolved: 16/18   1200s — detected: 16/18  resolved: 16/18   1215s — detected: 16/18  resolved: 16/18   1230s — detected: 16/18  resolved: 16/18   1245s — detected: 16/18  resolved: 16/18   1260s — detected: 16/18  resolved: 16/18   1275s — detected: 16/18  resolved: 16/18   1290s — detected: 16/18  resolved: 16/18   1305s — detected: 16/18  resolved: 16/18   1320s — detected: 16/18  resolved: 16/18   1335s — detected: 16/18  resolved: 16/18   1350s — detected: 16/18  resolved: 16/18   1365s — detected: 16/18  resolved: 16/18   1380s — detected: 16/18  resolved: 16/18   1395s — detected: 16/18  resolved: 16/18   1410s — detected: 16/18  resolved: 16/18   1425s — detected: 16/18  resolved: 16/18   1440s — detected: 16/18  resolved: 16/18   1455s — detected: 16/18  resolved: 16/18   1470s — detected: 16/18  resolved: 16/18   1485s — detected: 16/18  resolved: 16/18   1500s — detected: 16/18  resolved: 16/18   1515s — detected: 16/18  resolved: 16/18   1530s — detected: 16/18  resolved: 16/18   1545s — detected: 16/18  resolved: 16/18   1560s — detected: 16/18  resolved: 16/18   1575s — detected: 16/18  resolved: 16/18   1590s — detected: 16/18  resolved: 16/18   1605s — detected: 16/18  resolved: 16/18   1620s — detected: 16/18  resolved: 16/18   1635s — detected: 16/18  resolved: 16/18   1650s — detected: 16/18  resolved: 16/18   1665s — detected: 16/18  resolved: 16/18   1680s — detected: 16/18  resolved: 16/18   1695s — detected: 16/18  resolved: 16/18   1710s — detected: 16/18  resolved: 16/18   1725s — detected: 16/18  resolved: 16/18   1740s — detected: 16/18  resolved: 16/18   1755s — detected: 16/18  resolved: 16/18   1770s — detected: 16/18  resolved: 16/18   1785s — detected: 16/18  resolved: 16/18   1800s — detected: 16/18  resolved: 16/18   1815s — detected: 16/18  resolved: 16/18   1830s — detected: 16/18  resolved: 16/18   1845s — detected: 16/18  resolved: 16/18   1860s — detected: 16/18  resolved: 16/18   1875s — detected: 16/18  resolved: 16/18   1890s — detected: 16/18  resolved: 16/18   1905s — detected: 16/18  resolved: 16/18   1920s — detected: 16/18  resolved: 16/18   1935s — detected: 16/18  resolved: 16/18   1950s — detected: 16/18  resolved: 16/18   1965s — detected: 16/18  resolved: 16/18   1980s — detected: 16/18  resolved: 16/18   1995s — detected: 16/18  resolved: 16/18   2010s — detected: 16/18  resolved: 16/18 
+
+=== Verifying real cluster state for every scenario ===
+  minikube/P1-transient-crash: agent=failed real=unknown
+  minikube/P2-oomkilled: agent=failed real=fixed reasoning=correct
+  minikube/P3-imagepull: agent=blocked real=not_fixed reasoning=correct
+  minikube/P4-config-error: agent=failed real=correctly_not_fixed reasoning=correct
+  minikube/P5-bare-pod: agent=fixed real=fixed reasoning=WRONG
+  minikube/P6-flaky-dependency: agent=investigating real=unknown reasoning=correct
+  minikube/P8-already-resolved: agent=never-detected real=fixed
+  minikube/P9-repeated-failure: agent=failed real=correctly_not_fixable reasoning=correct
+  minikube/P10-external-outage: agent=fixed real=correctly_not_fixable reasoning=correct
+  cluster2/P1-transient-crash: agent=failed real=not_fixed
+  cluster2/P2-oomkilled: agent=failed real=fixed reasoning=correct
+  cluster2/P3-imagepull: agent=failed real=not_fixed reasoning=correct
+  cluster2/P4-config-error: agent=fixed real=correctly_not_fixed reasoning=correct
+  cluster2/P5-bare-pod: agent=failed real=fixed reasoning=correct
+  cluster2/P6-flaky-dependency: agent=failed real=not_fixed reasoning=WRONG
+  cluster2/P8-already-resolved: agent=never-detected real=fixed
+  cluster2/P9-repeated-failure: agent=failed real=correctly_not_fixable reasoning=correct
+  cluster2/P10-external-outage: agent=failed real=correctly_not_fixable reasoning=correct
+
+Report: C:\Users\temp\Desktop\BigApps_PFE\k8s_ai_agent\test-output\live-benchmark\report-2026-09-07T14-17-42-930Z.md
+
+=== Cleanup ===
+  deleting namespace kubepilot-bench on minikube...
+  deleting namespace kubepilot-bench on cluster2...

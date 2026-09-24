@@ -24,66 +24,131 @@ Your job is to evaluate actions proposed by an autonomous remediation agent BEFO
 
 Be rigorous but pragmatic. Your goal is to catch genuine mistakes and dangerous mismatches, not to block every action out of caution.
 
-━━━ CORRECTNESS RULES ━━━
-CrashLoopBackOff (oomKilled=false)  → restart or rollback are correct. delete_pod or scale_down are wrong.
-CrashLoopBackOff (oomKilled=true)   → increase_memory is the only correct fix. restart alone will keep failing.
-OOMKilled                           → increase_memory is correct. restart is incorrect (OOM will recur immediately).
-ImagePullBackOff / ErrImagePull     → noop is the only safe answer. kubectl cannot fix a bad image URL or missing credentials.
-ContainerError (non-OOM exit code)  → rollback (bad image/config) or restart (transient) are both acceptable.
-Bare pod (deployment=null)          → delete_pod is correct. restart/rollback/scale_down are wrong (no controller).
-Deployment-managed pod              → NEVER delete_pod. Use restart, rollback, or scale_down.
-scale_down                          → only valid when there is a deployment AND replicas > 1 causing resource pressure.
+━━━ ALREADY HEALTHY OVERRIDES EVERYTHING ELSE ━━━
+Before anything else: if the evidence you were shown (pod logs, current status/phase,
+ready state) indicates the target is CURRENTLY healthy, completed, or ready, REJECT any
+mutating command regardless of what the historical incident report claims happened
+earlier — do not approve an action "to be safe" or "to reset state" against a target
+that isn't actually broken right now. A stale incident signal is not a reason to act on
+a target you can see is fine.
+
+━━━ COMMAND JUDGMENT ━━━
+There is no fixed action list anymore — the Planner writes the actual kubectl command
+itself, and your job is to judge whether THIS SPECIFIC COMMAND is right for this issue:
+correct approach, safe, and correctly scoped (right verb, right resource, right name,
+right namespace — nothing broader than the target it's supposed to fix). Use this domain
+knowledge, applied to whatever command you're actually shown, not a fixed name:
+CrashLoopBackOff (oomKilled=false)  → a restart- or rollback-style command is reasonable. A command that deletes the pod directly or scales it away is wrong.
+CrashLoopBackOff (oomKilled=true)   → the command MUST raise the memory limit/request. A plain restart will just recur — REJECT it.
+OOMKilled                           → same as above — the command must increase memory. A restart alone is incorrect (OOM will recur immediately).
+ImagePullBackOff / ErrImagePull     → kubectl cannot fix a bad image URL or missing pull credentials. Almost any command here is wrong — REJECT (or DELEGATE_HUMAN if nothing automated could ever fix it), don't approve a command that can't actually work.
+ContainerError (non-OOM exit code)  → a rollback- (bad image/config) or restart- (transient) style command are both acceptable.
+Bare pod (deployment=null)          → a direct pod delete is real and permanent but is the only way to remove it — judge whether the investigation actually supports doing that.
+Deployment-managed pod              → a command that deletes the POD directly is almost always wrong (the controller just recreates it) — REJECT unless there's a specific reason; target the controller instead (rollout restart/undo, patch, scale).
+A command that scales a workload down → only reasonable when there IS a controller and reducing replicas plausibly relieves real resource pressure.
 
 ━━━ REPEAT ATTEMPT RULE ━━━
-If the same action has been tried 2+ times on the same issue WITHOUT success → the action is WRONG.
-In this case use MODIFY to suggest a different action, or REJECT if no alternative is safe.
+If the same COMMAND — not just the same general idea — has been tried 2+ times on this
+issue without success → it's wrong. Use MODIFY to suggest a different command, or REJECT
+if no alternative is safe.
 
 ━━━ CLUSTER TIER ━━━
 dev tier        → be permissive, mistakes are easily reversed
 staging tier    → moderate caution
 production tier → maximum caution; when in doubt, REJECT and let the human gate handle it
 
-━━━ NODE ACTION RULES ━━━
-cordon_node   → Acceptable when node has active conditions (NotReady/Pressure) AND multiple pods are affected.
-                REJECT if proposed for a single isolated pod failure with no node-level evidence.
-drain_node    → RISKY — evicts all pods on the node.
-                REJECT if: isControlPlane=true, affectedPods < 3 with no NodeNotReady, or same action attempted twice.
-                MODIFY to cordon_node if drain is premature but node isolation is still warranted.
-uncordon_node → Only APPROVE if original node condition is confirmed resolved.
+━━━ NODE COMMANDS ━━━
+A command that cordons a node   → acceptable when the node has active conditions (NotReady/Pressure) AND multiple pods are affected. REJECT if proposed for a single isolated pod failure with no node-level evidence.
+A command that drains a node    → RISKY — evicts everything on the node. REJECT if the node is a control-plane node, if fewer than 3 pods are affected with no NodeNotReady evidence, or if draining this node was already attempted and failed. MODIFY to a cordon instead if drain is premature but isolating the node is still warranted.
+A command that uncordons a node → only APPROVE if the original node condition is confirmed resolved.
 
 ━━━ CLASSIFICATION ━━━
-SAFE      → Action is clearly correct, minimal blast radius (restart, noop, cordon on confirmed degraded node)
-CAUTIOUS  → Action is likely correct but some uncertainty (rollback, delete_pod on bare pod, cordon moderate confidence)
-RISKY     → Action may not solve the problem or has significant side effects (scale_down, drain_node, repeated rollback)
-DANGEROUS → Action is wrong for this issue type, contradicts context, or targets a control-plane node for drain
+SAFE      → Command is clearly correct, minimal blast radius (a scoped restart, no command at all, a cordon on a confirmed degraded node)
+CAUTIOUS  → Command is likely correct but some uncertainty (a rollback, a bare-pod delete, a cordon with moderate confidence)
+RISKY     → Command may not solve the problem or has significant side effects (a scale-down, a drain, a repeated rollback)
+DANGEROUS → Command is wrong for this issue type, contradicts the context, or targets a control-plane node for a drain
 
 ━━━ VERDICT ━━━
-APPROVE → Proceed with the proposed action as-is
-REJECT  → Block this action entirely (no safe alternative, issue already likely resolved, resource does not exist)
-MODIFY  → Approve a corrected action instead (you MUST provide suggestedAction)
+APPROVE         → Proceed with the proposed command as-is
+REJECT          → Block this command entirely, but a DIFFERENT command might still fix
+                   it (no safe alternative right now, issue already likely resolved,
+                   resource does not exist) — the workflow will re-investigate and try again.
+MODIFY          → Approve a corrected command instead (you MUST provide suggestedCommand — the
+                   subcommand and arguments ONLY, e.g. "rollout restart deployment/api -n backend".
+                   Do NOT include the word "kubectl" itself or "--context" — both are added
+                   automatically, same convention the Planner itself follows for "command".)
+DELEGATE_HUMAN  → Do NOT use this as a stronger REJECT. Use it only when NO command could
+                   fix the underlying problem at all — e.g. the root cause is outside
+                   kubectl's reach entirely (bad application code, an external dependency,
+                   a billing/quota wall, a decision only a human can make), or every
+                   reasonable command has already been tried and failed. This skips
+                   straight to human escalation instead of another investigate/plan cycle
+                   — only choose it when another automated attempt would genuinely be
+                   wasted effort, not just because you're uncertain.
+
+━━━ REFLEXION HISTORY ━━━
+When history/rules from past incidents are provided below, weigh them: a rule flags a
+known-bad approach for this issue type; a past incident's outcome (fixed vs still-failing)
+is evidence for or against repeating the same command now. Don't follow a rule blindly if
+this incident's evidence clearly contradicts it — say so in "reason" if you override one.
+
+━━━ DON'T ASSERT WHAT YOU WEREN'T TOLD ━━━
+Never claim a condition has CHANGED (e.g. "the outage has been resolved", "the service is
+back up", "this has since been fixed") unless the evidence you were given explicitly says
+so with a status/timestamp newer than the original incident. Absence of new evidence means
+the original condition still holds — do not invent a resolution to justify a convenient
+verdict. Populate "evidenceCited" with the specific phrases from the input you're actually
+basing your verdict on; if you can't point to anything, that's a sign your reasoning isn't
+actually grounded.
 
 Return ONLY valid JSON — no markdown, no explanation outside the JSON:
 {
-  "verdict": "APPROVE" | "REJECT" | "MODIFY",
+  "verdict": "APPROVE" | "REJECT" | "MODIFY" | "DELEGATE_HUMAN",
   "classification": "SAFE" | "CAUTIOUS" | "RISKY" | "DANGEROUS",
   "reason": "one or two sentences explaining your decision",
-  "suggestedAction": "action name if verdict=MODIFY, null otherwise",
-  "confidence": 0.85
+  "suggestedCommand": "a corrected command if verdict=MODIFY (NEVER starting with the word \"kubectl\"), null otherwise",
+  "confidence": 0.85,
+  "safetyConcerns": ["short bullet", "..."],
+  "evidenceCited": ["short quote or fact from the input this verdict is actually based on", "..."],
+  "impactSummary": "one sentence: what changes on the cluster if this executes",
+  "estimatedBlastRadius": "single_pod" | "single_node" | "cluster" | "multi_cluster"
 }
 Note: confidence is a float from 0.0 (very uncertain) to 1.0 (very certain). Pick the value that reflects how sure you are about your verdict.`;
 
-// ── Safe fallback when guardian cannot respond ────────────────────────────────
-const FALLBACK = {
-  verdict:         'APPROVE',
-  classification:  'CAUTIOUS',
-  reason:          'Guardian unavailable — proceeding with caution.',
-  suggestedAction: null,
-  confidence:      0.5,
-};
+// ── Fail-closed fallback when Guardian cannot produce a trustworthy verdict ────
+// §Fix-GuardianFailClosed (2026-09-18) — every one of Guardian's failure paths
+// (LLM timeout, API error, streaming failure, unparseable/malformed JSON, an
+// invalid verdict string, or any other unexpected exception) used to return an
+// APPROVE-shaped fallback ("proceeding with caution"), which is the single
+// highest-leverage fail-OPEN default in the whole pipeline: the one component
+// whose entire job is to catch a bad remediation before it runs would silently
+// wave it through the moment it couldn't be reached. There is no reading of
+// "Guardian is unavailable" that should mean "treat this as reviewed and safe."
+// Escalating to a human (DELEGATE_HUMAN, not REJECT) is deliberate: unlike a
+// REJECT — which routes back into another automated investigate/plan/Guardian
+// cycle — Guardian not having run at all means NOTHING has actually reviewed
+// this action, so looping back to try again automatically would just retry the
+// exact same unreviewed path. See policyNode's `delegatedByGuardian` branch in
+// graph.js — DELEGATE_HUMAN already escalates immediately, unconditionally,
+// regardless of `approvalRequired`, which is exactly the "never auto-execute
+// this" guarantee an unreviewed action needs.
+function _guardianFailureVerdict(reason) {
+  return {
+    verdict:         'DELEGATE_HUMAN',
+    classification:  'DANGEROUS',
+    reason,
+    suggestedCommand: null,
+    confidence:      0,
+    safetyConcerns:  ['Guardian could not produce a trustworthy verdict — escalated to a human rather than auto-approved'],
+    evidenceCited:   [],
+    impactSummary:   null,
+    estimatedBlastRadius: null,
+  };
+}
 
-const VALID_VERDICTS  = new Set(['APPROVE', 'REJECT', 'MODIFY']);
+const VALID_VERDICTS  = new Set(['APPROVE', 'REJECT', 'MODIFY', 'DELEGATE_HUMAN']);
+const VALID_BLAST_RADII = new Set(['single_pod', 'single_node', 'cluster', 'multi_cluster']);
 const VALID_CLASSES   = new Set(['SAFE', 'CAUTIOUS', 'RISKY', 'DANGEROUS']);
-const VALID_ACTIONS   = new Set(['restart', 'rollback', 'delete_pod', 'scale_down', 'increase_memory', 'noop']);
 
 class GuardianAgent {
   constructor(clusterName, tier = 'dev') {
@@ -98,10 +163,21 @@ class GuardianAgent {
    * @param {object} params.diagnosis  - { rootCause, action, risk } from applicative LLM
    * @param {string} params.podLogs    - Last pod logs fetched during diagnosis
    * @param {number} params.attempt    - Current attempt number (1-based)
-   * @returns {Promise<{verdict, classification, reason, suggestedAction, confidence}>}
+   * @returns {Promise<{verdict, classification, reason, suggestedCommand, confidence}>}
+   *   NEVER returns an autonomous APPROVE when Guardian itself failed to produce a
+   *   trustworthy verdict — every failure path (unreachable LLM, timeout, streaming
+   *   error, unparseable JSON, an unrecognized verdict string) returns
+   *   verdict='DELEGATE_HUMAN'/classification='DANGEROUS' instead (see
+   *   _guardianFailureVerdict). A MODIFY with no usable suggestedCommand returns
+   *   verdict='REJECT' rather than silently approving the un-reviewed original
+   *   command. See §Fix-GuardianFailClosed (2026-09-18).
    */
-  async review({ issue, diagnosis, podLogs = '', attempt = 1, rca = null }) {
-    const { action, rootCause, risk } = diagnosis;
+  async review({ issue, diagnosis, podLogs = '', attempt = 1, rca = null, reflexionContext = null }) {
+    // `command` is v5's free-form kubectl command (see PlanStepSchema); the LEGACY
+    // clusterAgent.js pipeline never sets it, so it's shown as "(no command — legacy
+    // fixed-action diagnosis)" rather than silently omitted, since a missing Command
+    // line could otherwise read as "empty command == noop" to whoever's reading logs.
+    const { action, command, rootCause, risk } = diagnosis;
 
     const repeatWarning = attempt > 1
       ? `\n⚠ This is attempt #${attempt}. The same issue persisted through ${attempt - 1} previous fix attempt(s).`
@@ -109,6 +185,19 @@ class GuardianAgent {
 
     const rcaBlock = (rca && rca.confidence > 0)
       ? `\n━━━ SUPPORTING RCA ━━━\n${rca.suspected_cause} (confidence: ${rca.confidence}, risk: ${rca.risk_level}). Factor this into your safety assessment.`
+      : '';
+
+    // §3.4/§3.7 — Guardian consults Reflexion for rules/history the same way
+    // Investigator does, rather than judging each proposal in isolation every time.
+    const rules = reflexionContext?.rules ?? [];
+    const pastEpisodes = [...(reflexionContext?.structuralMatches ?? []), ...(reflexionContext?.semanticMatches ?? [])];
+    const reflexionBlock = (rules.length || pastEpisodes.length)
+      ? `\n━━━ REFLEXION HISTORY (from past incidents) ━━━\n` +
+        (rules.length ? `Learned rules:\n${rules.map(r => `  - [${r.issueType ?? issue.type}] ${r.rule ?? r.condition ?? JSON.stringify(r)}`).join('\n')}\n` : '') +
+        (pastEpisodes.length ? `Similar past incidents (${pastEpisodes.length}):\n${pastEpisodes.slice(0, 5).map(e => {
+          const ep = e.payload ?? e;
+          return `  - action=${ep.resolvedAction ?? ep.timeline?.[0]?.action ?? 'unknown'} resolved=${ep.resolved} lesson="${ep.reflection?.lessonsLearned ?? ''}"`;
+        }).join('\n')}` : '')
       : '';
 
     const ownerType = issue.deployment ? 'Deployment' :
@@ -134,13 +223,14 @@ OOM killed:    ${issue.oomKilled ?? false}
 Exit code:     ${issue.exitCode ?? 'N/A'}
 ${repeatWarning}
 
-━━━ APPLICATIVE AGENT PROPOSAL ━━━
+━━━ PLANNER PROPOSAL ━━━
 Action:     ${action}
+Command:    ${command || '(no command — legacy fixed-action diagnosis, judge from Action/Root cause alone)'}
 Root cause: ${rootCause}
 Risk level: ${risk}
 
 ━━━ RECENT POD LOGS ━━━
-${podLogs ? podLogs.slice(-2000) : '(no logs available)'}${rcaBlock}
+${podLogs ? podLogs.slice(-2000) : '(no logs available)'}${rcaBlock}${reflexionBlock}
 
 Review this proposal and return your JSON verdict.`;
 
@@ -160,36 +250,82 @@ Review this proposal and return your JSON verdict.`;
       try {
         result = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] ?? raw);
       } catch {
-        console.warn(`[${this.clusterName}] [GUARDIAN] Unparseable response — using fallback`);
-        return { ...FALLBACK };
+        console.warn(`[${this.clusterName}] [GUARDIAN] Unparseable response — escalating instead of auto-approving`);
+        return _guardianFailureVerdict('Guardian response was not valid JSON — escalated to a human rather than auto-approved (no verdict could be parsed).');
       }
 
-      // Sanitise and validate fields
-      if (!VALID_VERDICTS.has(result.verdict))      result.verdict        = 'APPROVE';
+      // Sanitise and validate fields. An invalid verdict string is NOT silently
+      // coerced to APPROVE (see §Fix-GuardianFailClosed above) — it short-circuits
+      // to the same fail-closed escalation as every other failure path, rather than
+      // falling through into MODIFY/confidence/etc. processing on a verdict we
+      // don't actually recognize.
+      if (!VALID_VERDICTS.has(result.verdict)) {
+        console.warn(`[${this.clusterName}] [GUARDIAN] Invalid verdict "${result.verdict}" — escalating instead of defaulting to APPROVE`);
+        return _guardianFailureVerdict(`Guardian returned an unrecognized verdict ("${result.verdict}") — escalated to a human rather than auto-approved.`);
+      }
       if (!VALID_CLASSES.has(result.classification)) result.classification = 'CAUTIOUS';
 
-      // MODIFY without a valid suggestedAction → downgrade to APPROVE
+      // Despite the prompt now saying "never starting with kubectl" explicitly, live
+      // testing (2026-08-26) showed the model still prepends a literal "kubectl " (and
+      // sometimes "kubectl --context=... ") onto suggestedCommand often enough to be
+      // worth stripping server-side rather than trusting the instruction alone — a
+      // leftover "kubectl" here would double up with the one Executor itself prepends
+      // and fail outright, and would also make Policy misread the command's first token
+      // as the verb ("kubectl" instead of the real one), silently skipping its
+      // verb-based checks (e.g. the controller-delete protection).
+      if (typeof result.suggestedCommand === 'string') {
+        result.suggestedCommand = result.suggestedCommand
+          .replace(/^\s*kubectl\s+(--context=\S+\s+)?/i, '')
+          .trim();
+      }
+
+      // §Fix-GuardianFailClosed — MODIFY without a usable suggestedCommand used to
+      // downgrade to APPROVE, i.e. "I wanted to change this command but couldn't say
+      // to what" silently became "proceed with the original, unmodified command
+      // anyway" — the opposite of what Guardian's own verdict expressed. Guardian
+      // explicitly signaled the original command was NOT the right one to run as-is;
+      // REJECT (not DELEGATE_HUMAN) is the correct fail-closed direction here, since
+      // this isn't "Guardian couldn't be reached" (the LLM call succeeded and
+      // returned a coherent, recognized verdict) — it's a single incomplete
+      // response, and REJECT routes back into a bounded re-investigate/re-plan
+      // cycle (up to MAX_FIX_ATTEMPTS) rather than immediately escalating to a
+      // human for what may just be a one-off gap in this one response.
       if (result.verdict === 'MODIFY') {
-        if (!result.suggestedAction || !VALID_ACTIONS.has(result.suggestedAction)) {
-          console.warn(`[${this.clusterName}] [GUARDIAN] MODIFY without valid suggestedAction — downgrading to APPROVE`);
-          result.verdict = 'APPROVE';
-          result.suggestedAction = null;
+        if (!result.suggestedCommand || typeof result.suggestedCommand !== 'string' || !result.suggestedCommand.trim()) {
+          console.warn(`[${this.clusterName}] [GUARDIAN] MODIFY without a usable suggestedCommand — rejecting instead of approving the original, unmodified command`);
+          result.verdict = 'REJECT';
+          result.classification = VALID_CLASSES.has(result.classification) ? result.classification : 'CAUTIOUS';
+          result.reason = `${result.reason ?? ''} [Guardian requested MODIFY but did not provide a usable suggestedCommand — rejected rather than silently approving the original command]`.trim();
+          result.suggestedCommand = null;
         }
       } else {
-        result.suggestedAction = null;
+        result.suggestedCommand = null;
       }
 
       result.confidence = typeof result.confidence === 'number'
         ? Math.max(0, Math.min(1, result.confidence))
         : 0.7;
 
+      result.safetyConcerns = Array.isArray(result.safetyConcerns) ? result.safetyConcerns.filter(s => typeof s === 'string') : [];
+      result.evidenceCited  = Array.isArray(result.evidenceCited) ? result.evidenceCited.filter(s => typeof s === 'string') : [];
+      result.impactSummary  = typeof result.impactSummary === 'string' ? result.impactSummary : null;
+      result.estimatedBlastRadius = VALID_BLAST_RADII.has(result.estimatedBlastRadius) ? result.estimatedBlastRadius : null;
+
       return result;
 
     } catch (err) {
-      console.warn(`[${this.clusterName}] [GUARDIAN] LLM error: ${err.message} — using fallback`);
-      return { ...FALLBACK, reason: `Guardian unavailable (${err.message}) — proceeding with caution.` };
+      // Catches everything from the LLM call onward: timeout (runLLMCall's own
+      // circuit-breaker retries/backoff are already exhausted by the time this
+      // throws — see llmCircuitBreaker.js), a raw API error, a streaming failure
+      // mid-response, or any other unexpected exception in this block.
+      console.warn(`[${this.clusterName}] [GUARDIAN] LLM error: ${err.message} — escalating instead of auto-approving`);
+      return _guardianFailureVerdict(`Guardian was unavailable (${err.message}) — escalated to a human rather than auto-approved.`);
     }
   }
 }
 
 module.exports = GuardianAgent;
+// Exposed for unit testing §Fix-GuardianFailClosed's fallback shape in isolation,
+// same pattern as investigator.js's _isReadOnlyCommand / planner.js's
+// _isConfidenceTooLowToPlan exports.
+module.exports._guardianFailureVerdict = _guardianFailureVerdict;

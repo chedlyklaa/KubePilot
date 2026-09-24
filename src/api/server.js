@@ -29,6 +29,7 @@ const extensionsRoutes    = require('./routes/extensions.routes');
 const policiesRoutes      = require('./routes/policies.routes');
 const securityRoutes      = require('./routes/security.routes');
 const networkRoutes       = require('./routes/network.routes');
+const liveWorkflowRoutes  = require('./routes/liveWorkflow.routes');
 
 function createServer(port = 3001) {
   const app = express();
@@ -59,6 +60,7 @@ function createServer(port = 3001) {
   app.use(policiesRoutes);
   app.use(securityRoutes);
   app.use(networkRoutes);
+  app.use(liveWorkflowRoutes);
 
   app.listen(port, () => console.log(`[API] Dashboard server on http://localhost:${port}`));
 }

@@ -1,0 +1,24 @@
+[2026-08-24T08:03:01.630Z] 
+=== test-orchestrator-conflict-live: starting (context=kind-kubepilot-test cluster=kubepilot-test namespaces=kp-test ticks=5 interval=25000ms) ===
+
+[2026-08-24T08:03:01.744Z] [DB] Connected to MongoDB at mongodb://localhost:27017/K8S-agent-IHM
+[2026-08-24T08:03:01.815Z] [ShortMemory] Connected to Redis (redis://localhost:6379)
+[2026-08-24T08:03:01.815Z] [VectorStore] Probing embedding model "bge-multilingual-gemma2"…
+[2026-08-24T08:03:02.015Z] [VectorStore] Embedding dimension: 3584
+[2026-08-24T08:03:02.164Z] [VectorStore] Collection "incident_episodes" ready (dim=3584)
+[2026-08-24T08:03:02.440Z] [EpisodicMemory] Loaded 982 resolved episode(s) into memory index
+[2026-08-24T08:03:02.440Z] [harness] shortMemory.ready = true (Redis) — conflict detection requires this to be true
+[2026-08-24T08:03:02.441Z] 
+----- TICK 1/5 -----
+[2026-08-24T08:03:02.869Z] [stderr] [kubepilot-test] [ORCHESTRATOR] kubectl get pods failed: No active cluster!
+[2026-08-24T08:03:02.870Z] [warn] [kubepilot-test] [ORCHESTRATOR] kubectl get nodes failed: Error in configuration: context was not found for specified context: kind-kubepilot-test
+[2026-08-24T08:03:02.870Z] [warn] [kubepilot-test] [ORCHESTRATOR] kubectl get events failed: Error in configuration: context was not found for specified context: kind-kubepilot-test
+[2026-08-24T08:03:02.870Z] [kubepilot-test] [ORCHESTRATOR] All pods/nodes healthy
+[2026-08-24T08:03:03.145Z] [harness] sleeping 25000ms before next tick...
+[2026-08-24T08:03:28.155Z] 
+----- TICK 2/5 -----
+[2026-08-24T08:03:28.378Z] [stderr] [kubepilot-test] [ORCHESTRATOR] kubectl get pods failed: No active cluster!
+[2026-08-24T08:03:28.378Z] [warn] [kubepilot-test] [ORCHESTRATOR] kubectl get nodes failed: Error in configuration: context was not found for specified context: kind-kubepilot-test
+[2026-08-24T08:03:28.378Z] [warn] [kubepilot-test] [ORCHESTRATOR] kubectl get events failed: Error in configuration: context was not found for specified context: kind-kubepilot-test
+[2026-08-24T08:03:28.378Z] [kubepilot-test] [ORCHESTRATOR] All pods/nodes healthy
+[2026-08-24T08:03:28.638Z] [harness] sleeping 25000ms before next tick...

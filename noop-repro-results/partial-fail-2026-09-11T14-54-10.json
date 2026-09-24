@@ -1,0 +1,2234 @@
+{
+  "case": {
+    "pod": "partial-fail",
+    "namespace": "noop-repro-mtx2gp1n",
+    "category": "multi",
+    "name": "Multi: mixed healthy + crashing replicas",
+    "expectedAction": "rollback",
+    "expectedDiagnosisPattern": "/crash|exit|fail|config|broken/i"
+  },
+  "issueKey": "minikube/noop-repro-mtx2gp1n/partial-fail",
+  "issueId": 836,
+  "finalStatus": "fixed",
+  "verdict": "resolved",
+  "settled": true,
+  "workflowIds": [
+    "0aca9c23-4b47-42b8-8bd0-f4a374265799"
+  ],
+  "attempts": [
+    {
+      "workflowId": "0aca9c23-4b47-42b8-8bd0-f4a374265799",
+      "startedAt": "2026-09-11T14:53:08.644Z",
+      "updatedAt": "2026-09-11T14:54:01.584Z",
+      "finishedAt": "2026-09-11T14:54:01.584Z",
+      "outcome": "fixed",
+      "noop_origin": "not-noop-this-run",
+      "stages": {
+        "orchestrator": [
+          {
+            "ts": "2026-09-11T14:53:08.644Z",
+            "durationMs": null,
+            "output": {
+              "classification": [
+                "CrashLoopBackOff"
+              ],
+              "severity": [
+                "critical"
+              ],
+              "dedupResult": "survived",
+              "action": "spawn",
+              "dispatchKey": "solo:minikube/noop-repro-mtx2gp1n/partial-fail"
+            }
+          }
+        ],
+        "investigator": [
+          {
+            "ts": "2026-09-11T14:53:16.220Z",
+            "durationMs": 6527,
+            "output": {
+              "path": "fastPath",
+              "root_cause_layer": "application",
+              "confidence": 0.98,
+              "escalated": false,
+              "sub_events": [
+                {
+                  "layer": "application",
+                  "status": "ok",
+                  "issue": "The 'app' container in the pod is intentionally failing because its command is 'echo BROKEN && exit 1', which causes it to exit with code 1 immediately upon every start.",
+                  "confidence": 0.98
+                }
+              ]
+            }
+          }
+        ],
+        "planner": [
+          {
+            "ts": "2026-09-11T14:53:42.973Z",
+            "durationMs": 26747,
+            "output": {
+              "plan_summary": "rollout undo deployment/partial-fail -n noop-repro-mtx2gp1n",
+              "step_count": 1,
+              "needs_approval": false,
+              "has_rollback": true,
+              "noop_origin": "submitted",
+              "planner_input": {
+                "issues": [
+                  {
+                    "type": "CrashLoopBackOff",
+                    "complexity": "SIMPLE",
+                    "scope": "pod",
+                    "clusterName": "minikube",
+                    "podName": "partial-fail-bbb9fff56-ndq58",
+                    "deployment": "partial-fail",
+                    "namespace": "noop-repro-mtx2gp1n",
+                    "nodeName": null,
+                    "exitCode": null,
+                    "oomKilled": false,
+                    "restartCount": 0,
+                    "ownerKind": "Deployment",
+                    "controllerName": "partial-fail"
+                  }
+                ],
+                "clusters": [
+                  "minikube"
+                ],
+                "investigation": {
+                  "rootCause": "The 'app' container in the pod is intentionally failing because its command is 'echo BROKEN && exit 1', which causes it to exit with code 1 immediately upon every start.",
+                  "layer": "application",
+                  "symptom": "CrashLoopBackOff",
+                  "componentsInvolved": [
+                    "partial-fail"
+                  ],
+                  "confidence": 0.98,
+                  "evidence": [
+                    "Command in pod describe: 'echo BROKEN && exit 1'",
+                    "Last State: Terminated, Reason: Error, Exit Code: 1",
+                    "Restart Count: 6",
+                    "Current logs: 'BROKEN'",
+                    "nginx container is running normally, indicating no broader pod or node issues"
+                  ],
+                  "recommendedFocus": "none — evidence sufficient",
+                  "riskLevel": "low",
+                  "layersInspected": [
+                    "application"
+                  ],
+                  "perLayerFindings": [
+                    {
+                      "layer": "application",
+                      "status": "critical",
+                      "summary": "The 'app' container in the pod is intentionally failing because its command is 'echo BROKEN && exit 1', which causes it to exit with code 1 immediately upon every start.",
+                      "commandsRun": []
+                    }
+                  ],
+                  "evidenceSufficiency": 0.98,
+                  "severity": "low",
+                  "reasoning": "The pod has two containers: 'app' (busybox) and 'nginx'. The nginx container is running successfully with no restarts. The 'app' container is in CrashLoopBackOff with a clear command: 'echo BROKEN && exit 1'. This command explicitly exits with code 1 immediately after printing 'BROKEN', which matches the observed behavior (restart count 6, last state terminated with exit code 1). The logs simply echo 'BROKEN', confirming execution reached the command. All evidence is consistent with intentional immediate failure due to the exit 1 in the command. No other failure modes (like image pull, OOM, or config issues) are indicated.",
+                  "suspected_cause": "The 'app' container in the pod is intentionally failing because its command is 'echo BROKEN && exit 1', which causes it to exit with code 1 immediately upon every start.",
+                  "recommended_focus": "none",
+                  "risk_level": "low",
+                  "ringsVisited": [],
+                  "layersInvestigated": [
+                    "application"
+                  ],
+                  "assessmentIterations": 0,
+                  "investigationExhausted": false,
+                  "ringAssessmentLog": [],
+                  "investigationTurns": 1,
+                  "commandsExecuted": [],
+                  "reachedConfidenceTarget": true,
+                  "fastPath": true
+                },
+                "planningContext": [
+                  {
+                    "issueKey": "minikube/noop-repro-mtx2gp1n/partial-fail",
+                    "changeCorrelation": null,
+                    "capacityForecast": null
+                  }
+                ]
+              },
+              "tools_available": [
+                "dry_run_step",
+                "gather_more_evidence",
+                "submit_plan"
+              ],
+              "last_error": null,
+              "tool_call_log": [
+                {
+                  "name": "gather_more_evidence",
+                  "clusterName": "minikube",
+                  "command": "get deployment partial-fail -n noop-repro-mtx2gp1n -o yaml"
+                },
+                {
+                  "name": "dry_run_step",
+                  "clusterName": "minikube",
+                  "command": "rollout undo deployment/partial-fail -n noop-repro-mtx2gp1n"
+                }
+              ],
+              "turns_used": 3
+            }
+          }
+        ],
+        "guardian": [
+          {
+            "ts": "2026-09-11T14:53:55.305Z",
+            "durationMs": 2174,
+            "output": {
+              "verdict": "APPROVE",
+              "risk_tier": "SAFE",
+              "rationale": "The proposed rollback is appropriate for a CrashLoopBackOff caused by a faulty command in the deployment. The pod logs confirm the issue, and the rollback is a direct fix for the identified problem. (live state drift detected — restartCount was 0, is now 6)"
+            }
+          }
+        ],
+        "policy": [
+          {
+            "ts": "2026-09-11T14:53:55.314Z",
+            "durationMs": null,
+            "output": {
+              "status": "PASS",
+              "blockedRules": [],
+              "command": "rollout undo deployment/partial-fail -n noop-repro-mtx2gp1n"
+            }
+          }
+        ],
+        "executor": [
+          {
+            "ts": "2026-09-11T14:53:59.175Z",
+            "durationMs": null,
+            "output": {
+              "action": "rollout undo deployment/partial-fail -n noop-repro-mtx2gp1n",
+              "status": "fixed"
+            }
+          },
+          {
+            "ts": "2026-09-11T14:53:59.178Z",
+            "durationMs": null,
+            "output": {
+              "summary": "rollout undo deployment/partial-fail -n noop-repro-mtx2gp1n:fixed",
+              "ready": true
+            }
+          }
+        ],
+        "reflexion": [
+          {
+            "ts": "2026-09-11T14:54:01.105Z",
+            "durationMs": null,
+            "output": {
+              "outcome": "fixed",
+              "rca_accuracy": 1,
+              "mttr_seconds": 52.461
+            }
+          }
+        ]
+      },
+      "plannerDetail": {
+        "noop_origin": "submitted",
+        "planner_input": {
+          "issues": [
+            {
+              "type": "CrashLoopBackOff",
+              "complexity": "SIMPLE",
+              "scope": "pod",
+              "clusterName": "minikube",
+              "podName": "partial-fail-bbb9fff56-ndq58",
+              "deployment": "partial-fail",
+              "namespace": "noop-repro-mtx2gp1n",
+              "nodeName": null,
+              "exitCode": null,
+              "oomKilled": false,
+              "restartCount": 0,
+              "ownerKind": "Deployment",
+              "controllerName": "partial-fail"
+            }
+          ],
+          "clusters": [
+            "minikube"
+          ],
+          "investigation": {
+            "rootCause": "The 'app' container in the pod is intentionally failing because its command is 'echo BROKEN && exit 1', which causes it to exit with code 1 immediately upon every start.",
+            "layer": "application",
+            "symptom": "CrashLoopBackOff",
+            "componentsInvolved": [
+              "partial-fail"
+            ],
+            "confidence": 0.98,
+            "evidence": [
+              "Command in pod describe: 'echo BROKEN && exit 1'",
+              "Last State: Terminated, Reason: Error, Exit Code: 1",
+              "Restart Count: 6",
+              "Current logs: 'BROKEN'",
+              "nginx container is running normally, indicating no broader pod or node issues"
+            ],
+            "recommendedFocus": "none — evidence sufficient",
+            "riskLevel": "low",
+            "layersInspected": [
+              "application"
+            ],
+            "perLayerFindings": [
+              {
+                "layer": "application",
+                "status": "critical",
+                "summary": "The 'app' container in the pod is intentionally failing because its command is 'echo BROKEN && exit 1', which causes it to exit with code 1 immediately upon every start.",
+                "commandsRun": []
+              }
+            ],
+            "evidenceSufficiency": 0.98,
+            "severity": "low",
+            "reasoning": "The pod has two containers: 'app' (busybox) and 'nginx'. The nginx container is running successfully with no restarts. The 'app' container is in CrashLoopBackOff with a clear command: 'echo BROKEN && exit 1'. This command explicitly exits with code 1 immediately after printing 'BROKEN', which matches the observed behavior (restart count 6, last state terminated with exit code 1). The logs simply echo 'BROKEN', confirming execution reached the command. All evidence is consistent with intentional immediate failure due to the exit 1 in the command. No other failure modes (like image pull, OOM, or config issues) are indicated.",
+            "suspected_cause": "The 'app' container in the pod is intentionally failing because its command is 'echo BROKEN && exit 1', which causes it to exit with code 1 immediately upon every start.",
+            "recommended_focus": "none",
+            "risk_level": "low",
+            "ringsVisited": [],
+            "layersInvestigated": [
+              "application"
+            ],
+            "assessmentIterations": 0,
+            "investigationExhausted": false,
+            "ringAssessmentLog": [],
+            "investigationTurns": 1,
+            "commandsExecuted": [],
+            "reachedConfidenceTarget": true,
+            "fastPath": true
+          },
+          "planningContext": [
+            {
+              "issueKey": "minikube/noop-repro-mtx2gp1n/partial-fail",
+              "changeCorrelation": null,
+              "capacityForecast": null
+            }
+          ]
+        },
+        "tools_available": [
+          "dry_run_step",
+          "gather_more_evidence",
+          "submit_plan"
+        ],
+        "plan_summary": "rollout undo deployment/partial-fail -n noop-repro-mtx2gp1n",
+        "step_count": 1,
+        "last_error": null,
+        "tool_call_log": [
+          {
+            "name": "gather_more_evidence",
+            "clusterName": "minikube",
+            "command": "get deployment partial-fail -n noop-repro-mtx2gp1n -o yaml"
+          },
+          {
+            "name": "dry_run_step",
+            "clusterName": "minikube",
+            "command": "rollout undo deployment/partial-fail -n noop-repro-mtx2gp1n"
+          }
+        ],
+        "turns_used": 3
+      },
+      "retries": {
+        "investigatorCount": 1,
+        "plannerCount": 1
+      },
+      "errors": []
+    }
+  ],
+  "earlyFailureThenLaterFixed": false,
+  "podStateHistory": [
+    {
+      "ts": "2026-09-11T14:44:15.079Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "bad-config-5478dfc447-n4rjb",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 1,
+          "containers": [
+            {
+              "name": "bad-config",
+              "state": "waiting:CrashLoopBackOff"
+            },
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "bad-config-6f58fc66b7-vnbsw",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "cascade-app-5dcc79bc45-76bxn",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 1,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "cascade-app-5dcc79bc45-f7brd",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 1,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "cascade-db-9ffd98949-xsbcq",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 1,
+          "containers": [
+            {
+              "name": "db",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "crashloop-dep-854d4cf896-zzdlm",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 1,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "exit126-dep-698ffbf77c-kg4gb",
+          "isTarget": false,
+          "phase": "Pending",
+          "ready": false,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:ContainerCreating"
+            }
+          ]
+        },
+        {
+          "name": "exit127-dep-5985cdbbc7-cmrgj",
+          "isTarget": false,
+          "phase": "Pending",
+          "ready": false,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:ContainerCreating"
+            }
+          ]
+        },
+        {
+          "name": "exit137-547f7d6dd9-6pgw7",
+          "isTarget": false,
+          "phase": "Pending",
+          "ready": false,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:ContainerCreating"
+            }
+          ]
+        },
+        {
+          "name": "flapper-7bbd5585c4-glqdb",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "app",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "init-crash-5d7bc95b-knsxz",
+          "isTarget": false,
+          "phase": "Pending",
+          "ready": false,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:PodInitializing"
+            }
+          ]
+        },
+        {
+          "name": "multi-crash-cc8d6d947-c2v9p",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "app",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "multi-crash-cc8d6d947-mdl5c",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "multi-crash-cc8d6d947-zzxb5",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-6bb598cd6c-c655h",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-6bb598cd6c-rfr6c",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-6bb598cd6c-sngwg",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-bbb9fff56-ndq58",
+          "isTarget": true,
+          "phase": "Pending",
+          "ready": false,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:ContainerCreating"
+            },
+            {
+              "name": "nginx",
+              "state": "waiting:ContainerCreating"
+            }
+          ]
+        },
+        {
+          "name": "rollchain-565b4fcbd5-8lrpc",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "rollchain-68dd7fd74-kj46s",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T14:45:27.044Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "bad-config-5478dfc447-n4rjb",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 3,
+          "containers": [
+            {
+              "name": "bad-config",
+              "state": "waiting:CrashLoopBackOff"
+            },
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "bad-config-6f58fc66b7-vnbsw",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "cascade-app-5dcc79bc45-76bxn",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 3,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "cascade-app-5dcc79bc45-f7brd",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 3,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "cascade-db-9ffd98949-xsbcq",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 3,
+          "containers": [
+            {
+              "name": "db",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "crashloop-dep-854d4cf896-zzdlm",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 3,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "exit126-dep-698ffbf77c-kg4gb",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 2,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "exit127-dep-5985cdbbc7-cmrgj",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 3,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:RunContainerError"
+            }
+          ]
+        },
+        {
+          "name": "exit137-547f7d6dd9-6pgw7",
+          "isTarget": false,
+          "phase": "Pending",
+          "ready": false,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CreateContainerError"
+            }
+          ]
+        },
+        {
+          "name": "flapper-7bbd5585c4-glqdb",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 2,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "init-crash-5d7bc95b-knsxz",
+          "isTarget": false,
+          "phase": "Pending",
+          "ready": false,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:PodInitializing"
+            }
+          ]
+        },
+        {
+          "name": "multi-crash-cc8d6d947-c2v9p",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 2,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "multi-crash-cc8d6d947-mdl5c",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 3,
+          "containers": [
+            {
+              "name": "app",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "multi-crash-cc8d6d947-zzxb5",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 2,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-6bb598cd6c-c655h",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-6bb598cd6c-rfr6c",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-6bb598cd6c-sngwg",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-bbb9fff56-ndq58",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 2,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            },
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "rollchain-565b4fcbd5-8lrpc",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 3,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "rollchain-68dd7fd74-kj46s",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T14:47:59.022Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "bad-config-5478dfc447-n4rjb",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 5,
+          "containers": [
+            {
+              "name": "bad-config",
+              "state": "terminated:Error"
+            },
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "bad-config-6f58fc66b7-vnbsw",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "cascade-app-5dcc79bc45-76bxn",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 5,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "cascade-app-5dcc79bc45-f7brd",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 5,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "cascade-db-9ffd98949-xsbcq",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 5,
+          "containers": [
+            {
+              "name": "db",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "crashloop-dep-854d4cf896-zzdlm",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 5,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "exit126-dep-698ffbf77c-kg4gb",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 5,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:RunContainerError"
+            }
+          ]
+        },
+        {
+          "name": "exit127-dep-5985cdbbc7-cmrgj",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 5,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:RunContainerError"
+            }
+          ]
+        },
+        {
+          "name": "exit137-547f7d6dd9-6pgw7",
+          "isTarget": false,
+          "phase": "Pending",
+          "ready": false,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CreateContainerError"
+            }
+          ]
+        },
+        {
+          "name": "flapper-7bbd5585c4-glqdb",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 4,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "init-crash-5d7bc95b-knsxz",
+          "isTarget": false,
+          "phase": "Pending",
+          "ready": false,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:PodInitializing"
+            }
+          ]
+        },
+        {
+          "name": "multi-crash-cc8d6d947-c2v9p",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 4,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "multi-crash-cc8d6d947-mdl5c",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 5,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "multi-crash-cc8d6d947-zzxb5",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 5,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-6bb598cd6c-c655h",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-6bb598cd6c-rfr6c",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-6bb598cd6c-sngwg",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-bbb9fff56-ndq58",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 5,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            },
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "rollchain-565b4fcbd5-6745l",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 1,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "rollchain-68dd7fd74-kj46s",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T14:50:30.092Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "bad-config-5478dfc447-n4rjb",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "bad-config",
+              "state": "waiting:CrashLoopBackOff"
+            },
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "bad-config-6f58fc66b7-vnbsw",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "cascade-app-5dcc79bc45-76bxn",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 5,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "cascade-app-5dcc79bc45-f7brd",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "cascade-db-9ffd98949-xsbcq",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "db",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "crashloop-dep-854d4cf896-zzdlm",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "exit126-dep-698ffbf77c-kg4gb",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 5,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "exit127-dep-5985cdbbc7-cmrgj",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 5,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "exit137-547f7d6dd9-6pgw7",
+          "isTarget": false,
+          "phase": "Pending",
+          "ready": false,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CreateContainerError"
+            }
+          ]
+        },
+        {
+          "name": "flapper-7bbd5585c4-glqdb",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 5,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "init-crash-5d7bc95b-knsxz",
+          "isTarget": false,
+          "phase": "Pending",
+          "ready": false,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:PodInitializing"
+            }
+          ]
+        },
+        {
+          "name": "multi-crash-cc8d6d947-c2v9p",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 5,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "multi-crash-cc8d6d947-mdl5c",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 5,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "multi-crash-cc8d6d947-zzxb5",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 5,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-6bb598cd6c-c655h",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-6bb598cd6c-rfr6c",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-6bb598cd6c-sngwg",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-bbb9fff56-ndq58",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 5,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            },
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "rollchain-565b4fcbd5-6745l",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 4,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "rollchain-68dd7fd74-kj46s",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T14:52:39.631Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "bad-config-5478dfc447-n4rjb",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "bad-config",
+              "state": "waiting:CrashLoopBackOff"
+            },
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "bad-config-6f58fc66b7-vnbsw",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "cascade-app-5dcc79bc45-76bxn",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "cascade-app-5dcc79bc45-f7brd",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "cascade-db-9ffd98949-xsbcq",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "db",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "crashloop-dep-854d4cf896-zzdlm",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "exit126-dep-698ffbf77c-kg4gb",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "exit127-dep-5985cdbbc7-cmrgj",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "exit137-547f7d6dd9-6pgw7",
+          "isTarget": false,
+          "phase": "Pending",
+          "ready": false,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CreateContainerError"
+            }
+          ]
+        },
+        {
+          "name": "flapper-7bbd5585c4-glqdb",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "init-crash-5d7bc95b-knsxz",
+          "isTarget": false,
+          "phase": "Pending",
+          "ready": false,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:PodInitializing"
+            }
+          ]
+        },
+        {
+          "name": "multi-crash-cc8d6d947-c2v9p",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "multi-crash-cc8d6d947-mdl5c",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "multi-crash-cc8d6d947-zzxb5",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-6bb598cd6c-c655h",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-6bb598cd6c-rfr6c",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-6bb598cd6c-sngwg",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-bbb9fff56-ndq58",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            },
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "rollchain-565b4fcbd5-6745l",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 5,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "rollchain-68dd7fd74-kj46s",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T14:53:57.366Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "bad-config-5478dfc447-n4rjb",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "bad-config",
+              "state": "waiting:CrashLoopBackOff"
+            },
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "bad-config-6f58fc66b7-vnbsw",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "cascade-app-5dcc79bc45-76bxn",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "cascade-app-5dcc79bc45-f7brd",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "cascade-db-9ffd98949-xsbcq",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "db",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "crashloop-dep-854d4cf896-zzdlm",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "exit126-dep-698ffbf77c-kg4gb",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "exit127-dep-5985cdbbc7-cmrgj",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "exit137-547f7d6dd9-6pgw7",
+          "isTarget": false,
+          "phase": "Pending",
+          "ready": false,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CreateContainerError"
+            }
+          ]
+        },
+        {
+          "name": "flapper-7bbd5585c4-glqdb",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "init-crash-5d7bc95b-knsxz",
+          "isTarget": false,
+          "phase": "Pending",
+          "ready": false,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:PodInitializing"
+            }
+          ]
+        },
+        {
+          "name": "multi-crash-cc8d6d947-c2v9p",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "multi-crash-cc8d6d947-mdl5c",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "multi-crash-cc8d6d947-zzxb5",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-6bb598cd6c-c655h",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-6bb598cd6c-rfr6c",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-6bb598cd6c-sngwg",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-bbb9fff56-ndq58",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "terminated:Error"
+            },
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "rollchain-565b4fcbd5-6745l",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "rollchain-68dd7fd74-kj46s",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ts": "2026-09-11T14:54:10.134Z",
+      "error": null,
+      "pods": [
+        {
+          "name": "bad-config-5478dfc447-n4rjb",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "bad-config",
+              "state": "waiting:CrashLoopBackOff"
+            },
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "bad-config-6f58fc66b7-vnbsw",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "cascade-app-5dcc79bc45-76bxn",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "cascade-app-5dcc79bc45-f7brd",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "cascade-db-9ffd98949-xsbcq",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "db",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "crashloop-dep-854d4cf896-zzdlm",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "exit126-dep-698ffbf77c-kg4gb",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "exit127-dep-5985cdbbc7-cmrgj",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "exit137-547f7d6dd9-6pgw7",
+          "isTarget": false,
+          "phase": "Pending",
+          "ready": false,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CreateContainerError"
+            }
+          ]
+        },
+        {
+          "name": "flapper-7bbd5585c4-glqdb",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "init-crash-5d7bc95b-knsxz",
+          "isTarget": false,
+          "phase": "Pending",
+          "ready": false,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:PodInitializing"
+            }
+          ]
+        },
+        {
+          "name": "multi-crash-cc8d6d947-c2v9p",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "multi-crash-cc8d6d947-mdl5c",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "multi-crash-cc8d6d947-zzxb5",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "app",
+              "state": "waiting:CrashLoopBackOff"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-6bb598cd6c-c655h",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-6bb598cd6c-rfr6c",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "partial-fail-6bb598cd6c-sngwg",
+          "isTarget": true,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        },
+        {
+          "name": "rollchain-565b4fcbd5-6745l",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": false,
+          "restartCount": 6,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "terminated:Error"
+            }
+          ]
+        },
+        {
+          "name": "rollchain-68dd7fd74-kj46s",
+          "isTarget": false,
+          "phase": "Running",
+          "ready": true,
+          "restartCount": 0,
+          "containers": [
+            {
+              "name": "nginx",
+              "state": "running"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "totalLatencyMs": 595365
+}

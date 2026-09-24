@@ -93,6 +93,11 @@ const IssueTrackerSchema = new Schema({
   resource:    String,   // pod / deployment / node name
   fingerprint: Schema.Types.Mixed,
   rca:         Schema.Types.Mixed,
+  // Cross-link to WorkflowTraceSchema below — lets a UI jump from one issue's timeline
+  // to the full per-workflow observability trace (LLM/tool call counts, hypothesis
+  // history, etc.) that produced it. Nullable: legacy ClusterAgent-path episodes and
+  // anything tracked before this field existed have no workflow to link to.
+  workflowId:  { type: String, index: true },
   status: {
     type: String,
     // detected → investigating → awaiting_approval → approved → (blocked|skipped|failed|success)* → fixed
@@ -111,6 +116,53 @@ const IssueTrackerSchema = new Schema({
   resolvedAt: Date,
 }, { timestamps: true });
 
+// ── Workflow trace ────────────────────────────────────────────────────────────
+// One document per runWorkflow() invocation (src/orchestrator/graph.js) — observability
+// only, never read back to make a remediation decision (same non-authoritative role as
+// IssueTracker above). Built by src/monitoring/workflowTracer.js's WorkflowTracer,
+// persisted fire-and-forget by src/api/workflowTraceStore.js. Loosely typed
+// (Schema.Types.Mixed for the evolving per-node/history shapes) — same convention
+// IssueTrackerSchema.rca/fingerprint already use for agent-produced data whose exact
+// shape isn't a schema-enforced contract with any other part of the system.
+const WorkflowTraceSchema = new Schema({
+  workflowId:   { type: String, required: true, unique: true, index: true },
+  pipeline:     { type: String, enum: ['legacy', 'v5'], default: 'v5' },
+  issueKeys:    [String],
+  cluster:      String,
+  namespace:    String,
+  incidentType: String,
+  complexity:   { type: String, enum: ['SIMPLE', 'COMPLEX', 'UNKNOWN'], default: 'UNKNOWN' },
+  startedAt:      Date,
+  endedAt:        Date,
+  totalLatencyMs: Number,
+  nodes:          Schema.Types.Mixed, // { [nodeName]: { durationMs, llmCalls, toolCalls } }
+  totalLlmCalls:  Number,
+  totalToolCalls: Number,
+  investigationTurns:     Number,
+  ringsVisited:           [Number],
+  layersInvestigated:     [String],
+  hypothesisHistory:      Schema.Types.Mixed, // reshaped ringAssessmentLog
+  confidenceHistory:      [Number],
+  reachedConfidenceTarget: Boolean,
+  bestHypothesis:         Schema.Types.Mixed, // { hypothesis, layer, confidence, supportingEvidence, turn }
+  nonImprovingRounds:     Number,
+  stoppingOutcome: {
+    type: String,
+    enum: ['DIAGNOSIS_READY', 'MORE_INVESTIGATION_REQUIRED', 'INVESTIGATION_BUDGET_EXHAUSTED', 'INCONCLUSIVE'],
+  },
+  informationGainHistory: [{ type: String, enum: ['NONE', 'LOW', 'MEDIUM', 'HIGH'] }],
+  plannerTurns:                   Number,
+  plannerToInvestigatorRequests:  Number,
+  plannerDryRunCalls:             Number,
+  fastPathUsed:      Boolean,
+  fastPathEscalated: Boolean,
+  guardianRejections:     Number,
+  policyRejections:       Number,
+  humanApprovalRequests:  Number,
+  humanEscalations:       Number,
+  finalOutcome: { type: String, enum: ['fixed', 'blocked', 'escalated'] },
+}, { timestamps: true });
+
 module.exports = {
   ApprovalHistory:   mongoose.model('ApprovalHistory',   ApprovalHistorySchema),
   EscalationHistory: mongoose.model('EscalationHistory', EscalationHistorySchema),
@@ -118,4 +170,5 @@ module.exports = {
   CommandHistory:    mongoose.model('CommandHistory',    CommandHistorySchema),
   SilenceRule:       mongoose.model('SilenceRule',       SilenceRuleSchema),
   IssueTracker:      mongoose.model('IssueTracker',      IssueTrackerSchema),
+  WorkflowTrace:     mongoose.model('WorkflowTrace',     WorkflowTraceSchema),
 };

@@ -11,6 +11,7 @@ import UserSidebar from './components/UserSidebar'
 import DashboardPage from './pages/DashboardPage'
 import EscalationsPage from './pages/EscalationsPage'
 import IssuesPage from './pages/IssuesPage'
+import LiveWorkflowPage from './pages/LiveWorkflowPage'
 import ClusterHealthPage from './pages/ClusterHealthPage'
 import ChatPage from './pages/ChatPage'
 import HistoryPage from './pages/HistoryPage'
@@ -127,6 +128,9 @@ export default function AppShell() {
             <button className={`nav-btn ${page === '/health'      ? 'active' : ''}`} onClick={() => navigate('/health')}>Cluster Health</button>
             <button className={`nav-btn ${page === '/escalations' ? 'active' : ''}`} onClick={() => navigate('/escalations')}>Escalations</button>
             <button className={`nav-btn ${page === '/issues'      ? 'active' : ''}`} onClick={() => navigate('/issues')}>Issue Tracking</button>
+            {user.role === 'admin' && (
+              <button className={`nav-btn ${page === '/live' ? 'active' : ''}`} onClick={() => navigate('/live')}>Live Pipeline</button>
+            )}
             <button className={`nav-btn ${page === '/chat'        ? 'active' : ''}`} onClick={() => navigate('/chat')}>AI Assistant</button>
             <button className={`nav-btn ${page === '/history'     ? 'active' : ''}`} onClick={() => navigate('/history')}>History</button>
             <button className={`nav-btn ${page === '/rbac'        ? 'active' : ''}`} onClick={() => navigate('/rbac')}>RBAC</button>
@@ -163,6 +167,7 @@ export default function AppShell() {
           <Route path="/health"       element={<ClusterHealthPage />} />
           <Route path="/escalations"  element={<EscalationsPage />} />
           <Route path="/issues"       element={<IssuesPage />} />
+          {user.role === 'admin' && <Route path="/live" element={<LiveWorkflowPage />} />}
           <Route path="/chat"         element={<ChatPage />} />
           <Route path="/history"      element={<HistoryPage />} />
           <Route path="/profile"      element={<ProfilePage />} />

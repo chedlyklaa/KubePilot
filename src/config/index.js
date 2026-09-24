@@ -17,6 +17,7 @@ const boolFlag = (defaultValue) =>
 const EnvSchema = z.object({
   // Core services
   MONGODB_URI:   z.string().min(1).default('mongodb://localhost:27017/k8s_agent'),
+  REDIS_URL:     z.string().min(1).default('redis://localhost:6379'),
   API_PORT:      z.coerce.number().int().positive().default(3001),
   DASHBOARD_URL: z.string().url().default('http://localhost:5173'),
 
@@ -27,7 +28,44 @@ const EnvSchema = z.object({
   GUARDIAN_API_KEY:  z.string().optional(),
   GUARDIAN_MODEL:    z.string().optional(),
   GUARDIAN_BASE_URL: z.string().url().optional(),
+  // Optional cheaper/faster model tier for the Investigator's evidence-gathering and
+  // tool-selection work (architecture-doc §7.4) — falls back to OPENAI_* when unset,
+  // same pattern GUARDIAN_* already uses.
+  INVESTIGATOR_API_KEY:  z.string().optional(),
+  INVESTIGATOR_MODEL:    z.string().optional(),
+  INVESTIGATOR_BASE_URL: z.string().url().optional(),
+  // Same tiering for the Planner's multi-step planning/dry-run/evidence-gathering loop.
+  PLANNER_API_KEY:  z.string().optional(),
+  PLANNER_MODEL:    z.string().optional(),
+  PLANNER_BASE_URL: z.string().url().optional(),
+  // Same tiering for the Fast Path's single-call diagnosis (src/agents/fastPath.js) —
+  // a good candidate for a cheaper/faster model tier since it's exactly one
+  // no-tool-calling structured-output call per SIMPLE incident.
+  FASTPATH_API_KEY:  z.string().optional(),
+  FASTPATH_MODEL:    z.string().optional(),
+  FASTPATH_BASE_URL: z.string().url().optional(),
+  // Same tiering for the Phase 4 root-cause-fit advisory check
+  // (src/agents/rootCauseFitAssessor.js) — a single narrow structured-output call,
+  // logged/traced only, never gates anything. See that file's header for the
+  // experiment this is part of.
+  ROOTCAUSEFIT_API_KEY:  z.string().optional(),
+  ROOTCAUSEFIT_MODEL:    z.string().optional(),
+  ROOTCAUSEFIT_BASE_URL: z.string().url().optional(),
   LLM_TIMEOUT_MS:    z.coerce.number().int().positive().default(30_000),
+
+  // LangSmith tracing (KubePilot v5 pipeline) — off by default; set LANGCHAIN_TRACING_V2=true
+  // plus LANGCHAIN_API_KEY to enable per-node tracing on the LangGraph StateGraph.
+  LANGCHAIN_TRACING_V2: boolFlag(false),
+  LANGCHAIN_API_KEY:    z.string().optional(),
+  LANGCHAIN_PROJECT:    z.string().default('kubepilot'),
+
+  // Developer-only per-pod decision tracer (src/monitoring/incidentTracer.js) — never
+  // surfaced in user-facing output/API, logs/CLI only. TRACE_ENABLED is the master
+  // switch (off disables both stdout and file writes with zero overhead); TRACE_STDOUT
+  // toggles whether events also print to stdout on top of ./logs/<workflowId>.jsonl,
+  // which is always written to when TRACE_ENABLED is on (the `trace` CLI reads from it).
+  TRACE_ENABLED: boolFlag(true),
+  TRACE_STDOUT:  boolFlag(true),
 
   // Notification channel secrets encryption — hard requirement (also enforced directly
   // in services/notifications/crypto.js; centralizing the check here surfaces it at the
@@ -55,6 +93,16 @@ const EnvSchema = z.object({
   PROMETHEUS_NAMESPACE: z.string().default('monitoring'),
 
   // Feature flags
+  // ORCHESTRATOR_V5_ENABLED is no longer env-driven — the v5 pipeline always runs
+  // (index.js calls OrchestratorAgent.start() unconditionally).
+  //
+  // PolicyEngine.dryRunMode defaults to `true` (simulate — see §Fix-DryRunDefault,
+  // src/policy/policyEngine.js) and is NOT overridable via a generic "dry run" toggle
+  // on purpose. ALLOW_LIVE_KUBECTL_EXECUTION is the one narrow exception: set it to
+  // "true" only when intentionally running a real-cluster benchmark (dual-cluster-
+  // must-fix-demo.js / agent-benchmark-advanced1.js) against a server booted for that
+  // purpose — never in a normal deployment's .env.
+  ALLOW_LIVE_KUBECTL_EXECUTION: boolFlag(false),
   CAPACITY_FORECAST_ENABLED:   boolFlag(false),
   CHANGE_CORRELATION_ENABLED:  boolFlag(false),
   RBAC_DRIFT_ENABLED:          boolFlag(false),
@@ -66,7 +114,6 @@ const EnvSchema = z.object({
   SECRETS_HYGIENE_ENABLED:     boolFlag(false),
   POLICY_AWARENESS_ENABLED:    boolFlag(false),
   FALLBACK_ENABLED:            boolFlag(true),
-  POLICY_DRY_RUN:              boolFlag(false),
 
   // Optional integrations — no default, feature is just unavailable if unset
   QDRANT_URL:         z.string().url().optional(),

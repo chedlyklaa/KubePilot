@@ -1,0 +1,214 @@
+[2026-08-24T15:03:27.036Z] 
+=== test-orchestrator-conflict-live: starting (context=kind-kubepilot-test cluster=kubepilot-test namespaces=kp-test ticks=6 interval=30000ms) ===
+
+[2026-08-24T15:03:27.128Z] [DB] Connected to MongoDB at mongodb://localhost:27017/K8S-agent-IHM
+[2026-08-24T15:03:27.220Z] [ShortMemory] Connected to Redis (redis://localhost:6379)
+[2026-08-24T15:03:27.221Z] [VectorStore] Probing embedding model "bge-multilingual-gemma2"…
+[2026-08-24T15:03:27.550Z] [VectorStore] Embedding dimension: 3584
+[2026-08-24T15:03:29.440Z] [VectorStore] Collection "incident_episodes" ready (dim=3584)
+[2026-08-24T15:03:30.973Z] [EpisodicMemory] Loaded 982 resolved episode(s) into memory index
+[2026-08-24T15:03:31.062Z] [EscalationStore] Restored 57 active escalation(s) from MongoDB
+[2026-08-24T15:03:31.082Z] [IssueTracker] Resuming from seq=99
+[2026-08-24T15:03:31.082Z] [harness] shortMemory.ready = true (Redis) — conflict detection requires this to be true
+[2026-08-24T15:03:31.083Z] 
+----- TICK 1/6 -----
+[2026-08-24T15:03:36.516Z] [warn] [ORCHESTRATOR] auto-correcting 2 incident(s) that used scope "cluster" as a shortcut: api-598c7d57dd-qm7mx, cache-76c4dcc448-f2hpq
+[2026-08-24T15:03:36.516Z] [kubepilot-test] [ORCHESTRATOR] 4 incident(s) classified
+[2026-08-24T15:03:36.588Z] [kubepilot-test] [ORCHESTRATOR] launching workflow 23002cd8-6a8d-45b0-bea8-b421324c0c8c for ns:kubepilot-test:kp-test (2 incident(s))
+[2026-08-24T15:03:36.593Z] [kubepilot-test] [ORCHESTRATOR] launching workflow bf15c195-d66a-4a16-baad-a9c504b4e4a7 for ns:kubepilot-test:default (1 incident(s))
+[2026-08-24T15:03:36.611Z] [harness] sleeping 30000ms before next tick...
+[2026-08-24T15:03:36.674Z] [kubepilot-test] [GRAPH] investigator — kp-test/api-598c7d57dd-qm7mx, kp-test/cache-76c4dcc448-f2hpq (attempt 1/3)
+[2026-08-24T15:03:36.677Z] [kubepilot-test] [GRAPH] investigator — default/unknown (attempt 1/3)
+[2026-08-24T15:03:47.281Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get componentstatuses
+[2026-08-24T15:03:47.369Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods api-598c7d57dd-qm7mx -n kp-test -o yaml
+[2026-08-24T15:03:48.594Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods cache-76c4dcc448-f2hpq -n kp-test -o yaml
+[2026-08-24T15:03:49.100Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get nodes
+[2026-08-24T15:03:49.664Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods -n kube-system
+[2026-08-24T15:03:50.594Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test describe pod api-598c7d57dd-qm7mx -n kp-test
+[2026-08-24T15:03:51.453Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test describe pod cache-76c4dcc448-f2hpq -n kp-test
+[2026-08-24T15:03:51.554Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test describe pod kube-apiserver-kubepilot-test-control-plane -n kube-system
+[2026-08-24T15:03:52.537Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test describe pod kube-controller-manager-kubepilot-test-control-plane -n kube-system
+[2026-08-24T15:03:53.848Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test describe pod kube-scheduler-kubepilot-test-control-plane -n kube-system
+[2026-08-24T15:03:54.431Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get replicaset api-598c7d57dd -n kp-test -o yaml
+[2026-08-24T15:03:55.662Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kube-system --sort-by=.metadata.creationTimestamp
+[2026-08-24T15:03:56.071Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get replicaset cache-76c4dcc448 -n kp-test -o yaml
+[2026-08-24T15:03:57.042Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test logs kube-apiserver-kubepilot-test-control-plane -n kube-system --since=50m
+[2026-08-24T15:03:57.928Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get deployment api -n kp-test -o yaml
+[2026-08-24T15:03:58.233Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events --sort-by=.metadata.creationTimestamp
+[2026-08-24T15:03:59.219Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get deployment cache -n kp-test -o yaml
+[2026-08-24T15:04:00.252Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test describe node kubepilot-test-control-plane
+[2026-08-24T15:04:00.909Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector involvedObject.name=api-598c7d57dd-qm7mx
+[2026-08-24T15:04:02.312Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kube-system --field-selector involvedObject.name=kube-apiserver-kubepilot-test-control-plane
+[2026-08-24T15:04:02.779Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector involvedObject.name=cache-76c4dcc448-f2hpq
+[2026-08-24T15:04:03.850Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test logs kube-apiserver-kubepilot-test-control-plane -n kube-system --previous
+[2026-08-24T15:04:04.237Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get nodes
+[2026-08-24T15:04:05.196Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kube-system --field-selector reason=Unhealthy
+[2026-08-24T15:04:05.691Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test describe node kubepilot-test-control-plane
+[2026-08-24T15:04:06.534Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods -n kube-system -l component=kube-apiserver -o json
+[2026-08-24T15:04:06.613Z] 
+----- TICK 2/6 -----
+[2026-08-24T15:04:08.037Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test
+[2026-08-24T15:04:08.306Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kube-system --field-selector involvedObject.name=kube-apiserver-kubepilot-test-control-plane --field-selector type=Warning
+[2026-08-24T15:04:10.299Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kube-system --field-selector involvedObject.name=kube-apiserver-kubepilot-test-control-plane --field-selector reason=Unhealthy
+[2026-08-24T15:04:12.143Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test logs kube-apiserver-kubepilot-test-control-plane -n kube-system --since=52m
+[2026-08-24T15:04:13.282Z] [warn] [ORCHESTRATOR] auto-correcting 2 incident(s) that used scope "cluster" as a shortcut: api-677fcc5689-v8d8t, cache-76c4dcc448-f2hpq
+[2026-08-24T15:04:13.282Z] [kubepilot-test] [ORCHESTRATOR] 5 incident(s) classified
+[2026-08-24T15:04:13.296Z] [harness] sleeping 30000ms before next tick...
+[2026-08-24T15:04:13.337Z] [warn] [INVESTIGATOR] [EXEC-LAYER] blocked by sanitizer: "get deployment api -n kp-test -o jsonpath='{.spec.template.spec.containers[0].image}'" — shell metacharacters detected — possible injection attempt: "kubectl --context=kind-kubepilot-test get deployment api -n kp-test -o jsonpath="
+[2026-08-24T15:04:13.690Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -A --sort-by=.metadata.creationTimestamp
+[2026-08-24T15:04:14.655Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get deployment api -n kp-test -o json
+[2026-08-24T15:04:15.411Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -A --field-selector reason=Unhealthy
+[2026-08-24T15:04:17.377Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get deployment cache -n kp-test -o json
+[2026-08-24T15:04:17.456Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -A --field-selector reason=Unhealthy,type=Warning
+[2026-08-24T15:04:20.089Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods -n kp-test -l app=api
+[2026-08-24T15:04:20.204Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -A --field-selector involvedObject.kind=Pod,reason=Unhealthy,type=Warning
+[2026-08-24T15:04:22.169Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods -n kp-test -l app=cache
+[2026-08-24T15:04:30.972Z] [INVESTIGATOR][kubepilot-test] The 'api' pod fails due to a non-existent container image 'nginx:doesnotexist' specified in its Deployment, while the 'cache' pod crashes because its memory limit (4Mi) is too low for Redis to initialize, causing the container runtime to OOM-kill the init process. (layer=image, conf=0.95, evidence=0.95, commands run=18, incidents=2)
+[2026-08-24T15:04:33.822Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get apiservices
+[2026-08-24T15:04:36.084Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get endpoints kube-apiserver -n kube-system
+[2026-08-24T15:04:40.662Z] [PLANNER][kubepilot-test] plan accepted — 2 step(s): rollback → increase_memory
+[2026-08-24T15:04:40.663Z] [kubepilot-test] [GRAPH] planner — 2 step(s): rollback → increase_memory
+[2026-08-24T15:04:40.789Z] [kubepilot-test] [GUARDIAN] Reviewing: action=rollback  issue=ImagePullBackOff  attempt=1
+[2026-08-24T15:04:40.790Z] [kubepilot-test] [GUARDIAN] Reviewing: action=increase_memory  issue=CrashLoopBackOff  attempt=1
+[2026-08-24T15:04:41.403Z] [kubepilot-test] [GUARDIAN] Response time: 614ms  tokens=1330
+[2026-08-24T15:04:41.405Z] [kubepilot-test] [GRAPH] guardian — kp-test/api-598c7d57dd-qm7mx (rollback) verdict=REJECT class=DANGEROUS
+[2026-08-24T15:04:41.476Z] [kubepilot-test] [GUARDIAN] Response time: 686ms  tokens=1644
+[2026-08-24T15:04:41.477Z] [kubepilot-test] [GRAPH] guardian — kp-test/cache-76c4dcc448-f2hpq (increase_memory) verdict=REJECT class=DANGEROUS [state drift detected]
+[2026-08-24T15:04:41.491Z] [AUDIT] Action logged: rollback
+[2026-08-24T15:04:41.511Z] [kubepilot-test] [GRAPH] investigator — kp-test/api-598c7d57dd-qm7mx, kp-test/cache-76c4dcc448-f2hpq (attempt 2/3) — re-diagnosing after: This is a bare pod, rollback is not possible. The correct action is to delete the pod.
+[2026-08-24T15:04:43.297Z] 
+----- TICK 3/6 -----
+[2026-08-24T15:04:45.168Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods api-598c7d57dd-qm7mx cache-76c4dcc448-f2hpq -n kp-test -o wide
+[2026-08-24T15:04:45.560Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test describe pod api-598c7d57dd-qm7mx -n kp-test
+[2026-08-24T15:04:46.079Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test describe pod cache-76c4dcc448-f2hpq -n kp-test
+[2026-08-24T15:04:47.968Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get replicaset -n kp-test
+[2026-08-24T15:04:48.282Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get deployment -n kp-test
+[2026-08-24T15:04:49.861Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test describe deployment api -n kp-test
+[2026-08-24T15:04:50.445Z] [warn] [ORCHESTRATOR] auto-correcting 2 incident(s) that used scope "cluster" as a shortcut: api-677fcc5689-v8d8t, cache-76c4dcc448-f2hpq
+[2026-08-24T15:04:50.446Z] [kubepilot-test] [ORCHESTRATOR] 5 incident(s) classified
+[2026-08-24T15:04:50.456Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test describe deployment cache -n kp-test
+[2026-08-24T15:04:50.481Z] [harness] sleeping 30000ms before next tick...
+[2026-08-24T15:04:53.345Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --sort-by=.metadata.creationTimestamp
+[2026-08-24T15:04:54.836Z] [warn] [INVESTIGATOR] [EXEC-LAYER] blocked by sanitizer: "get pod cache-76c4dcc448-f2hpq -n kp-test -o jsonpath='{.spec.containers[0].resources}'" — shell metacharacters detected — possible injection attempt: "kubectl --context=kind-kubepilot-test get pod cache-76c4dcc448-f2hpq -n kp-test "
+[2026-08-24T15:04:55.154Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get endpoints -n kube-system
+[2026-08-24T15:04:55.886Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pod cache-76c4dcc448-f2hpq -n kp-test -o json
+[2026-08-24T15:04:56.928Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get service kube-apiserver -n kube-system
+[2026-08-24T15:04:58.239Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get services -n kube-system
+[2026-08-24T15:05:16.848Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get endpoints -n default
+[2026-08-24T15:05:17.085Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pod api-677fcc5689-v8d8t -n kp-test -o json
+[2026-08-24T15:05:19.012Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get endpoints kubernetes -n default
+[2026-08-24T15:05:19.202Z] [warn] [INVESTIGATOR] [EXEC-LAYER] blocked by sanitizer: "get deployment api -n kp-test -o jsonpath='{.spec.template.spec.containers[0].image}'" — shell metacharacters detected — possible injection attempt: "kubectl --context=kind-kubepilot-test get deployment api -n kp-test -o jsonpath="
+[2026-08-24T15:05:20.482Z] 
+----- TICK 4/6 -----
+[2026-08-24T15:05:21.093Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get deployment api -n kp-test -o yaml
+[2026-08-24T15:05:21.300Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -A --field-selector involvedObject.name=kube-apiserver-kubepilot-test-control-plane,type=Warning,reason=Unhealthy
+[2026-08-24T15:05:23.295Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get deployment cache -n kp-test -o yaml
+[2026-08-24T15:05:23.460Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test logs kube-apiserver-kubepilot-test-control-plane -n kube-system --since=53m
+[2026-08-24T15:05:24.777Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test describe pod cache-76c4dcc448-f2hpq -n kp-test
+[2026-08-24T15:05:25.950Z] [warn] [INVESTIGATOR] [EXEC-LAYER] blocked by sanitizer: "get events -A --sort-by=.metadata.creationTimestamp | grep -i error" — shell metacharacters detected — possible injection attempt: "kubectl --context=kind-kubepilot-test get events -A --sort-by=.metadata.creation"
+[2026-08-24T15:05:26.869Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get nodes -o wide
+[2026-08-24T15:05:27.187Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -A --field-selector type=Warning
+[2026-08-24T15:05:28.882Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -A --field-selector type=Warning,reason=Unhealthy
+[2026-08-24T15:05:29.053Z] [warn] [INVESTIGATOR] [EXEC-LAYER] blocked: "node kubepilot-test-control-plane" — verb "node" is not on the read-only allowlist (get, describe, logs, top, explain, api-resources, api-versions, version, cluster-info)
+[2026-08-24T15:05:30.267Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test describe node kubepilot-test-control-plane
+[2026-08-24T15:05:31.592Z] [warn] [ORCHESTRATOR] auto-correcting 2 incident(s) that used scope "cluster" as a shortcut: api-677fcc5689-v8d8t, cache-76c4dcc448-f2hpq
+[2026-08-24T15:05:31.592Z] [kubepilot-test] [ORCHESTRATOR] 5 incident(s) classified
+[2026-08-24T15:05:31.599Z] [harness] sleeping 30000ms before next tick...
+[2026-08-24T15:05:32.032Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -A --field-selector involvedObject.kind=Pod,involvedObject.name=kube-apiserver-kubepilot-test-control-plane,type=Warning,reason=Unhealthy
+[2026-08-24T15:05:32.273Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=Failed,involvedObject.name=cache-76c4dcc448-f2hpq
+[2026-08-24T15:05:33.878Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -A --field-selector involvedObject.kind=Pod,involvedObject.name=kube-apiserver-kubepilot-test-control-plane
+[2026-08-24T15:05:35.256Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=Failed
+[2026-08-24T15:05:38.235Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -A --field-selector involvedObject.kind=Pod,involvedObject.name=kube-apiserver-kubepilot-test-control-plane --field-selector type=Warning
+[2026-08-24T15:05:38.601Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=OOMKilled
+[2026-08-24T15:05:40.152Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kube-system --field-selector involvedObject.kind=Pod,involvedObject.name=kube-apiserver-kubepilot-test-control-plane,type=Warning,reason=Unhealthy
+[2026-08-24T15:05:40.421Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=StartError
+[2026-08-24T15:05:43.204Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kube-system --field-selector involvedObject.kind=Pod,involvedObject.name=kube-apiserver-kubepilot-test-control-plane,type=Warning
+[2026-08-24T15:05:45.185Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kube-system --field-selector involvedObject.kind=Pod,involvedObject.name=kube-apiserver-kubepilot-test-control-plane
+[2026-08-24T15:05:48.371Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kube-system --field-selector involvedObject.kind=Pod,involvedObject.name=kube-apiserver-kubepilot-test-control-plane --field-selector type=Warning
+[2026-08-24T15:05:50.890Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kube-system --field-selector involvedObject.kind=Pod,involvedObject.name=kube-apiserver-kubepilot-test-control-plane --field-selector type=Warning,reason=Unhealthy
+[2026-08-24T15:05:53.545Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kube-system --field-selector involvedObject.kind=Pod,involvedObject.name=kube-apiserver-kubepilot-test-control-plane --field-selector type=Warning,reason=Unhealthy
+[2026-08-24T15:05:57.119Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kube-system --field-selector involvedObject.kind=Pod,involvedObject.name=kube-apiserver-kubepilot-test-control-plane,type=Warning,reason=Unhealthy
+[2026-08-24T15:05:58.378Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test
+[2026-08-24T15:06:00.124Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=FailedCreatePodSandBox
+[2026-08-24T15:06:00.345Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kube-system --field-selector involvedObject.kind=Pod,involvedObject.name=kube-apiserver-kubepilot-test-control-plane,type=Warning,reason=Unhealthy
+[2026-08-24T15:06:00.590Z] [warn] [INVESTIGATOR][kubepilot-test] hit the 40-iteration safety cap without reaching confidence/evidenceSufficiency >= 0.9
+[2026-08-24T15:06:00.590Z] [warn] [INVESTIGATOR][kubepilot-test] returning best-effort report — never reached the confidence/evidence target (confidence=0, evidenceSufficiency=0)
+[2026-08-24T15:06:00.591Z] [INVESTIGATOR][kubepilot-test] ControlPlaneUnhealthy — investigation unavailable, unable to determine specific root cause (layer=pod, conf=0.00, evidence=0.00, commands run=44, incidents=1)
+[2026-08-24T15:06:01.599Z] 
+----- TICK 5/6 -----
+[2026-08-24T15:06:02.258Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=FailedScheduling
+[2026-08-24T15:06:04.707Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=Failed,involvedObject.name=cache-76c4dcc448-f2hpq
+[2026-08-24T15:06:05.024Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pods -n kube-system -l component=kube-apiserver -o wide
+[2026-08-24T15:06:05.284Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test logs kube-apiserver-kubepilot-test-control-plane -n kube-system --since=10m
+[2026-08-24T15:06:05.893Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test describe pod etcd-kubepilot-test-control-plane -n kube-system
+[2026-08-24T15:06:07.845Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=StartError,involvedObject.name=cache-76c4dcc448-f2hpq
+[2026-08-24T15:06:07.853Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kube-system --field-selector involvedObject.name=etcd-kubepilot-test-control-plane,involvedObject.kind=Pod
+[2026-08-24T15:06:09.938Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=OOMKilled,involvedObject.name=cache-76c4dcc448-f2hpq
+[2026-08-24T15:06:12.036Z] [warn] [ORCHESTRATOR] auto-correcting 2 incident(s) that used scope "cluster" as a shortcut: api-677fcc5689-v8d8t, cache-76c4dcc448-f2hpq
+[2026-08-24T15:06:12.037Z] [kubepilot-test] [ORCHESTRATOR] 5 incident(s) classified
+[2026-08-24T15:06:12.045Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=Created
+[2026-08-24T15:06:12.083Z] [harness] sleeping 30000ms before next tick...
+[2026-08-24T15:06:12.790Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pod kube-apiserver-kubepilot-test-control-plane -n kube-system -o yaml
+[2026-08-24T15:06:13.845Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=Started
+[2026-08-24T15:06:13.976Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get nodes -o wide
+[2026-08-24T15:06:15.194Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test top node
+[2026-08-24T15:06:17.029Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get apiservices v1. -o yaml
+[2026-08-24T15:06:18.130Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=BackOff,involvedObject.name=cache-76c4dcc448-f2hpq
+[2026-08-24T15:06:18.361Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get componentstatuses
+[2026-08-24T15:06:19.970Z] [warn] [INVESTIGATOR] [EXEC-LAYER] blocked: "exec -n kube-system kube-apiserver-kubepilot-test-control-plane -- kube-apiserver --version" — verb "exec" is not on the read-only allowlist (get, describe, logs, top, explain, api-resources, api-versions, version, cluster-info)
+[2026-08-24T15:06:20.450Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=BackOff,involvedObject.name=api-598c7d57dd-qm7mx
+[2026-08-24T15:06:22.028Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test version
+[2026-08-24T15:06:22.580Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=Failed,involvedObject.name=api-598c7d57dd-qm7mx
+[2026-08-24T15:06:23.160Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get configmaps -n kube-system
+[2026-08-24T15:06:24.432Z] [warn] [INVESTIGATOR] [EXEC-LAYER] blocked: "get secrets -n kube-system | grep -i tls" — reading Secret values is blocked — use the Config-layer summary (key names only) instead
+[2026-08-24T15:06:25.382Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=Failed,involvedObject.name=api-677fcc5689-v8d8t
+[2026-08-24T15:06:25.502Z] [warn] [INVESTIGATOR] [EXEC-LAYER] blocked: "get secrets -n kube-system" — reading Secret values is blocked — use the Config-layer summary (key names only) instead
+[2026-08-24T15:06:26.963Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get configmaps -n kube-system -o yaml
+[2026-08-24T15:06:27.551Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=Failed,involvedObject.name=cache-76c4dcc448-f2hpq
+[2026-08-24T15:06:28.739Z] [warn] [INVESTIGATOR] [EXEC-LAYER] blocked by sanitizer: "get configmaps -n kube-system -o jsonpath='{.items[*].metadata.name}'" — shell metacharacters detected — possible injection attempt: "kubectl --context=kind-kubepilot-test get configmaps -n kube-system -o jsonpath="
+[2026-08-24T15:06:28.739Z] [warn] [PLANNER][kubepilot-test] hit the 15-iteration safety cap without a valid submission
+[2026-08-24T15:06:28.758Z] [stderr] [kubepilot-test] [ORCHESTRATOR] workflow bf15c195-d66a-4a16-baad-a9c504b4e4a7 failed: [
+  {
+    "expected": "string",
+    "code": "invalid_type",
+    "path": [
+      "steps",
+      0,
+      "target",
+      "name"
+    ],
+    "message": "Invalid input: expected string, received null"
+  }
+]
+[2026-08-24T15:06:29.468Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=StartError,involvedObject.name=cache-76c4dcc448-f2hpq
+[2026-08-24T15:06:31.362Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=OOMKilled,involvedObject.name=cache-76c4dcc448-f2hpq
+[2026-08-24T15:06:33.194Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=Failed,involvedObject.kind=Pod
+[2026-08-24T15:06:35.631Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=StartError,involvedObject.kind=Pod
+[2026-08-24T15:06:38.906Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=OOMKilled,involvedObject.kind=Pod
+[2026-08-24T15:06:41.908Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=Failed,involvedObject.namespace=kp-test
+[2026-08-24T15:06:42.083Z] 
+----- TICK 6/6 -----
+[2026-08-24T15:06:44.359Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=Failed,involvedObject.kind=Pod,involvedObject.namespace=kp-test
+[2026-08-24T15:06:46.924Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=Failed,involvedObject.kind=Pod,involvedObject.namespace=kp-test,involvedObject.name=cache-76c4dcc448-f2hpq
+[2026-08-24T15:06:56.759Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get events -n kp-test --field-selector=reason=StartError,involvedObject.kind=Pod,involvedObject.namespace=kp-test,involvedObject.name=cache-76c4dcc448-f2hpq
+[2026-08-24T15:06:56.970Z] [warn] [INVESTIGATOR][kubepilot-test] hit the 40-iteration safety cap without reaching confidence/evidenceSufficiency >= 0.9
+[2026-08-24T15:06:56.970Z] [warn] [INVESTIGATOR][kubepilot-test] returning best-effort report — never reached the confidence/evidence target (confidence=0, evidenceSufficiency=0)
+[2026-08-24T15:06:56.970Z] [INVESTIGATOR][kubepilot-test] ImagePullBackOff — investigation unavailable, unable to determine specific root cause (layer=pod, conf=0.00, evidence=0.00, commands run=44, incidents=2)
+[2026-08-24T15:06:58.788Z] [warn] [ORCHESTRATOR] auto-correcting 2 incident(s) that used scope "cluster" as a shortcut: api-677fcc5689-v8d8t, cache-76c4dcc448-f2hpq
+[2026-08-24T15:06:58.788Z] [kubepilot-test] [ORCHESTRATOR] 5 incident(s) classified
+[2026-08-24T15:06:58.818Z] 
+[harness] all 6 ticks issued — waiting 20s for in-flight workflows to progress before final snapshot...
+[2026-08-24T15:07:01.147Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pod api-598c7d57dd-qm7mx -n kp-test
+[2026-08-24T15:07:01.317Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get pod cache-76c4dcc448-f2hpq -n kp-test
+[2026-08-24T15:07:01.476Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get deployment api -n kp-test -o yaml
+[2026-08-24T15:07:01.709Z] [INVESTIGATOR] [EXEC-LAYER] running: kubectl --context=kind-kubepilot-test get deployment cache -n kp-test -o yaml
+[2026-08-24T15:07:18.884Z] 
+[harness] wrote report to C:\Users\temp\Desktop\BigApps_PFE\k8s_ai_agent\test-output\orchestrator\conflict-live-2026-08-24T15-03-25-318Z.json
+[2026-08-24T15:07:18.884Z] [harness] wrote raw stdout/stderr to C:\Users\temp\Desktop\BigApps_PFE\k8s_ai_agent\test-output\orchestrator\raw-stdout-2026-08-24T15-03-25-318Z.log
+[2026-08-24T15:07:18.884Z] 
+=== SUMMARY ===
+[2026-08-24T15:07:18.884Z] tool calls: 146
+[2026-08-24T15:07:18.885Z] lock decisions: 3 (2 acquired, 1 denied)
+[2026-08-24T15:07:18.885Z]   [1] dispatchKey=ns:kubepilot-test:kp-test acquired=true -> lock acquired — new workflow launched for this dispatch key
+[2026-08-24T15:07:18.885Z]   [2] dispatchKey=ns:kubepilot-test:default acquired=true -> lock acquired — new workflow launched for this dispatch key
+[2026-08-24T15:07:18.885Z]   [3] dispatchKey=ns:kubepilot-test:kp-test acquired=false -> lock DENIED — another workflow already owns this dispatch key; conflict detector blocked a duplicate workflow

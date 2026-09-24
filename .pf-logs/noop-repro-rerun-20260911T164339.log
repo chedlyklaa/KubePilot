@@ -1,0 +1,67 @@
+
+[1m[34m━━━ noop-repro: focused Planner-noop investigation ━━━[0m
+[2mcluster=minikube (issueKey cluster: minikube)  ns=noop-repro-mtx2gp1n  caseTimeout=900s  cases=14[0m
+[2mVerdict is issue-scoped (GET /api/issues) — settles on status fixed/escalated, not the first workflow to finish.[0m
+
+[32m  OK[0m Logged in
+
+[34m[create][0m Deploying 14 fixtures...
+  [34m*[0m CrashLoop deployment (crashloop-dep)... [32mcreated[0m
+  [34m*[0m Bad config rollback (bad-config)... [32mcreated[0m
+  [34m*[0m Cascade: broken database (cascade-db)... [32mcreated[0m
+  [34m*[0m Cascade: app depends on broken db (cascade-app)... [32mcreated[0m
+  [34m*[0m Rollback chain: v3 broken (should rollback) (rollchain)... [32mcreated[0m
+  [34m*[0m Behavior: flapping pod (alternate crash/run) (flapper)... [32mcreated[0m
+  [34m*[0m Init: init container crash (init-crash)... [32mcreated[0m
+  [34m*[0m Multi: 3-replica crash deployment (multi-crash)... [32mcreated[0m
+  [34m*[0m Multi: mixed healthy + crashing replicas (partial-fail)... [32mcreated[0m
+  [34m*[0m Exit: code 137 OOM (deployment) (exit137)... [32mcreated[0m
+  [34m*[0m Exit: code 127 binary not found (deployment) (exit127-dep)... [32mcreated[0m
+  [34m*[0m Exit: code 126 permission denied (deployment) (exit126-dep)... [32mcreated[0m
+  [34m*[0m Isolation: crash in ns-alpha (iso-crash/bench-ns-alpha-mtx2gp1n)... [32mcreated[0m
+  [34m*[0m Isolation: crash in ns-beta (iso-crash/bench-ns-beta-mtx2gp1n)... [32mcreated[0m
+
+[34m[poll][0m Watching all 14 cases in parallel (max 900s each)...
+
+  [rollchain] attempt 1 (ff85f1bc): [31munknown[0m
+  [rollchain] [33mescalated[0m [2m(status=escalated, 1 attempt(s), 312.2s)[0m
+  [multi-crash] attempt 1 (f5eb8865): [31munknown[0m
+  [partial-fail] attempt 1 (0aca9c23): [31munknown[0m
+  [partial-fail] [32mresolved[0m [2m(status=fixed, 1 attempt(s), 595.4s)[0m
+  [init-crash] attempt 1 (f14b410f): [31munknown[0m
+  [crashloop-dep] [31munsettled:timeout[0m [2m(status=failed, 0 attempt(s), 1540.5s)[0m
+  [cascade-db] [31munsettled:timeout[0m [2m(status=failed, 0 attempt(s), 1551.5s)[0m
+  [multi-crash] [31munsettled:timeout[0m [2m(status=failed, 1 attempt(s), 1809.2s)[0m
+  [init-crash] [31munsettled:timeout[0m [2m(status=blocked, 1 attempt(s), 1896.7s)[0m
+  [bad-config] [31munsettled:timeout[0m [2m(status=unknown, 0 attempt(s), 2781.3s)[0m
+  [cascade-app] [31munsettled:timeout[0m [2m(status=unknown, 0 attempt(s), 2784.9s)[0m
+  [flapper] [31munsettled:timeout[0m [2m(status=unknown, 0 attempt(s), 2784.9s)[0m
+  [iso-crash/bench-ns-alpha-mtx2gp1n] [31munsettled:timeout[0m [2m(status=unknown, 0 attempt(s), 2784.1s)[0m
+  [exit126-dep] [31munsettled:timeout[0m [2m(status=unknown, 0 attempt(s), 2784.4s)[0m
+  [exit137] [31munsettled:timeout[0m [2m(status=unknown, 0 attempt(s), 2785.1s)[0m
+  [exit127-dep] [31munsettled:timeout[0m [2m(status=unknown, 0 attempt(s), 2788.2s)[0m
+  [iso-crash/bench-ns-beta-mtx2gp1n] [31munsettled:timeout[0m [2m(status=unknown, 0 attempt(s), 2790.9s)[0m
+
+[1m[34m━━━ Summary (issue-scoped) ━━━[0m
+
+  crashloop-dep/noop-repro-mtx2gp1n [31munsettled:timeout   [0m status=failed      attempts=0 pod=Running(not ready) restarts=9 1540.5s
+  bad-config/noop-repro-mtx2gp1n [31munsettled:timeout   [0m status=unknown     attempts=0 pod=Running(not ready) restarts=13 2781.3s
+  cascade-db/noop-repro-mtx2gp1n [31munsettled:timeout   [0m status=failed      attempts=0 pod=Running(not ready) restarts=9 1551.5s
+  cascade-app/noop-repro-mtx2gp1n [31munsettled:timeout   [0m status=unknown     attempts=0 pod=Running(not ready) restarts=13 2784.9s
+  rollchain/noop-repro-mtx2gp1n [33mescalated           [0m status=escalated   attempts=1 pod=Running(not ready) restarts=4 312.2s
+  flapper/noop-repro-mtx2gp1n  [31munsettled:timeout   [0m status=unknown     attempts=0 pod=Running(not ready) restarts=13 2784.9s
+  init-crash/noop-repro-mtx2gp1n [31munsettled:timeout   [0m status=blocked     attempts=1 pod=Pending(not ready) restarts=0 1896.7s
+  multi-crash/noop-repro-mtx2gp1n [31munsettled:timeout   [0m status=failed      attempts=1 pod=Running(not ready) restarts=10 1809.2s
+  partial-fail/noop-repro-mtx2gp1n [32mresolved            [0m status=fixed       attempts=1 pod=Running restarts=0 595.4s
+  exit137/noop-repro-mtx2gp1n  [31munsettled:timeout   [0m status=unknown     attempts=0 pod=Pending(not ready) restarts=0 2785.1s
+  exit127-dep/noop-repro-mtx2gp1n [31munsettled:timeout   [0m status=unknown     attempts=0 pod=Running(not ready) restarts=13 2788.2s
+  exit126-dep/noop-repro-mtx2gp1n [31munsettled:timeout   [0m status=unknown     attempts=0 pod=Running(not ready) restarts=13 2784.4s
+  iso-crash/bench-ns-alpha-mtx2gp1n [31munsettled:timeout   [0m status=unknown     attempts=0 pod=Running(not ready) restarts=13 2784.1s
+  iso-crash/bench-ns-beta-mtx2gp1n [31munsettled:timeout   [0m status=unknown     attempts=0 pod=Running(not ready) restarts=13 2790.9s
+
+[2mPer-case files + summary: noop-repro-results/[0m
+
+[34m[cleanup][0m Removing test namespaces...
+
+[2mDone.[0m
+
