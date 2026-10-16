@@ -4,6 +4,7 @@ const yaml    = require('js-yaml');
 const kubectl = require('../tools/kubectl');
 const metricsCollector = require('../monitoring/metricsCollector');
 const { ClusterCredential } = require('../db/models');
+const { isAllowed, filterAllowed } = require('../config/clusterConfig');
 
 const GPU_RESOURCES = ['nvidia.com/gpu', 'amd.com/gpu', 'intel.com/gpu', 'gpu.intel.com/i915'];
 const VALID_TIERS   = new Set(['dev', 'staging', 'production']);
@@ -64,7 +65,7 @@ class ClusterService {
   // ── Config ─────────────────────────────────────────────────────────────────
   readConfig(configPath) {
     try {
-      return yaml.load(fs.readFileSync(configPath, 'utf8')).clusters ?? [];
+      return filterAllowed(yaml.load(fs.readFileSync(configPath, 'utf8')).clusters ?? []);
     } catch {
       return [];
     }
@@ -120,7 +121,7 @@ class ClusterService {
     try {
       const creds = await ClusterCredential.find().select('context').lean();
       uploaded = creds
-        .filter(c => !detectedNames.has(c.context))
+        .filter(c => !detectedNames.has(c.context) && isAllowed(c.context))
         .map(c => ({
           name:             c.context,
           isCurrent:        false,

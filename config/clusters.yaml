@@ -1,9 +1,4 @@
 clusters:
-  - name: cluster3
-    context: cluster3
-    tier: dev
-    namespaces:
-      - '*'
   - name: minikube
     context: minikube
     tier: dev

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
-# start.sh — Start all KubePilot clusters and monitoring stack
+# start.sh — Start the KubePilot minikube cluster and monitoring stack
 #
-# Starts three minikube profiles (minikube, cluster2, staging-cluster),
-# installs Prometheus + Grafana on the main minikube cluster, and opens
+# Starts the main minikube profile only (the extra profiles — cluster2,
+# staging-cluster, cluster3 — are left untouched), installs Prometheus + Grafana on the main minikube cluster, and opens
 # port-forwards for the dashboard .env to consume.
 #
 # Usage:
@@ -146,11 +146,10 @@ fi
 
 # ── Cluster definitions ───────────────────────────────────────────────────────
 # Each entry: "profile|cpus|memory|disk"
+# Only the main minikube cluster is started. To bring the others back, re-add e.g.
+#   "cluster2|2|2048|10g"  "staging-cluster|2|2048|10g"  "cluster3|2|2048|10g"
 CLUSTERS=(
   "minikube|4|4096|20g"
-  "cluster2|2|2048|10g"
-  "staging-cluster|2|2048|10g"
-  "cluster3|2|2048|10g"
 )
 
 # ── Helper: start one minikube profile ────────────────────────────────────────
@@ -193,7 +192,7 @@ start_cluster() {
   ok "${profile} started"
 }
 
-# ── Start all clusters ────────────────────────────────────────────────────────
+# ── Start clusters ────────────────────────────────────────────────────────
 section "Starting Clusters"
 
 for entry in "${CLUSTERS[@]}"; do

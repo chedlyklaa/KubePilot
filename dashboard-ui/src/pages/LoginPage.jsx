@@ -9,33 +9,43 @@ const SCHEMAS = [
     id: 'monitoring',
     title: 'Autonomous Monitoring & Self-Healing',
     color: '#3b82f6',
-    description: 'The core loop that watches every cluster continuously and fixes issues without human intervention when safe.',
+    description: 'A LangGraph multi-agent pipeline that watches every cluster, diagnoses root causes with evidence, and applies safety-reviewed fixes — escalating to humans when it cannot.',
     steps: [
-      { icon: '☸', label: 'Kubernetes Clusters', sub: 'minikube / cluster2 / staging', color: '#64748b' },
-      { icon: '⬇', type: 'arrow', text: 'kubectl get pods + top nodes (every 30s)' },
-      { icon: '🛡', label: 'Guardian Agent', sub: 'Polls all clusters, detects CrashLoop, OOMKill, Pending, high restarts', color: '#3b82f6' },
-      { icon: '⬇', type: 'arrow', text: 'anomaly detected' },
-      { icon: '🔍', label: 'Pod Analyzer + Investigator', sub: 'Reads logs, events, describe — LLM root-cause analysis', color: '#8b5cf6' },
-      { icon: '⬇', type: 'arrow', text: 'diagnosis + RCA' },
-      { icon: '🧠', label: 'Planner Agent', sub: 'LLM generates step-by-step remediation (restart, scale, rollback)', color: '#6366f1' },
-      { icon: '⬇', type: 'arrow', text: 'risk score evaluation' },
+      { icon: '☸', label: 'Kubernetes Clusters', sub: 'Pods, nodes and events from every connected cluster', color: '#64748b' },
+      { icon: '⬇', type: 'arrow', text: 'deterministic analyzers each cycle' },
+      { icon: '🎯', label: 'Orchestrator Agent', sub: 'Classifies incidents SIMPLE / COMPLEX, de-duplicates, groups them per namespace', color: '#3b82f6' },
       { icon: '⬇', type: 'branch', branches: [
-        { label: 'LOW risk', path: [
-          { icon: '⚡', label: 'Auto-Execute', sub: 'Cluster Agent runs kubectl immediately', color: '#22c55e' },
+        { label: 'SIMPLE', path: [
+          { icon: '⚡', label: 'Fast Path', sub: 'Bounded read-only evidence + one diagnosis call', color: '#0ea5e9' },
+          { icon: '⬇', type: 'arrow', text: 'insufficient → full investigation' },
         ]},
-        { label: 'MED / HIGH risk', path: [
-          { icon: '✅', label: 'Approval Gate', sub: 'Blocked until operator approves in dashboard', color: '#f59e0b' },
-          { icon: '⬇', type: 'arrow', text: 'approved' },
-          { icon: '⚡', label: 'Execute', sub: 'Cluster Agent runs approved kubectl', color: '#22c55e' },
+        { label: 'COMPLEX', path: [
+          { icon: '🔍', label: 'Investigator', sub: 'Agentic read-only kubectl loop until confidence & evidence ≥ 0.9', color: '#8b5cf6' },
         ]},
       ]},
-      { icon: '⬇', type: 'arrow', text: 'kubectl applied' },
-      { icon: '🔄', label: 'Reflection Agent', sub: 'Re-reads pod state, LLM validates if fix worked', color: '#06b6d4' },
+      { icon: '⬇', type: 'arrow', text: 'root cause + evidence' },
+      { icon: '🧠', label: 'Planner', sub: 'Multi-step remediation, each step validated with kubectl --dry-run=server', color: '#6366f1' },
+      { icon: '⬇', type: 'arrow', text: 'proposed plan' },
+      { icon: '🛡', label: 'Guardian Agent', sub: 'Second-opinion LLM review — APPROVE / MODIFY / REJECT', color: '#f97316' },
+      { icon: '⬇', type: 'arrow', text: 'REJECT → back to Investigator' },
+      { icon: '📜', label: 'Policy Engine', sub: 'Deterministic whitelist, sanitization and risk floors', color: '#eab308' },
+      { icon: '⬇', type: 'branch', branches: [
+        { label: 'Low risk & reversible', path: [
+          { icon: '⚡', label: 'Executor', sub: 'Applies the plan and verifies resource health', color: '#22c55e' },
+        ]},
+        { label: 'High risk / non-reversible', path: [
+          { icon: '✅', label: 'Approval Gate', sub: 'Waits for an operator decision in the dashboard', color: '#f59e0b' },
+          { icon: '⬇', type: 'arrow', text: 'approved' },
+          { icon: '⚡', label: 'Executor', sub: 'Applies the approved plan and verifies health', color: '#22c55e' },
+        ]},
+      ]},
+      { icon: '⬇', type: 'arrow', text: 'still unhealthy → retry (max 3 attempts)' },
+      { icon: '🔄', label: 'Reflexion', sub: 'Post-mortem, learned rules and episodic memory for future incidents', color: '#06b6d4' },
       { icon: '⬇', type: 'branch', branches: [
         { label: 'Fixed', path: [
-          { icon: '✓', label: 'Resolved', sub: 'Logged to audit trail, incident closed', color: '#22c55e' },
+          { icon: '✓', label: 'Resolved', sub: 'Logged to audit trail and Issue Tracking timeline', color: '#22c55e' },
         ]},
-        { label: 'Still failing (max retries)', path: [
+        { label: 'Exhausted / rejected', path: [
           { icon: '🚨', label: 'Escalation Created', sub: 'Human intervention required — appears in Escalations page', color: '#ef4444' },
         ]},
       ]},
@@ -132,6 +142,29 @@ const SCHEMAS = [
     ],
   },
   {
+    id: 'security',
+    title: 'Security Posture Monitoring',
+    color: '#a855f7',
+    description: 'Read-only scanners that audit cluster configuration and raise findings — they never touch the remediation pipeline.',
+    steps: [
+      { icon: '☸', label: 'Cluster Configuration', sub: 'Roles, bindings, workloads, services, network policies, secrets', color: '#64748b' },
+      { icon: '⬇', type: 'arrow', text: 'periodic read-only scans' },
+      { icon: '⬇', type: 'branch', branches: [
+        { label: 'Access', path: [
+          { icon: '🔑', label: 'RBAC Posture & Drift', sub: 'Over-privileged roles, drift from app permissions', color: '#a855f7' },
+        ]},
+        { label: 'Workloads', path: [
+          { icon: '🧱', label: 'Workload Hardening', sub: 'Privileged pods, root users, missing limits', color: '#8b5cf6' },
+        ]},
+        { label: 'Network & Secrets', path: [
+          { icon: '🌐', label: 'Exposure & Secrets Hygiene', sub: 'Public services, missing policies, stale secrets', color: '#6366f1' },
+        ]},
+      ]},
+      { icon: '⬇', type: 'arrow', text: 'severity-ranked findings' },
+      { icon: '🛡', label: 'Security Findings', sub: 'Shown on the Security page and routed to notifications', color: '#ef4444' },
+    ],
+  },
+  {
     id: 'notifications',
     title: 'Notification Engine',
     color: '#f87171',
@@ -146,7 +179,7 @@ const SCHEMAS = [
         { label: 'Email', path: [
           { icon: '✉', label: 'SMTP Mailer', sub: 'Assignment, escalation, resolved emails', color: '#f59e0b' },
         ]},
-        { label: 'Slack / Webhook', path: [
+        { label: 'Slack / Teams', path: [
           { icon: '💬', label: 'Webhook Delivery', sub: 'Channel-based alerts with retry', color: '#22c55e' },
         ]},
       ]},
@@ -156,19 +189,20 @@ const SCHEMAS = [
 
 // ── How everything connects to minikube ───────────────────────────────────
 const MINIKUBE_CONNECTIONS = [
-  { from: 'Guardian Agent',       arrow: 'kubectl get pods / nodes / events', color: '#3b82f6' },
-  { from: 'Cluster Agent',        arrow: 'kubectl scale / restart / delete / apply', color: '#22c55e' },
-  { from: 'Reflection Agent',     arrow: 'kubectl get pod (verify fix)', color: '#06b6d4' },
-  { from: 'Chat Agent',           arrow: 'kubectl (user orders)', color: '#6366f1' },
+  { from: 'Orchestrator Agent',   arrow: 'kubectl get pods / nodes / events', color: '#3b82f6' },
+  { from: 'Investigator',         arrow: 'kubectl describe / logs / get (read-only)', color: '#8b5cf6' },
+  { from: 'Planner',              arrow: 'kubectl --dry-run=server (validate steps)', color: '#6366f1' },
+  { from: 'Executor',             arrow: 'kubectl rollout / scale / patch / apply', color: '#22c55e' },
+  { from: 'Chat Agent',           arrow: 'kubectl (user orders)', color: '#a855f7' },
   { from: 'Capacity Engine',      arrow: 'kubectl top + Prometheus scrape', color: '#f59e0b' },
   { from: 'RBAC Sync',            arrow: 'kubectl apply RoleBinding', color: '#f87171' },
 ]
 
 const FEATURES = [
-  { icon: '🔍', title: 'Continuous Detection',    body: 'Monitors all pods 24/7 — CrashLoopBackOff, OOMKill, pending, high restarts — across every cluster and namespace.' },
-  { icon: '🧠', title: 'AI-Driven Remediation',   body: 'Multi-agent pipeline analyses root cause, plans fixes, and generates safe kubectl commands with full reasoning.' },
-  { icon: '✅', title: 'Human-in-the-Loop',       body: 'Every HIGH and MEDIUM risk action requires operator approval. No command runs on a live cluster without consent.' },
-  { icon: '💬', title: 'Natural Language Orders', body: 'Type commands in plain English. A two-LLM clarification chain collects every missing parameter before generating kubectl.' },
+  { icon: '🔍', title: 'Evidence-Based Diagnosis', body: 'An agentic investigator gathers read-only evidence until it is confident in the root cause — no guessing from a single log line.' },
+  { icon: '🧠', title: 'Multi-Agent Remediation', body: 'Planner, Guardian and Policy Engine each check the fix: dry-run validated, second-opinion reviewed, deterministically sanitized.' },
+  { icon: '✅', title: 'Human-in-the-Loop',        body: 'High-risk and non-reversible actions wait for operator approval. Failed fixes escalate to your team instead of looping forever.' },
+  { icon: '💬', title: 'Natural Language Orders',  body: 'Type commands in plain English. A two-LLM clarification chain collects every missing parameter before generating kubectl.' },
 ]
 
 // ── Component ──────────────────────────────────────────────────────────────

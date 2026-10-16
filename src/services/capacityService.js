@@ -3,6 +3,7 @@
 const yaml = require('js-yaml');
 const fs   = require('fs');
 const path = require('path');
+const { filterAllowed } = require('../config/clusterConfig');
 
 const CONFIG_PATH = path.join(__dirname, '../../config/clusters.yaml');
 
@@ -67,7 +68,7 @@ function parseStorageSize(str) {
 
 async function getCapacityOverview(clusterName, { clusterService, kubectl, capacityForecastEngine, promClientGetter }) {
   let allClusters = [];
-  try { allClusters = yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8')).clusters ?? []; } catch {}
+  try { allClusters = filterAllowed(yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8')).clusters ?? []); } catch {}
   const cluster = allClusters.find(c => c.name === clusterName);
   if (!cluster) return null;
   const ctx = cluster.context;
