@@ -1,0 +1,10 @@
+# Redis ACL users for the Agent Mesh (mounted from the kubepilot-redis-acl Secret).
+# Replace the passwords, then: --from-file=users.acl=<this file>
+#
+#   orchestrator — full access: owns the app's Short Memory (sm:*) as well as the mesh.
+#   agent        — every agent service: ONLY mesh:* keys (tasks, replies, done/running
+#                  caches, effects, DLQ). Cannot read or write the orchestrator's sm:*
+#                  incident state, and no admin/dangerous commands (FLUSHALL, CONFIG, …).
+user default off
+user orchestrator on >CHANGE_ME_ORCH ~* &* +@all -@dangerous +info
+user agent on >CHANGE_ME_AGENT ~mesh:* resetchannels -@all +@stream +@string +@list +@hash +@connection +exists +del +pexpire +expire +type

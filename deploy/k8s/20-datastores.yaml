@@ -1,0 +1,90 @@
+# Minimal in-namespace data stores for a self-contained install. For anything beyond a
+# demo, point MONGODB_URI / REDIS_URL / QDRANT_URL at managed instances instead.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: redis } }
+  template:
+    metadata: { labels: { app: redis, app.kubernetes.io/part-of: kubepilot } }
+    spec:
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, runAsUser: 999, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: redis
+          image: redis:7.4-alpine
+          args: ["--aclfile", "/etc/redis/users.acl"]
+          ports: [{ containerPort: 6379 }]
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } }
+          volumeMounts: [{ name: acl, mountPath: /etc/redis, readOnly: true }]
+          readinessProbe: { tcpSocket: { port: 6379 }, periodSeconds: 5 }
+      volumes:
+        - name: acl
+          secret: { secretName: kubepilot-redis-acl, items: [{ key: users.acl, path: users.acl }] }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: redis }
+spec:
+  selector: { app: redis }
+  ports: [{ port: 6379 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: mongo }
+spec:
+  serviceName: mongo
+  replicas: 1
+  selector: { matchLabels: { app: mongo } }
+  template:
+    metadata: { labels: { app: mongo, app.kubernetes.io/part-of: kubepilot } }
+    spec:
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, runAsUser: 999, fsGroup: 999, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: mongo
+          image: mongo:7.0
+          ports: [{ containerPort: 27017 }]
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } }
+          volumeMounts: [{ name: data, mountPath: /data/db }]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec: { accessModes: ["ReadWriteOnce"], resources: { requests: { storage: 5Gi } } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: mongo }
+spec:
+  selector: { app: mongo }
+  ports: [{ port: 27017 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: qdrant }
+spec:
+  serviceName: qdrant
+  replicas: 1
+  selector: { matchLabels: { app: qdrant } }
+  template:
+    metadata: { labels: { app: qdrant, app.kubernetes.io/part-of: kubepilot } }
+    spec:
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, fsGroup: 1000, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: qdrant
+          image: qdrant/qdrant:v1.12.4
+          ports: [{ containerPort: 6333 }]
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } }
+          volumeMounts: [{ name: data, mountPath: /qdrant/storage }]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec: { accessModes: ["ReadWriteOnce"], resources: { requests: { storage: 2Gi } } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: qdrant }
+spec:
+  selector: { app: qdrant }
+  ports: [{ port: 6333 }]

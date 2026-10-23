@@ -42,16 +42,18 @@ class ReflectionAgent {
     return { rules, structuralMatches, semanticMatches };
   }
 
-  async reflect({ issue, planAction, rootCauseDiagnosis, timeline, resolved, podLogs, rca = null }) {
+  // `overrideData` — the admin's override feedback for this incident, if any. Passed in by
+  // the caller (graph.js takes it from overrideStore, which lives in the orchestrator
+  // process); only read from the store here when a caller doesn't supply it at all.
+  async reflect({ issue, planAction, rootCauseDiagnosis, timeline, resolved, podLogs, rca = null, overrideData: suppliedOverride }) {
     const timelineText = (timeline || [])
       .map((t, i) => `  ${i + 1}. action=${t.action}  outcome=${t.outcome}${t.note ? `  (${t.note})` : ''}`)
       .join('\n');
 
     // Look up any override feedback the admin provided when rejecting this incident
-    const overrideStore = require('../api/overrideStore');
-    const issueKey      = `${issue.type}:${issue.deployment ?? issue.podName}:${issue.namespace ?? 'default'}`;
-    const overrideData  = overrideStore.get(issueKey);
-    if (overrideData) overrideStore.clear(issueKey);
+    const overrideData = suppliedOverride !== undefined
+      ? suppliedOverride
+      : require('../api/overrideStore').takeFor(issue);
 
     const overrideContext = (overrideData?.overrideReasons?.length || overrideData?.preferredAction)
       ? `\nHUMAN OVERRIDE CONTEXT\nreasons:          ${(overrideData.overrideReasons ?? []).join(', ') || '—'}\npreferred action: ${overrideData.preferredAction || '—'}${overrideData.adminNote ? `\nadmin note:       ${overrideData.adminNote}` : ''}`

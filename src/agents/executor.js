@@ -1,6 +1,7 @@
 'use strict';
 const kubectl      = require('../tools/kubectl');
 const PolicyEngine  = require('../policy/policyEngine');
+const { findOverrideFlag } = require('../tools/kubectlArgGuard');
 
 const policyEngine = new PolicyEngine();
 
@@ -62,8 +63,25 @@ class Executor {
   }
 
   async _run(step, { context }, dryRun) {
-    const command = (step.command ?? '').trim();
+    let command = (step.command ?? '').trim();
     if (!command) return dryRun ? '(no command — nothing to validate)' : undefined;
+
+    // The command is model-written (Planner, or a Guardian MODIFY): it must not pick its
+    // own cluster or credentials — see kubectlArgGuard.js.
+    const override = findOverrideFlag(command);
+    if (override) throw new Error(`Command blocked: ${override} is not allowed in a plan step — the cluster and identity are set by the platform`);
+
+    if (dryRun) {
+      // A validation call must NEVER mutate. Any --dry-run the command already carries is
+      // removed and --dry-run=server is always appended — otherwise `--dry-run=none`
+      // (or `=client`, which skips server-side checks) would run for real, bypassing
+      // policyEngine.dryRunMode, since dry-run calls skip that simulate-gate. A `--`
+      // separator would turn the appended flag into a positional argument, so refuse it.
+      if (/(^|\s)--(\s|$)/.test(command)) {
+        return 'BLOCKED: commands with a "--" argument separator cannot be validated with --dry-run=server';
+      }
+      command = command.replace(/(^|\s)["']?--dry-run(=\S*)?["']?(?=\s|$)/g, '').trim();
+    }
 
     if (step.target?.kind === 'Node') {
       return this._executeNodeCommand(command, step.target.name, context, dryRun);
@@ -76,7 +94,7 @@ class Executor {
       console.log(`[EXECUTOR] [DRY-RUN] Simulating: ${command}`);
       return;
     }
-    const flag = dryRun && !/--dry-run\b/.test(command) ? ' --dry-run=server' : '';
+    const flag = dryRun ? ' --dry-run=server' : ''; // _run already stripped any caller-supplied --dry-run
     return this._runSafeCommand(`kubectl --context=${context} ${command}${flag}`, context, { dryRun });
   }
 
@@ -102,7 +120,7 @@ class Executor {
       }
     }
 
-    const flag = dryRun && !/--dry-run\b/.test(command) ? ' --dry-run=server' : '';
+    const flag = dryRun ? ' --dry-run=server' : ''; // _run already stripped any caller-supplied --dry-run
     return this._runSafeCommand(`kubectl --context=${context} ${command}${flag}`, context, { dryRun });
   }
 }

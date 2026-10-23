@@ -4,9 +4,10 @@ const { ChatOpenAI }  = require('@langchain/openai');
 const { tool }        = require('@langchain/core/tools');
 const { z }           = require('zod');
 const { SystemMessage, HumanMessage, ToolMessage } = require('@langchain/core/messages');
-const executor        = require('./executor');
 const investigator    = require('./investigator');
-const kubectl          = require('../tools/kubectl');
+// Cluster reads/writes go through the k8s gateways (src/tools/k8sGateway.js) so this
+// agent can run as its own service with no cluster credentials of its own.
+const { k8sRead, k8sWrite } = require('../tools/k8sGateway');
 const ChangeCorrelationEngine = require('./changeCorrelationEngine');
 const CapacityForecastEngine  = require('./capacityForecastEngine');
 const { loadConfig }  = require('../config');
@@ -180,8 +181,8 @@ async function _capacityAdvisoryForScale(step, cfg) {
   const targetReplicas = parseInt(replicasMatch[1], 10);
 
   const [nodesJson, deployments] = await Promise.all([
-    kubectl.getNodes(cfg.context),
-    kubectl.getDeploymentsFull(step.target.namespace ?? 'default', cfg.context),
+    k8sRead.getNodes({ context: cfg.context }),
+    k8sRead.getDeploymentsFull({ namespace: step.target.namespace ?? 'default', context: cfg.context }),
   ]);
   const deployment = deployments.find(d => d.metadata?.name === step.target.name);
   const containers = deployment?.spec?.template?.spec?.containers ?? [];
@@ -216,7 +217,7 @@ function _buildDryRunTool(clusterConfigs) {
       const cfg = clusterConfigs[args.clusterName];
       if (!cfg) return `ERROR: unknown clusterName "${args.clusterName}" — must be one of: ${clusterNames.join(', ')}`;
       try {
-        const result = await executor.dryRun(step, { context: cfg.context });
+        const result = await k8sWrite.dryRun({ step, context: cfg.context });
         const base = result == null ? '(dry-run passed — no objection from the API server)' : String(result);
         const advisory = await _capacityAdvisoryForScale(step, cfg).catch(() => null);
         return advisory
@@ -309,7 +310,7 @@ async function _gatherNodeCapacity(clusterConfigs, clusterNames) {
     const cfg = clusterConfigs[clusterName];
     if (!cfg?.context) return [clusterName, null];
     try {
-      const nodes = await kubectl.getNodes(cfg.context);
+      const nodes = await k8sRead.getNodes({ context: cfg.context });
       const schedulable = (nodes.items ?? []).filter(n => n.spec?.unschedulable !== true);
       return [clusterName, {
         schedulableNodeCount: schedulable.length,
@@ -608,6 +609,8 @@ module.exports = new Planner();
 // live LLM call — same pattern as investigator.js's _isReadOnlyCommand export.
 module.exports._lowConfidencePlan = _lowConfidencePlan;
 module.exports._isConfidenceTooLowToPlan = _isConfidenceTooLowToPlan;
+// graph.js substitutes this when the planner service itself is unreachable (remote mode).
+module.exports._fallbackPlan = _fallbackPlan;
 // Exported for unit testing §Fix-CapacityEvidence's resource-quantity parsing in
 // isolation — pure functions, no LLM/kubectl call needed to exercise them.
 module.exports._cpuToMillicores = _cpuToMillicores;

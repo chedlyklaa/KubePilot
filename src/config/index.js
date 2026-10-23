@@ -115,8 +115,31 @@ const EnvSchema = z.object({
   POLICY_AWARENESS_ENABLED:    boolFlag(false),
   FALLBACK_ENABLED:            boolFlag(true),
 
+  // Agent Mesh (src/mesh/) — per-agent switch between running in-process ("local", the
+  // default and today's behavior) and calling that agent's own service over the Redis
+  // Streams bus ("remote"). Validated here so a typo ("remot") fails loudly at boot
+  // instead of silently staying local; read via process.env in src/mesh/agentClient.js.
+  // Persist LangGraph workflow state to MongoDB and resume in-flight workflows after an
+  // orchestrator restart (src/orchestrator/checkpointing.js). "false" = old behavior.
+  WORKFLOW_RESUME_ENABLED:  boolFlag(true),
+  // Kubernetes identity for the read/write gateways and detection
+  // (src/services/clusterIdentity.js): "bootstrap" = today's shared credential;
+  // "serviceaccount" = per-role kubepilot-reader / kubepilot-executor tokens minted via
+  // TokenRequest (requires deploy/k8s/target-cluster-rbac.yaml on each cluster).
+  CLUSTER_IDENTITY_MODE:      z.enum(['bootstrap', 'serviceaccount']).default('bootstrap'),
+  CLUSTER_IDENTITY_NAMESPACE: z.string().min(1).default('kubepilot-system'),
+  MESH_REDIS_URL:           z.string().min(1).optional(), // defaults to REDIS_URL
+  MESH_LEASE_MS:            z.coerce.number().int().positive().default(30_000),
+  AGENT_FASTPATH_MODE:      z.enum(['local', 'remote']).default('local'),
+  AGENT_INVESTIGATOR_MODE:  z.enum(['local', 'remote']).default('local'),
+  AGENT_PLANNER_MODE:       z.enum(['local', 'remote']).default('local'),
+  AGENT_GUARDIAN_MODE:      z.enum(['local', 'remote']).default('local'),
+  AGENT_REFLECTION_MODE:    z.enum(['local', 'remote']).default('local'),
+  AGENT_K8S_READ_MODE:      z.enum(['local', 'remote']).default('local'),
+  AGENT_K8S_WRITE_MODE:     z.enum(['local', 'remote']).default('local'),
+
   // Optional integrations — no default, feature is just unavailable if unset
-  QDRANT_URL:         z.string().url().optional(),
+  QDRANT_URL:        z.string().url().optional(),
   QDRANT_API_KEY:     z.string().optional(),
   EMBEDDING_API_KEY:  z.string().optional(),
   EMBEDDING_BASE_URL: z.string().url().optional(),

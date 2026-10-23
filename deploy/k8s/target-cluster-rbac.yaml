@@ -1,0 +1,168 @@
+# Apply on EACH cluster KubePilot manages (not part of the kustomization):
+#
+#   kubectl --context=<managed> apply -f deploy/k8s/target-cluster-rbac.yaml
+#
+# Two identities, matching the two gateways:
+#   kubepilot-reader   → k8s-read gateway and orchestrator detection: read-only, NO secrets
+#   kubepilot-executor → k8s-write gateway: reader + the narrow write verbs v5 fixes use
+#                        (it also needs these for --dry-run=server, which checks real authz)
+#
+# Today's minikube/cluster3 credentials are client certs in O=system:masters, which bypass
+# RBAC entirely. With CLUSTER_IDENTITY_MODE=serviceaccount, KubePilot mints short-lived
+# (1h, auto-refreshed) tokens for these two ServiceAccounts via the TokenRequest API and
+# runs every gateway/detection call as the matching role (src/services/clusterIdentity.js).
+#
+# Minting needs SOME credential. Two ways to supply it:
+#
+#  1. Local / single-process: the existing bootstrap kubeconfig. Each call is least-
+#     privilege, but the process still holds the bootstrap credential.
+#
+#  2. Split deployment (deploy/k8s): give each gateway a MINTER identity below whose only
+#     permission is creating tokens for its one role — the k8s-read pod's credential can do
+#     nothing but mint reader tokens, the k8s-write pod's only executor tokens:
+#
+#       kubectl --context=<managed> -n kubepilot-system create token kubepilot-read-minter  --duration=720h
+#       kubectl --context=<managed> -n kubepilot-system create token kubepilot-write-minter --duration=720h
+#
+#     Put each token in its OWN kubeconfig holding only that token (no client cert — a
+#     context that still carries the system:masters cert keeps bypassing RBAC), as the
+#     kubepilot-kubeconfig-read / -write Secrets (deploy/k8s/10-config.yaml). The
+#     orchestrator's detection Secret (-detect) can use the read minter too.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubepilot-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: kubepilot-reader, namespace: kubepilot-system }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: kubepilot-executor, namespace: kubepilot-system }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubepilot-reader
+  labels: { app.kubernetes.io/part-of: kubepilot }
+rules:
+  # Deliberately an explicit list, not "*": `secrets` is absent, so Secret VALUES are
+  # unreadable at the API level — the same rule readOnlyKubectl.js enforces in-app.
+  - apiGroups: [""]
+    resources: [pods, pods/log, events, nodes, namespaces, services, endpoints, configmaps,
+                persistentvolumeclaims, persistentvolumes, replicationcontrollers,
+                resourcequotas, limitranges, serviceaccounts]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, replicasets, statefulsets, daemonsets, controllerrevisions]
+    verbs: [get, list, watch]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch]
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    verbs: [get, list, watch]
+  - apiGroups: [policy]
+    resources: [poddisruptionbudgets]
+    verbs: [get, list, watch]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses, networkpolicies]
+    verbs: [get, list, watch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+  - apiGroups: [events.k8s.io]
+    resources: [events]
+    verbs: [get, list, watch]
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses]
+    verbs: [get, list, watch]
+  - apiGroups: [rbac.authorization.k8s.io] # RBAC posture / drift engines
+    resources: [roles, rolebindings, clusterroles, clusterrolebindings]
+    verbs: [get, list, watch]
+  - apiGroups: [metrics.k8s.io] # kubectl top
+    resources: [pods, nodes]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubepilot-executor
+  labels: { app.kubernetes.io/part-of: kubepilot }
+rules:
+  # rollout restart / set resources / set image / rollout undo → patch the workload
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets, daemonsets]
+    verbs: [patch, update]
+  - apiGroups: [apps]
+    resources: [deployments/scale, statefulsets/scale]
+    verbs: [get, patch, update]
+  # delete a stuck pod (its controller recreates it)
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [delete]
+  # cordon / uncordon / drain
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [patch]
+  - apiGroups: [""]
+    resources: [pods/eviction]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: kubepilot-reader }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: kubepilot-reader }
+subjects:
+  - { kind: ServiceAccount, name: kubepilot-reader, namespace: kubepilot-system }
+  - { kind: ServiceAccount, name: kubepilot-executor, namespace: kubepilot-system } # executor reads too
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: kubepilot-executor }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: kubepilot-executor }
+subjects:
+  - { kind: ServiceAccount, name: kubepilot-executor, namespace: kubepilot-system }
+---
+# ── Minter identities (option 2 above) ─────────────────────────────────────
+# Each can ONLY create tokens for its one role's ServiceAccount — no reads, no writes.
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: kubepilot-read-minter, namespace: kubepilot-system }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: kubepilot-write-minter, namespace: kubepilot-system }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: kubepilot-mint-reader-token, namespace: kubepilot-system }
+rules:
+  - apiGroups: [""]
+    resources: [serviceaccounts/token]
+    resourceNames: [kubepilot-reader]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: kubepilot-mint-executor-token, namespace: kubepilot-system }
+rules:
+  - apiGroups: [""]
+    resources: [serviceaccounts/token]
+    resourceNames: [kubepilot-executor]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: kubepilot-read-minter, namespace: kubepilot-system }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: kubepilot-mint-reader-token }
+subjects:
+  - { kind: ServiceAccount, name: kubepilot-read-minter, namespace: kubepilot-system }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: kubepilot-write-minter, namespace: kubepilot-system }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: kubepilot-mint-executor-token }
+subjects:
+  - { kind: ServiceAccount, name: kubepilot-write-minter, namespace: kubepilot-system }

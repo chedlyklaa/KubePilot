@@ -1,5 +1,9 @@
 // Token usage counter — tracks LLM consumption per agent since last server start.
 // Agents call record() after each LLM response; the dashboard reads getAll().
+// In a remote agent service (src/mesh/), record() ships the usage to the orchestrator
+// via effects.emit() instead — these counters only exist in the orchestrator process.
+
+const effects = require('../mesh/effects');
 
 const AGENTS = ['planner', 'guardian', 'reflection', 'investigator'];
 
@@ -8,6 +12,7 @@ function _empty() { return { prompt: 0, completion: 0, total: 0, calls: 0 }; }
 const counters = Object.fromEntries(AGENTS.map(k => [k, _empty()]));
 
 function record(agent, usage) {
+  if (effects.emit('tokens', { agent, usage })) return;
   if (!usage || !counters[agent]) return;
   const c = counters[agent];
   c.prompt     += usage.prompt_tokens     ?? 0;

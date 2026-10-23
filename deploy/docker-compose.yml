@@ -1,0 +1,152 @@
+# KubePilot as independent agent services (Agent Mesh over Redis Streams).
+#
+#   docker compose -f deploy/docker-compose.yml up --build
+#
+# Every agent runs in its own container from the same image, talking only over Redis
+# Streams (mesh:tasks:<capability>). The orchestrator runs with every AGENT_*_MODE=remote.
+# Only `orchestrator` (fleet detection), `k8s-read` and `k8s-write` mount a kubeconfig —
+# the LLM agents have no cluster access at all.
+#
+# Kubeconfig note: a minikube/kind kubeconfig usually points at 127.0.0.1:<port>, which
+# is NOT reachable from inside a container. Point KUBECONFIG_DIR at a kubeconfig whose
+# server address the containers can reach (e.g. host.docker.internal, or a cloud cluster).
+#
+# Secrets (LLM keys, NOTIFICATION_SECRET, ...) come from ../.env via env_file; the
+# `environment` blocks below only override the in-cluster addresses.
+
+x-app: &app
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  image: kubepilot:dev
+  env_file: ../.env
+  restart: unless-stopped
+  depends_on:
+    redis:
+      condition: service_healthy
+
+x-addresses: &addresses
+  REDIS_URL: redis://redis:6379
+  MONGODB_URI: mongodb://mongo:27017/k8s_agent
+  QDRANT_URL: http://qdrant:6333
+  AGENT_PORT: "8080"
+
+x-agent-health: &agent-health
+  test: ["CMD", "node", "-e", "fetch('http://localhost:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+  interval: 15s
+  timeout: 5s
+  retries: 3
+
+# clusters.yaml is shared from the host checkout: the orchestrator writes it (adding a
+# cluster in the dashboard), and both gateways must validate contexts against the SAME
+# fleet — a per-container copy baked into the image would silently drift.
+x-kubeconfig: &kubeconfig
+  - ${KUBECONFIG_DIR:-~/.kube}:/home/node/.kube:ro
+  - ../config:/app/config:ro
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mongo:
+    image: mongo:7.0
+    volumes:
+      - mongo-data:/data/db
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+  # Detection, classification, LangGraph conductor, API + dashboard backend.
+  orchestrator:
+    <<: *app
+    command: ["node", "index.js"]
+    ports:
+      - "3001:3001"
+    environment:
+      <<: *addresses
+      AGENT_FASTPATH_MODE: remote
+      AGENT_INVESTIGATOR_MODE: remote
+      AGENT_PLANNER_MODE: remote
+      AGENT_GUARDIAN_MODE: remote
+      AGENT_REFLECTION_MODE: remote
+      AGENT_K8S_READ_MODE: remote
+      AGENT_K8S_WRITE_MODE: remote
+    volumes:
+      - ${KUBECONFIG_DIR:-~/.kube}:/home/node/.kube:ro
+      - ../config:/app/config # read-write: the dashboard adds clusters here
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongo:
+        condition: service_started
+
+  # ── Cluster gateways (the only agent containers with cluster credentials) ──
+  k8s-read:
+    <<: *app
+    command: ["node", "agent-services/k8s-read.js"]
+    environment: *addresses
+    volumes: *kubeconfig
+    healthcheck: *agent-health
+
+  k8s-write:
+    <<: *app
+    command: ["node", "agent-services/k8s-write.js"]
+    environment: *addresses
+    volumes: *kubeconfig
+    healthcheck: *agent-health
+    deploy:
+      replicas: 1 # the single, auditable point of cluster mutation
+
+  # ── LLM agents (no kubeconfig mounted) ─────────────────────────────────────
+  investigator:
+    <<: *app
+    command: ["node", "agent-services/investigator.js"]
+    environment:
+      <<: *addresses
+      AGENT_K8S_READ_MODE: remote
+      AGENT_REFLECTION_MODE: remote
+    healthcheck: *agent-health
+    deploy:
+      replicas: 2 # LLM-heavy: scale this one independently
+
+  fastpath:
+    <<: *app
+    command: ["node", "agent-services/fastpath.js"]
+    environment:
+      <<: *addresses
+      AGENT_K8S_READ_MODE: remote
+    healthcheck: *agent-health
+
+  planner:
+    <<: *app
+    command: ["node", "agent-services/planner.js"]
+    environment:
+      <<: *addresses
+      AGENT_K8S_READ_MODE: remote
+      AGENT_K8S_WRITE_MODE: remote
+    healthcheck: *agent-health
+
+  guardian:
+    <<: *app
+    command: ["node", "agent-services/guardian.js"]
+    environment: *addresses
+    healthcheck: *agent-health
+
+  reflection:
+    <<: *app
+    command: ["node", "agent-services/reflection.js"]
+    environment: *addresses
+    healthcheck: *agent-health
+    deploy:
+      replicas: 1 # owns the in-memory episode index — see agent-services/reflection.js
+
+volumes:
+  mongo-data:
+  qdrant-data:

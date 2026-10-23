@@ -130,7 +130,17 @@ function _materialize(encryptedConfig, context) {
 // rotated credential takes effect on the very next call, with no restart or reconcile
 // needed. The in-memory cache below only avoids re-decrypting/re-writing the file on
 // every call when nothing has changed.
+// Inside a withClusterIdentity() scope with CLUSTER_IDENTITY_MODE=serviceaccount, this is
+// the role's own token-only kubeconfig (src/services/clusterIdentity.js); otherwise the
+// bootstrap credential below, exactly as before. kubectl.runCommand() and k8sClient both
+// resolve credentials only through here.
 async function getKubeconfigPath(context) {
+  const identityPath = await require('./clusterIdentity').resolveKubeconfigPath(context);
+  if (identityPath !== undefined) return identityPath;
+  return getBootstrapKubeconfigPath(context);
+}
+
+async function getBootstrapKubeconfigPath(context) {
   const cached = _cache.get(context);
   if (cached) return cached.path;
 
@@ -145,6 +155,8 @@ async function getKubeconfigPath(context) {
 // Called right after an admin uploads/rotates a credential. Deletes the cached temp
 // file so the next kubectl call re-decrypts and re-materializes the fresh version.
 function invalidate(context) {
+  // A rotated bootstrap credential also invalidates the role tokens minted with it.
+  require('./clusterIdentity').invalidateIdentities(context);
   const cached = _cache.get(context);
   if (!cached) return;
   try { fs.unlinkSync(cached.path); } catch { /* already gone */ }
@@ -210,6 +222,7 @@ module.exports = {
   normalizeKubeconfig,
   testConnection,
   getKubeconfigPath,
+  getBootstrapKubeconfigPath,
   invalidate,
   storeCredential,
   deleteCredential,

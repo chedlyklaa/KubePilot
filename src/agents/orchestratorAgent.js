@@ -16,9 +16,14 @@ const rbacWatcher            = require('../services/rbacWatcher');
 const { loadConfig }         = require('../config');
 const { runStructuredLLMCall } = require('../resilience/llmCircuitBreaker');
 const { IncidentListSchema } = require('../orchestrator/schemas');
-const { runWorkflow }        = require('../orchestrator/graph');
+const { runWorkflow, resumeWorkflow, useCheckpointer } = require('../orchestrator/graph');
+const checkpointing          = require('../orchestrator/checkpointing');
+const { withClusterIdentity } = require('../services/clusterIdentity');
 const { issueKey }           = require('../orchestrator/issueKey');
 const { IncidentTracer, resourceFromIssue } = require('../monitoring/incidentTracer');
+const { anyRemoteAgent, agentMode, DEFAULT_TIMEOUTS_MS } = require('../mesh/agentClient');
+const { getBus }               = require('../mesh/busSingleton');
+const { startEffectsConsumer } = require('../mesh/effectsConsumer');
 
 const _config = loadConfig();
 const llm = new ChatOpenAI({
@@ -33,7 +38,10 @@ const llm = new ChatOpenAI({
   // failing pods -> "Could not parse response content as the length limit was reached")
   // and drops the WHOLE cycle's incidents, not just the ones that didn't fit.
   maxTokens: 8000,
-}).withStructuredOutput(IncidentListSchema);
+  // functionCalling, not LangChain's default strict json_schema: Mistral rejects the
+  // $defs/$ref/oneOf/const schema this union compiles to with a bare 400
+  // ("Invalid structured output syntax"); tool-call parameters are accepted everywhere.
+}).withStructuredOutput(IncidentListSchema, { method: 'functionCalling' });
 
 const SEVERITY_SCORE = { critical: 4, high: 3, medium: 2, low: 1 };
 // §Fix-CorrelationTagDrift — how long a resource's dispatchKey pin survives without
@@ -735,7 +743,10 @@ async function _runFleetCycle() {
   const clusterConcurrency = loadConfig().CLUSTER_CONCURRENCY;
 
   // ── Gather, per cluster, in parallel ────────────────────────────────────
-  const perClusterSignals = await _mapWithConcurrency(clusters, clusterConcurrency, _gatherClusterSignals);
+  // Detection only reads — so it runs as the cluster's reader identity
+  // (src/services/clusterIdentity.js; a no-op unless CLUSTER_IDENTITY_MODE=serviceaccount).
+  const perClusterSignals = await _mapWithConcurrency(clusters, clusterConcurrency,
+    cluster => withClusterIdentity('reader', () => _gatherClusterSignals(cluster)));
 
   // ── Group by namespace across clusters, then classify once per group ───
   const byNamespace = _groupByNamespace(perClusterSignals);
@@ -862,6 +873,9 @@ async function _runFleetCycle() {
     if (!locked) return; // another workflow already owns this namespace/node
 
     await shortMemory.markWorkflowActive(workflowId);
+    // Remembered until it finishes, so a restart mid-run can resume it (see
+    // _resumeInterruptedWorkflows) instead of silently dropping it.
+    await shortMemory.registerInflight(workflowId, dispatchKey);
     // Consumed — any new incidents landing in this dispatch key next cycle start a
     // fresh group rather than being silently absorbed into this in-flight one. Also
     // clears each member's correlation pin (§Fix-CorrelationTagDrift) — this
@@ -905,16 +919,54 @@ async function _runFleetCycle() {
     runWorkflow({ incidents: incidentList, clusterConfigs, workflowId, incidentTracer })
       .then(result => console.log(`[ORCHESTRATOR] workflow ${workflowId} finished — outcome=${result?.outcome ?? 'unknown'}`))
       .catch(err => console.error(`[ORCHESTRATOR] workflow ${workflowId} failed: ${err.message}`))
-      .finally(async () => {
-        await shortMemory.releaseResourceLock(dispatchKey);
-        await shortMemory.markWorkflowInactive(workflowId);
-      });
+      .finally(() => _releaseWorkflow(workflowId, dispatchKey));
   }));
 
   const duration = ((Date.now() - t0) / 1000).toFixed(2);
   console.log('\n====================================');
   console.log(`ORCHESTRATOR FLEET CYCLE COMPLETED — ${duration}s`);
   console.log('====================================');
+}
+
+// Everything a dispatched (or resumed) workflow holds, released together when it ends.
+async function _releaseWorkflow(workflowId, dispatchKey) {
+  await shortMemory.releaseResourceLock(dispatchKey);
+  await shortMemory.markWorkflowInactive(workflowId);
+  await shortMemory.clearInflight(workflowId);
+}
+
+// Boot-time: continue workflows a previous process life left mid-run (crash, deploy,
+// nodemon reload) from their last LangGraph checkpoint, instead of dropping them and
+// waiting for a later detection cycle to redispatch from scratch. Runs BEFORE the first
+// fleet cycle so resumed workflows re-take their dispatch-key lock (and a concurrency
+// slot) before new dispatch could double-book the same namespace/node.
+//
+// A workflow that can't be resumed (checkpointing off, already finished, interrupted in
+// the executor without an idempotent k8s-write — see graph.js _resumeDecision, or its lock
+// now owned by another workflow) is released and simply falls back to the old behavior.
+async function _resumeInterruptedWorkflows() {
+  const inflight = await shortMemory.listInflight();
+  if (inflight.length === 0) return;
+  console.log(`[BOOT] Resume       : ${inflight.length} workflow(s) were in flight when the previous process stopped`);
+
+  for (const { workflowId, dispatchKey } of inflight) {
+    const owned = await shortMemory.reclaimResourceLock(dispatchKey, workflowId);
+    if (!owned) {
+      console.warn(`[BOOT] Resume       : ${workflowId} (${dispatchKey}) — lock now held by another workflow, dropping`);
+      await shortMemory.clearInflight(workflowId);
+      continue;
+    }
+    await shortMemory.markWorkflowActive(workflowId);
+
+    // Fire-and-forget like a fresh dispatch — decide synchronously enough to log, run in the background.
+    resumeWorkflow({ workflowId })
+      .then(r => {
+        if (r.resumed) console.log(`[ORCHESTRATOR] resumed workflow ${workflowId} finished — outcome=${r.result?.outcome ?? 'unknown'}`);
+        else console.log(`[BOOT] Resume       : ${workflowId} (${dispatchKey}) not resumed — ${r.reason}`);
+      })
+      .catch(err => console.error(`[ORCHESTRATOR] resumed workflow ${workflowId} failed: ${err.message}`))
+      .finally(() => _releaseWorkflow(workflowId, dispatchKey));
+  }
 }
 
 // One root LangSmith trace per fleet cycle — the classification calls and every
@@ -968,6 +1020,11 @@ OrchestratorAgent.start = async function start(intervalMsOverride) {
   // ISSUE_CONCURRENCY slots and silently wedge every future cycle's dispatch step.
   await shortMemory.resetActiveWorkflows();
 
+  // Durable workflow state — must be up before anything is dispatched or resumed.
+  const saver = await checkpointing.initCheckpointer();
+  useCheckpointer(saver);
+  console.log(`[BOOT] Checkpoints  : ${saver ? 'MongoDB (workflows resume after a restart)' : checkpointing.resumeEnabled() ? 'unavailable — no resume after restart' : 'disabled (WORKFLOW_RESUME_ENABLED=false)'}`);
+
   const ruleStats = await ruleEngine.stats();
   const memStats   = episodicMemory.stats();
   console.log(`[BOOT] VectorStore  : ${vectorStore.ready ? 'ready' : 'offline (semantic search disabled)'}`);
@@ -976,11 +1033,25 @@ OrchestratorAgent.start = async function start(intervalMsOverride) {
   console.log(`[BOOT] Prometheus   : ${metricsCollector.isAvailable() ? 'connected — metrics enabled' : 'unavailable — metrics disabled (continuing without)'}`);
   console.log(`[BOOT] ShortMemory  : ${shortMemory.ready ? 'ready (Redis)' : 'offline (dedup/queue/locks disabled)'}`);
 
+  // Agent Mesh — only when at least one agent runs as its own service. Remote agents'
+  // store writes (token counters, incident stages) arrive on mesh:effects and are
+  // applied here, in the process that owns those stores.
+  const remoteAgents = Object.keys(DEFAULT_TIMEOUTS_MS).filter(name => agentMode(name) === 'remote');
+  if (anyRemoteAgent()) {
+    const bus = await getBus('orchestrator');
+    await startEffectsConsumer(bus);
+    console.log(`[BOOT] AgentMesh    : remote → ${remoteAgents.join(', ')} (instance ${bus.sender})`);
+  } else {
+    console.log('[BOOT] AgentMesh    : all agents in-process (AGENT_*_MODE=local)');
+  }
+
   const clusters = clusterConfigStore.getClusters();
   console.log(`\n${clusters.length} cluster(s) configured — gathered and classified together, fleet-wide, every cycle:`);
   clusters.forEach(c => console.log(`  → ${c.name} (${c.tier ?? 'dev'})`));
 
   rbacWatcher.boot();
+
+  await _resumeInterruptedWorkflows();
 
   await _runFleetCycleGuarded();
 

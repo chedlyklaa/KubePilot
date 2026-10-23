@@ -1,0 +1,21 @@
+# KubePilot Agent Mesh on Kubernetes — one Deployment per agent service.
+#
+#   kubectl apply -k deploy/k8s            (after creating the Secrets — see 10-config.yaml)
+#
+# target-cluster-rbac.yaml is NOT part of this kustomization: it goes on each MANAGED
+# cluster (which may be a different cluster from the one KubePilot runs in).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: kubepilot
+resources:
+  - 00-namespace.yaml
+  - 10-config.yaml
+  - 20-datastores.yaml
+  - 30-orchestrator.yaml
+  - 40-gateways.yaml
+  - 50-agents.yaml
+  - 60-networkpolicy.yaml
+images:
+  - name: kubepilot
+    newName: kubepilot   # e.g. ghcr.io/<you>/kubepilot
+    newTag: dev          # minikube: `minikube image load kubepilot:dev`

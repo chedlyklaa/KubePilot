@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubepilot
+  labels:
+    app.kubernetes.io/part-of: kubepilot
+    # Agents run unprivileged, non-root, read-only root FS.
+    pod-security.kubernetes.io/enforce: restricted

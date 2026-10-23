@@ -2,21 +2,26 @@
 const { randomUUID } = require('crypto');
 const { StateGraph, Annotation, START, END } = require('@langchain/langgraph');
 
-const kubectl              = require('../tools/kubectl');
-const { verifyResourceHealthy } = require('../tools/podHealth');
+// Cluster access goes through the k8s gateways — in-process by default, separate
+// credential-holding services with AGENT_K8S_READ_MODE / AGENT_K8S_WRITE_MODE=remote.
+const { k8sRead, k8sWrite } = require('../tools/k8sGateway');
+const { getBus } = require('../mesh/busSingleton');
 const WorkflowTracer       = require('../monitoring/workflowTracer');
 const { IncidentTracer, resourceFromIssue } = require('../monitoring/incidentTracer');
 const liveWorkflowStore    = require('../monitoring/liveWorkflowStore');
 const workflowTraceStore   = require('../api/workflowTraceStore');
+// fastPath is still required directly for its PURE toInvestigationReport() helper; every
+// agent CALL goes through its client (src/agents/agentClients.js) — in-process by
+// default, that agent's own service with AGENT_<NAME>_MODE=remote. Task ids passed to
+// the clients are deterministic per (workflow, node, attempt[, item]) so a redelivered
+// or re-sent request replays the stored answer instead of re-running an LLM loop.
 const fastPath             = require('../agents/fastPath');
-const investigator         = require('../agents/investigator');
-const planner               = require('../agents/planner');
-const GuardianAgent        = require('../agents/guardianAgent');
-const ReflectionAgent      = require('../agents/reflectionAgent');
+const {
+  fastPathClient, investigatorClient, plannerClient, guardianClient, reflectionClient,
+} = require('../agents/agentClients');
+const overrideStore        = require('../api/overrideStore');
 const { assessRootCauseFit } = require('../agents/rootCauseFitAssessor');
-const executor             = require('../agents/executor');
 const PolicyEngine         = require('../policy/policyEngine');
-const episodicMemory       = require('../memory/episodicMemory');
 const ruleEngine           = require('../memory/ruleEngine');
 const approvalStore        = require('../api/approvalStore');
 const escalationStore      = require('../api/escalationStore');
@@ -327,7 +332,11 @@ async function fastPathNode(state, config) {
   await shortMemory.upsertIncident(key, { stage: 'investigating', issue, startedAt: new Date().toISOString() });
 
   incidentTracer?.start('investigator');
-  const result = await fastPath.diagnose(issue, clusterConfigs);
+  // The in-process agents never throw (they catch internally and degrade); only the bus
+  // transport can (remote mode: timeout, dead-letter, service down). Every agent call
+  // below degrades to that same local fallback instead of failing the whole workflow.
+  const result = await fastPathClient.diagnose({ issue, clusterConfigs }, { taskId: `${workflowId}:fastpath`, workflowId })
+    .catch(err => ({ escalate: true, reason: `fast path unavailable: ${err.message}`, evidenceBundle: null, diagnosis: null, toolCallCount: 0 }));
   tracer?.attachFastPathResult(result);
 
   if (result.escalate) {
@@ -386,7 +395,7 @@ async function investigatorNode(state, config) {
     // (see _clusterFor) — never attempt a kubectl call with an unresolved/untrusted
     // context, just treat it the same as "logs unavailable".
     if (!context) return '';
-    try { return await kubectl.getLogs(issue.podName, issue.namespace ?? 'default', context); }
+    try { return await k8sRead.getLogs({ podName: issue.podName, namespace: issue.namespace ?? 'default', context }); }
     catch { return ''; }
   }));
   const podLogsByKey = Object.fromEntries(keys.map((k, i) => [k, podLogsList[i]]));
@@ -400,7 +409,13 @@ async function investigatorNode(state, config) {
   // already gathered/concluded instead of starting blind — see investigator.js's
   // SYSTEM_PROMPT "fastPathContext" paragraph and _runInvestigationLoop's initial message.
   incidentTracer?.start('investigator');
-  const rca = await investigator.investigate(issues, clusterConfigs, fastPathSeed, lastAttemptFailure);
+  const rca = await investigatorClient.investigate(
+    { issues, clusterConfigs, fastPathSeed: fastPathSeed ?? null, lastAttemptFailure: lastAttemptFailure ?? null },
+    { taskId: `${workflowId}:investigate:${attempt}`, workflowId },
+  ).catch(err => {
+    console.warn(`[${clusterNames.join(',')}] [GRAPH] investigator unavailable (${err.message}) — using the fallback report`);
+    return require('../agents/investigator')._fallback(issues);
+  });
   tracer?.attachInvestigatorResult(rca);
 
   try {
@@ -444,7 +459,14 @@ async function plannerNode(state, config) {
   const clusterNames = [...new Set(issues.map(i => i.clusterName))];
 
   incidentTracer?.start('planner');
-  const plan = await planner.plan(issues, rca, clusterConfigs, lastAttemptFailure);
+  const plan = await plannerClient.plan(
+    { issues, rca, clusterConfigs, lastAttemptFailure: lastAttemptFailure ?? null },
+    { taskId: `${workflowId}:plan:${attempt}`, workflowId },
+  ).catch(err => {
+    console.warn(`[${clusterNames.join(',')}] [GRAPH] planner unavailable (${err.message}) — using the no-op fallback plan`);
+    const fallback = require('../agents/planner')._fallbackPlan(issues);
+    return { ...fallback, _meta: { turnsUsed: 0, toolCallLog: [], diagnostics: { stopReason: 'planning_exception', lastError: err.message } } };
+  });
   tracer?.attachPlannerResult(plan);
 
   const items = plan.steps.map(step => {
@@ -546,7 +568,7 @@ async function plannerNode(state, config) {
 async function guardianNode(state, config) {
   const tracer         = config?.configurable?.tracer;
   const incidentTracer = config?.configurable?.incidentTracer;
-  const { clusterConfigs, items, attempt, rca, podLogsByKey } = state;
+  const { clusterConfigs, items, attempt, rca, podLogsByKey, workflowId } = state;
 
   // §3.4/§3.7 — Guardian consults Reflexion for rules/history too, not just
   // Investigator: fetched once per distinct issue TYPE present in the group (not once
@@ -558,7 +580,7 @@ async function guardianNode(state, config) {
     const { tier } = _clusterFor(clusterConfigs, rep.clusterName);
     const fingerprint = _fingerprint(rep, tier);
     const queryText = `${rep.type} ${rep.podName ?? rep.nodeName ?? ''} ${rep.namespace ?? ''}`.trim();
-    const ctx = await ReflectionAgent.getContext({ fingerprint, queryText, issueType })
+    const ctx = await reflectionClient.getContext({ fingerprint, queryText, issueType })
       .catch(() => ({ rules: [], structuralMatches: [], semanticMatches: [] }));
     return [issueType, ctx];
   })));
@@ -578,11 +600,11 @@ async function guardianNode(state, config) {
     // _clusterFor) — never attempt a kubectl call with an unresolved/untrusted context;
     // just skip the live-state re-fetch for this pair (stateDrift below stays false).
     if (!context) return [pairKey, null];
-    try { return [pairKey, await kubectl.getPods(ns, context, true)]; }
+    try { return [pairKey, await k8sRead.getPods({ namespace: ns, context, asJson: true })]; }
     catch { return [pairKey, null]; } // best-effort only
   })));
 
-  const updated = await Promise.all(items.map(async item => {
+  const updated = await Promise.all(items.map(async (item, itemIndex) => {
     if (!item.step.command) return item; // no command → nothing for Guardian to review
 
     const guardianStartedAt = Date.now();
@@ -591,9 +613,12 @@ async function guardianNode(state, config) {
     const diagnosis = { rootCause: step.reason, action: step.action, command: step.command, risk: step.risk.toUpperCase(), rationale: step.reason };
 
     const { tier } = _clusterFor(clusterConfigs, issue.clusterName);
-    const guardian = new GuardianAgent(issue.clusterName, tier);
     const reflexionContext = reflexionByType.get(issue.type);
-    const result = await guardian.review({ issue, diagnosis, podLogs, attempt, rca, reflexionContext });
+    const result = await guardianClient.review(
+      { clusterName: issue.clusterName, tier, review: { issue, diagnosis, podLogs, attempt, rca, reflexionContext: reflexionContext ?? null } },
+      { taskId: `${workflowId}:review:${attempt}:${itemIndex}`, workflowId },
+    ).catch(err => require('../agents/guardianAgent')._guardianFailureVerdict(
+      `Guardian was unavailable (${err.message}) — escalated to a human rather than auto-approved.`));
 
     // §7.5 — independent re-fetch of live state before judging, so Guardian isn't
     // reviewing the exact same snapshot the Planner already reasoned over.
@@ -979,6 +1004,24 @@ async function policyNode(state, config) {
   return { items: finalized, plan };
 }
 
+// Abort markers for _executeIssueSteps — a no-op with in-process k8s-write, whose
+// executor is never resumed (see _resumeDecision). A marker that can't be written or read
+// is logged, not fatal: with Redis unreachable the remote k8s-write calls fail anyway.
+async function _setAbortMarker(name) {
+  if (k8sWrite.mode !== 'remote') return;
+  try { await (await getBus()).setMarker(name); }
+  catch (err) { console.error(`[GRAPH] executor — could not record abort marker ${name}: ${err.message}`); }
+}
+
+async function _hasAbortMarker(name) {
+  if (k8sWrite.mode !== 'remote') return false;
+  try { return await (await getBus()).hasMarker(name); }
+  catch (err) {
+    console.error(`[GRAPH] executor — could not read abort marker ${name}: ${err.message}`);
+    return false;
+  }
+}
+
 // Best-effort undo of every already-applied step in this issue's plan, most-recent
 // first — shared by both failure paths in _executeIssueSteps below (a thrown command
 // error, and a command that ran but didn't verify healthy): a failed rollback is
@@ -990,7 +1033,11 @@ async function _rollback(succeeded) {
       continue;
     }
     try {
-      await executor.execute({ command: s.step.inverseCommand, target: s.step.target }, { context: s.context });
+      // Own deterministic task id, so a redelivered rollback replays instead of undoing twice.
+      await k8sWrite.apply(
+        { step: { command: s.step.inverseCommand, target: s.step.target }, context: s.context },
+        { taskId: `${s.taskId}:rollback`, workflowId: s.workflowId },
+      );
       console.warn(`[${s.item.issue.clusterName}] [GRAPH] executor — rolled back "${s.step.command}" via "${s.step.inverseCommand}" for ${s.item.key}`);
     } catch (rbErr) {
       console.error(`[${s.item.issue.clusterName}] [GRAPH] executor — ROLLBACK FAILED for ${s.item.key} (undo of "${s.step.command}" via "${s.step.inverseCommand}"): ${rbErr.message}`);
@@ -1006,10 +1053,23 @@ async function _rollback(succeeded) {
 // GROUP are undone via their own declared inverseCommand, most-recent first, best-effort
 // (a failed rollback is logged, not retried — the operator needs to know, not have the
 // agent loop on it). Steps after the failure point are never attempted.
-async function _executeIssueSteps(group, clusterConfigs, workflowId, incidentTracer) {
+async function _executeIssueSteps(group, clusterConfigs, workflowId, incidentTracer, attempt = 0) {
   const succeeded = []; // steps actually applied this run, oldest first — reversed for rollback
   const finished  = [];
   let aborted = false;
+
+  // Resume safety (remote k8s-write only — the one mode _resumeDecision resumes the
+  // executor in). Per-step replay alone can't express "this plan already failed and was
+  // rolled back": an applied step's cached success would replay although it was undone,
+  // and the failed step's short-lived failure cache would let it re-run for real — on
+  // top of a state that matches neither the plan nor the rollback. So the abort itself is
+  // recorded durably, BEFORE rolling back, and a resumed run checks it first.
+  const abortMarker = `${workflowId}:apply:${group[0].key}:${attempt}:aborted`;
+  const abortAndRollback = async () => {
+    aborted = true;
+    await _setAbortMarker(abortMarker);
+    await _rollback(succeeded);
+  };
 
   // Pushes to `finished` AND emits the matching {action, status} trace line for that
   // step in one place, so every exit path (skipped/blocked/fixed) is covered without
@@ -1030,7 +1090,16 @@ async function _executeIssueSteps(group, clusterConfigs, workflowId, incidentTra
     return entry;
   };
 
-  for (const item of group) {
+  if (await _hasAbortMarker(abortMarker)) {
+    console.warn(`[${group[0].issue.clusterName}] [GRAPH] executor — ${group[0].key}'s plan (attempt ${attempt}) was aborted and rolled back before an orchestrator restart; not re-applying it`);
+    for (const item of group) {
+      if (!item.step.command) pushFinished(item, 'skipped');
+      else pushFinished(item, 'blocked', { executionError: 'plan was aborted and rolled back before an orchestrator restart — not re-applied on resume' });
+    }
+    return finished;
+  }
+
+  for (const [stepIndex, item] of group.entries()) {
     if (aborted) {
       pushFinished(item, 'skipped', { executionError: 'aborted — an earlier step in this issue\'s plan failed' });
       continue;
@@ -1059,8 +1128,12 @@ async function _executeIssueSteps(group, clusterConfigs, workflowId, incidentTra
     }
 
     try {
-      await executor.execute(step, { context });
-      succeeded.push({ item, step, context });
+      // Deterministic task id (workflow + issue + attempt + step position): if this
+      // request is redelivered, or re-sent after an orchestrator restart, the k8s-write
+      // gateway replays the stored result instead of applying the step a second time.
+      const taskId = `${workflowId}:apply:${item.key}:${attempt}:${stepIndex}`;
+      await k8sWrite.apply({ step, context }, { taskId, workflowId });
+      succeeded.push({ item, step, context, taskId, workflowId });
 
       // §Fix-ExecutorHonesty (2026-08-31) — a successful kubectl exit code only proves
       // the command RAN, not that it resolved anything; "fixed" was being applied to
@@ -1086,7 +1159,7 @@ async function _executeIssueSteps(group, clusterConfigs, workflowId, incidentTra
       // for real health before calling this "fixed".
       let healthy = true, healthReason = unverifiedReason;
       if (!unverifiedReason && !policyEngine.dryRunMode) {
-        const verification = await verifyResourceHealthy(step, { issue: item.issue, context });
+        const verification = await k8sRead.verifyHealth({ step, issue: item.issue, context });
         healthy = verification.healthy;
         healthReason = verification.reason;
       } else if (unverifiedReason) {
@@ -1102,14 +1175,12 @@ async function _executeIssueSteps(group, clusterConfigs, workflowId, incidentTra
         // "uncordon" a node whose preceding "cordon" never actually verified.
         console.warn(`[${item.issue.clusterName}] [GRAPH] executor — ${item.key} ran "${step.command}" but it did not verify as fixed: ${healthReason}`);
         pushFinished(item, 'blocked', { executionError: healthReason });
-        aborted = true;
-        await _rollback(succeeded);
+        await abortAndRollback();
       }
     } catch (err) {
       console.error(`[${item.issue.clusterName}] [GRAPH] executor failed for ${item.key} (${step.command}): ${err.message}`);
       pushFinished(item, 'blocked', { executionError: err.message });
-      aborted = true;
-      await _rollback(succeeded);
+      await abortAndRollback();
     }
   }
 
@@ -1143,7 +1214,7 @@ async function executorNode(state, config) {
   }
 
   const grouped = await Promise.all(
-    [...byIssue.values()].map(group => _executeIssueSteps(group, clusterConfigs, workflowId, incidentTracer))
+    [...byIssue.values()].map(group => _executeIssueSteps(group, clusterConfigs, workflowId, incidentTracer, attempt))
   );
   const results = grouped.flat();
 
@@ -1251,14 +1322,18 @@ async function reflexionNode(state, config) {
     const primaryStep    = steps[0]?.finalStep ?? steps[0]?.step;
     const primaryCommand = primaryStep?.command || primaryStep?.action || 'unknown';
 
-    const reflection = await ReflectionAgent.reflect({
+    // Read here, not inside reflect(): overrideStore is in-memory in THIS process. Only
+    // peeked — it's consumed below once the episode carrying it is actually stored, so a
+    // reflection/remember failure (e.g. a remote timeout) doesn't lose the admin's feedback.
+    const overrideData = overrideStore.peekFor(issue);
+    const reflection = await reflectionClient.reflect({
       issue, planAction: primaryCommand, rootCauseDiagnosis: rca?.suspected_cause ?? 'unknown',
-      timeline: [], resolved, podLogs, rca,
-    }).catch(() => null);
+      timeline: [], resolved, podLogs, rca: rca ?? null, overrideData,
+    }, { taskId: `${workflowId}:reflect:${key}`, workflowId }).catch(() => null);
 
     if (reflection) {
       const { tier } = _clusterFor(clusterConfigs, issue.clusterName);
-      await episodicMemory.store({
+      const remembered = await reflectionClient.remember({
         fingerprint: _fingerprint(issue, tier),
         context: { issue, podLogsSnippet: podLogs?.slice(-500) ?? '' },
         timeline: steps.map(s => {
@@ -1267,7 +1342,8 @@ async function reflexionNode(state, config) {
         }),
         reflection, resolved, resolvedAction: resolved ? primaryCommand : null,
         totalAttempts: attempt, rca: rca ?? undefined,
-      }).catch(() => {});
+      }, { taskId: `${workflowId}:remember:${key}`, workflowId }).then(() => true, () => false);
+      if (remembered) overrideStore.consumeFor(issue, overrideData);
       if (!resolved) await ruleEngine.analyze(issue.type).catch(() => {});
     }
 
@@ -1387,7 +1463,56 @@ const graph = new StateGraph(WorkflowState)
   .addConditionalEdges('executor', routeAfterExecutor, { investigator: 'investigator', reflexion: 'reflexion' })
   .addEdge('reflexion', END);
 
-const compiled = graph.compile();
+// Compiled once WITHOUT a checkpointer at module load — graph.test.js, LangGraph Studio
+// (langgraph.json) and the scripts/ harnesses import this file with no database.
+// OrchestratorAgent.start() swaps in the checkpointed compilation via useCheckpointer()
+// once MongoDB is reachable (src/orchestrator/checkpointing.js).
+const compiledBase = graph.compile();
+let compiled     = compiledBase;
+let checkpointer = null;
+
+function useCheckpointer(saver) {
+  checkpointer = saver ?? null;
+  compiled = checkpointer ? graph.compile({ checkpointer }) : compiledBase;
+}
+
+const RECURSION_LIMIT = MAX_FIX_ATTEMPTS * 6 + 10; // bound the investigator↔policy re-diagnose loop
+
+// Measurement (Phase 1) — one WorkflowTracer per runWorkflow() call, passed through
+// LangGraph's config.configurable (NOT a WorkflowState/Annotation channel — see
+// src/monitoring/workflowTracer.js's file header for why). Each concurrent workflow
+// (orchestratorAgent.js dispatches up to ISSUE_CONCURRENCY at once) gets its own
+// instance here, so there's no shared mutable tracer state across concurrent runs.
+function _newWorkflowTracer(workflowId, issues) {
+  return new WorkflowTracer({
+    workflowId,
+    clusters:     [...new Set(issues.map(i => i.clusterName))],
+    namespace:    issues[0]?.namespace ?? null,
+    incidentType: issues[0]?.type ?? null,
+    complexity:   issues.length === 1 ? (issues[0]?.complexity ?? 'UNKNOWN') : 'COMPLEX',
+    issueKeys:    issues.map(_issueKey),
+    pipeline:     'v5',
+  });
+}
+
+// Shared by runWorkflow (fresh input) and resumeWorkflow (input = null → LangGraph
+// continues the thread from its last checkpoint). thread_id = workflowId is what the
+// checkpointer keys on; without a checkpointer it's simply ignored.
+async function _invokeWorkflow(input, { workflowId, issues, incidentTracer }) {
+  const tracer = _newWorkflowTracer(workflowId, issues);
+  const result = await compiled.invoke(input, {
+    recursionLimit: RECURSION_LIMIT,
+    configurable: { thread_id: workflowId, tracer, incidentTracer },
+  });
+
+  tracer.finalize(result.outcome);
+  workflowTraceStore.save(tracer.toDocument()).catch(() => {});
+  liveWorkflowStore.finish(workflowId, result.outcome);
+  // Finished — nothing left to resume. (The collection's TTL index would expire it anyway.)
+  checkpointer?.deleteThread(workflowId).catch(() => {});
+
+  return result;
+}
 
 // Entry point OrchestratorAgent calls per launched (namespace- or node-)group.
 // `incidents` is always an array — one incident for a node-scoped group (size 1
@@ -1415,44 +1540,74 @@ async function runWorkflow({ incidents, clusterConfigs, workflowId = randomUUID(
   const attemptCounts = await Promise.all(issues.map(i => shortMemory.attemptCount(_issueKey(i))));
   const attempt = Math.max(0, ...attemptCounts);
 
-  // Measurement (Phase 1) — one WorkflowTracer per runWorkflow() call, passed through
-  // LangGraph's config.configurable (NOT a WorkflowState/Annotation channel — see
-  // src/monitoring/workflowTracer.js's file header for why). Each concurrent workflow
-  // (orchestratorAgent.js dispatches up to ISSUE_CONCURRENCY at once) gets its own
-  // instance here, so there's no shared mutable tracer state across concurrent runs.
-  const tracer = new WorkflowTracer({
-    workflowId,
-    clusters:     [...new Set(issues.map(i => i.clusterName))],
-    namespace:    issues[0]?.namespace ?? null,
-    incidentType: issues[0]?.type ?? null,
-    complexity:   issues.length === 1 ? (issues[0]?.complexity ?? 'UNKNOWN') : 'COMPLEX',
-    issueKeys:    issues.map(_issueKey),
-    pipeline:     'v5',
-  });
-
   // LangGraph JS's Annotation({ default }) is NOT applied to keys simply absent from the
   // initial invoke() input (confirmed directly — an omitted `attempt` key comes through as
   // `undefined`, not the declared default of 0, turning every `attempt + 1` into NaN and
   // silently defeating the shouldEscalate() >= MAX_FIX_ATTEMPTS check). Every state field
   // must be seeded explicitly here rather than relying on the schema defaults.
-  const result = await compiled.invoke({
+  return _invokeWorkflow({
     incidents, clusterConfigs, issues, workflowId,
     attempt, rca: null, podLogsByKey: {}, plan: null, items: [], blockReason: null, outcome: null, lastAttemptFailure: null,
-  }, {
-    recursionLimit: MAX_FIX_ATTEMPTS * 6 + 10, // bound the investigator↔policy re-diagnose loop
-    configurable: { tracer, incidentTracer: incTracer },
-  });
+  }, { workflowId, issues, incidentTracer: incTracer });
+}
 
-  tracer.finalize(result.outcome);
-  workflowTraceStore.save(tracer.toDocument()).catch(() => {});
-  liveWorkflowStore.finish(workflowId, result.outcome);
+// ── Resume after an orchestrator restart ───────────────────────────────────
+// Pure decision over a LangGraph state snapshot (graph.getState()) — kept separate so the
+// safety rules are unit-testable without a database.
+//
+//   • no checkpoint / nothing pending  → nothing to resume (it finished, or never started)
+//   • interrupted INSIDE the executor  → resume ONLY when k8s-write runs as the remote
+//     gateway AND the checkpoint is younger than its idempotency window: LangGraph re-runs
+//     an interrupted node from its start, and only the remote gateway's per-task-id
+//     done-cache turns a re-sent "apply step N" into a replay instead of a second
+//     mutation. In-process execution has no such cache, so re-running could apply a step
+//     twice — that case falls back to the pre-existing behavior (the incident is
+//     redetected and redispatched as a fresh workflow on a later cycle).
+//   • anything else (investigator/planner/guardian/policy/reflexion) re-runs safely: those
+//     nodes only read the cluster and call agents.
+const EXECUTOR_REPLAY_WINDOW_MS = 55 * 60 * 1000; // inside src/mesh/bus.js's 1h done-cache TTL
 
-  return result;
+function _resumeDecision(snapshot, { k8sWriteMode, now = Date.now() } = {}) {
+  if (!snapshot?.values?.workflowId) return { resume: false, reason: 'no checkpoint for this workflow' };
+  const next = snapshot.next ?? [];
+  if (next.length === 0) return { resume: false, reason: 'workflow had already finished' };
+  if (next.includes('executor')) {
+    if (k8sWriteMode !== 'remote') {
+      return { resume: false, reason: 'interrupted inside the executor with in-process k8s-write (no idempotency cache) — not re-applying steps' };
+    }
+    const age = now - new Date(snapshot.createdAt ?? 0).getTime();
+    if (!(age >= 0 && age < EXECUTOR_REPLAY_WINDOW_MS)) {
+      return { resume: false, reason: `interrupted inside the executor ${Math.round(age / 60000)} min ago — past the k8s-write replay window` };
+    }
+  }
+  return { resume: true, next };
+}
+
+// Continue a workflow a previous process life left mid-run. Returns
+// { resumed: false, reason } (and drops its checkpoint) when it shouldn't be resumed.
+async function resumeWorkflow({ workflowId }) {
+  if (!checkpointer) return { resumed: false, reason: 'checkpointing disabled' };
+  const snapshot = await compiled.getState({ configurable: { thread_id: workflowId } });
+  const decision = _resumeDecision(snapshot, { k8sWriteMode: k8sWrite.mode });
+  if (!decision.resume) {
+    await checkpointer.deleteThread(workflowId).catch(() => {});
+    return { resumed: false, reason: decision.reason };
+  }
+
+  const issues = snapshot.values.issues ?? [];
+  console.log(`[GRAPH] resuming workflow ${workflowId} at ${decision.next.join(', ')} (attempt ${snapshot.values.attempt ?? 0}/${MAX_FIX_ATTEMPTS})`);
+  const incidentTracer = new IncidentTracer({ workflowId, resource: resourceFromIssue(issues[0] ?? {}) });
+  const result = await _invokeWorkflow(null, { workflowId, issues, incidentTracer });
+  return { resumed: true, result };
 }
 
 module.exports = {
   runWorkflow,
-  graph: compiled,
+  resumeWorkflow,
+  useCheckpointer,
+  graph: compiledBase,
+  // Exported for unit testing the resume safety rules in isolation.
+  _resumeDecision, EXECUTOR_REPLAY_WINDOW_MS,
   // Exported for unit testing the verdict/attempt → branch mapping in isolation
   // (see graph.test.js) without mocking the full agent/store dependency graph.
   routeAfterPlanner, routeAfterPolicy, shouldEscalate, requiresApproval, MAX_FIX_ATTEMPTS,

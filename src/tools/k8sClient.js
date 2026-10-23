@@ -40,11 +40,16 @@ async function _loadKubeConfig(context) {
 
 async function getCoreV1Api(context) {
   const { kc, key } = await _loadKubeConfig(context);
-  const cached = _clients.get(context);
+  // Cached per (context, identity): a reader-scoped call and a bootstrap call for the
+  // same context must never share an API client (src/services/clusterIdentity.js). The
+  // credPath part of `key` also changes whenever a role token is re-minted (each mint
+  // writes a fresh file path for exactly this reason).
+  const slot = `${context}|${require('../services/clusterIdentity').currentIdentity() ?? 'bootstrap'}`;
+  const cached = _clients.get(slot);
   if (cached && cached.key === key) return cached.api;
 
   const api = kc.makeApiClient(k8s.CoreV1Api);
-  _clients.set(context, { key, api });
+  _clients.set(slot, { key, api });
   return api;
 }
 

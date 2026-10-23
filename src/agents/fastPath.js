@@ -52,7 +52,7 @@ const diagnosisLlm = new ChatOpenAI({
   model:  FASTPATH_MODEL,
   configuration: FASTPATH_BASE_URL ? { baseURL: FASTPATH_BASE_URL } : undefined,
   temperature: 0.1,
-}).withStructuredOutput(FastPathDiagnosisSchema);
+}).withStructuredOutput(FastPathDiagnosisSchema, { method: 'functionCalling' });
 
 const usingDedicated = !!(_config.FASTPATH_API_KEY && _config.FASTPATH_MODEL);
 console.log(`[FASTPATH] LLM: ${usingDedicated ? `dedicated (${FASTPATH_MODEL})` : `shared fallback (${FASTPATH_MODEL})`}`);
@@ -87,7 +87,7 @@ const evidenceSelectionLlm = new ChatOpenAI({
   model:  FASTPATH_MODEL,
   configuration: FASTPATH_BASE_URL ? { baseURL: FASTPATH_BASE_URL } : undefined,
   temperature: 0.1,
-}).withStructuredOutput(EvidenceRequestSchema);
+}).withStructuredOutput(EvidenceRequestSchema, { method: 'functionCalling' });
 
 const EVIDENCE_SELECTION_SYSTEM_PROMPT = `You are selecting evidence for a Kubernetes
 incident already classified as SIMPLE — a well-understood, single-resource failure

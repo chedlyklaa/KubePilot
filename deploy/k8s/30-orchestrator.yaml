@@ -1,0 +1,87 @@
+# Orchestrator: fleet detection + classification, the LangGraph conductor (with Mongo
+# checkpoints), the API/dashboard backend, and the mesh effects consumer. ONE replica:
+# the effects consumer and the in-memory dashboard stores assume a single orchestrator.
+#
+# clusters.yaml comes from the kubepilot-clusters ConfigMap, shared with both gateways so
+# they validate contexts against the same fleet. It's mounted read-only, so adding a
+# cluster through the dashboard UI (which writes that file) is not supported in this
+# deployment — edit the ConfigMap and restart orchestrator + gateways instead.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubepilot-clusters
+data:
+  clusters.yaml: |
+    clusters:
+      - name: minikube
+        context: minikube
+        tier: dev
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubepilot-orchestrator
+automountServiceAccountToken: false # reaches clusters via its kubeconfig, never via this pod's token
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator
+  labels: { app.kubernetes.io/name: orchestrator, app.kubernetes.io/part-of: kubepilot, kubepilot/role: orchestrator }
+spec:
+  replicas: 1
+  strategy: { type: Recreate } # never two orchestrators at once (single effects consumer)
+  selector: { matchLabels: { app.kubernetes.io/name: orchestrator } }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: orchestrator, app.kubernetes.io/part-of: kubepilot, kubepilot/role: orchestrator, kubepilot/cluster-access: "true" }
+    spec:
+      serviceAccountName: kubepilot-orchestrator
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: orchestrator
+          image: kubepilot
+          command: ["node", "index.js"]
+          ports: [{ name: api, containerPort: 3001 }]
+          envFrom:
+            - secretRef: { name: kubepilot-env }
+            - configMapRef: { name: kubepilot-config }
+          env:
+            - { name: REDIS_PASS, valueFrom: { secretKeyRef: { name: kubepilot-redis-acl, key: ORCH_PASS } } }
+            - { name: REDIS_URL, value: "redis://orchestrator:$(REDIS_PASS)@redis:6379" }
+            - { name: AGENT_FASTPATH_MODE, value: remote }
+            - { name: AGENT_INVESTIGATOR_MODE, value: remote }
+            - { name: AGENT_PLANNER_MODE, value: remote }
+            - { name: AGENT_GUARDIAN_MODE, value: remote }
+            - { name: AGENT_REFLECTION_MODE, value: remote }
+            - { name: AGENT_K8S_READ_MODE, value: remote }
+            - { name: AGENT_K8S_WRITE_MODE, value: remote }
+            # Signs each approved plan step for k8s-write (src/mesh/writeAuth.js) — shared only with k8s-write.
+            - { name: MESH_WRITE_SIGNING_KEY, valueFrom: { secretKeyRef: { name: kubepilot-write-signing, key: MESH_WRITE_SIGNING_KEY } } }
+          readinessProbe: { tcpSocket: { port: api }, periodSeconds: 10 }
+          livenessProbe: { tcpSocket: { port: api }, initialDelaySeconds: 30, periodSeconds: 20 }
+          resources:
+            requests: { cpu: 200m, memory: 384Mi }
+            limits: { memory: 1Gi }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
+          volumeMounts:
+            - { name: kubeconfig, mountPath: /var/run/kubepilot/kubeconfig, readOnly: true }
+            - { name: clusters, mountPath: /app/config/clusters.yaml, subPath: clusters.yaml, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+            - { name: logs, mountPath: /app/logs }
+      volumes:
+        - name: kubeconfig
+          secret: { secretName: kubepilot-kubeconfig-detect }
+        - name: clusters
+          configMap: { name: kubepilot-clusters }
+        - { name: tmp, emptyDir: {} }
+        - { name: logs, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: orchestrator }
+spec:
+  selector: { app.kubernetes.io/name: orchestrator }
+  ports: [{ name: api, port: 3001, targetPort: api }]

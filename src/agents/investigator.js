@@ -4,11 +4,11 @@ const { z }           = require('zod');
 const { ChatOpenAI }  = require('@langchain/openai');
 const { tool }        = require('@langchain/core/tools');
 const { SystemMessage, HumanMessage, ToolMessage } = require('@langchain/core/messages');
-const kubectl         = require('../tools/kubectl');
-const reflectionAgent = require('./reflectionAgent');
+// Reflexion is reached through its client so it can run as its own service
+// (AGENT_REFLECTION_MODE=remote) — in-process otherwise, same as before.
+const { reflectionClient } = require('./agentClients');
 const shortMemory     = require('../memory/shortMemory');
 const tokenStore      = require('../api/tokenStore');
-const PolicyEngine    = require('../policy/policyEngine');
 const { loadConfig }  = require('../config');
 const { runStructuredLLMCall } = require('../resilience/llmCircuitBreaker');
 const { InvestigationReportSchema } = require('../orchestrator/schemas');
@@ -69,8 +69,6 @@ const { issueKey: _issueKey } = require('../orchestrator/issueKey');
 // via the read-only execution layer below — deciding what to look at, how many times,
 // and when it has enough, rather than following a fixed checklist of layers.
 
-const policyEngine = new PolicyEngine();
-
 const _config = loadConfig();
 const INVESTIGATOR_API_KEY  = _config.INVESTIGATOR_API_KEY  || _config.OPENAI_API_KEY;
 const INVESTIGATOR_BASE_URL = _config.INVESTIGATOR_BASE_URL || _config.OPENAI_BASE_URL;
@@ -92,7 +90,6 @@ const SAFETY_MAX_ITERATIONS  = 40;  // runaway-protection ceiling on TURN COUNT,
                                      // converge well before this
 const SAFETY_MAX_DURATION_MS = Number(process.env.INVESTIGATOR_MAX_DURATION_MS ?? 10 * 60 * 1000); // 10 min wall-clock ceiling
 const MIN_REAL_TOOL_CALLS_BEFORE_SUBMIT = 1; // a submission with zero real evidence gathered is never accepted, regardless of self-reported confidence
-const MAX_TOOL_OUTPUT_CHARS  = 4_000;
 const SUBMIT_TOOL_NAME       = 'submit_investigation_report';
 
 // Reference taxonomy (architecture-doc §3.2) for CLASSIFYING findings, not a checklist
@@ -245,80 +242,20 @@ not just that a different command should be tried for the same cause. Take it in
 rather than re-investigating as if this were the first attempt.`;
 
 // ── Read-only execution layer ────────────────────────────────────────────────
-// The Investigator may run ANY command it wants — as long as it only reads. This is an
-// ALLOWLIST (not a denylist) of kubectl verbs: safer, since a denylist can always miss
-// a mutating subcommand kubectl adds later. This is the app-level layer of a defense-
-// in-depth design — the operator is expected to additionally bind the credentials this
-// process runs with to a read-only (Viewer) ClusterRole at the Kubernetes RBAC level
-// (architecture-doc §7.3's read-only ServiceAccount), so even a bug here can't mutate
-// the cluster.
-const READONLY_VERBS = new Set([
-  'get', 'describe', 'logs', 'top', 'explain',
-  'api-resources', 'api-versions', 'version', 'cluster-info',
-]);
-// Streaming/blocking flags — would hang the child process until kubectl.js's own
-// execFile timeout kills it; rejected outright instead of burning that timeout.
-const BLOCKED_FLAGS_RE = /(^|\s)(-f|--follow|-w|--watch)(\s|=|$)/;
-// Secret VALUES must never reach the LLM — block the resource noun entirely here and
-// point the model at the dedicated Config-layer summary (key names only) instead.
-const BLOCKED_RESOURCE_RE = /^secrets?$/i;
+// The allowlist gate itself lives in src/tools/readOnlyKubectl.js (shared with the
+// k8s-read gateway service). Every read this agent makes goes through the k8s-read
+// client, so with AGENT_K8S_READ_MODE=remote this process never touches cluster
+// credentials at all — the gateway does, after re-running the same gate.
+const { _isReadOnlyCommand } = require('../tools/readOnlyKubectl');
+const { k8sRead } = require('../tools/k8sGateway');
 
-function _isReadOnlyCommand(argsStr) {
-  const trimmed = (argsStr ?? '').trim();
-  if (!trimmed) return { ok: false, reason: 'empty command' };
-
-  const tokens = trimmed.split(/\s+/);
-  const verb = tokens[0];
-  if (!READONLY_VERBS.has(verb)) {
-    return { ok: false, reason: `verb "${verb}" is not on the read-only allowlist (${[...READONLY_VERBS].join(', ')})` };
-  }
-  if (BLOCKED_FLAGS_RE.test(` ${trimmed} `)) {
-    return { ok: false, reason: 'streaming flags (-f/--follow/-w/--watch) are not allowed' };
-  }
-  // Check EVERY non-flag token, not just the first — checking only tokens.slice(1)'s
-  // FIRST non-flag entry let a flag's VALUE masquerade as the resource-type token
-  // whenever it happened to come first (e.g. "get -n kube-system secrets -o json":
-  // the first non-flag token is "kube-system", the -n value, not "secrets" — so the
-  // real resource type was never inspected and the command executed for real, found
-  // in review 2026-08-26). BLOCKED_RESOURCE_RE is an exact `^secrets?$` match, so this
-  // still doesn't false-positive on a namespace/label VALUE like "secret-storage" —
-  // only a token that IS exactly "secret"/"secrets" (bare, or as the type half of
-  // "secret/foo" or "pods,secrets") trips it, whichever position it's in. A namespace
-  // literally named "secret" would be a rare false positive; that's an acceptable
-  // trade for never letting a real Secret read slip through undetected.
-  const resourceTypes = tokens.slice(1)
-    .filter(t => !t.startsWith('-'))
-    .flatMap(t => t.split(',').map(x => x.split('/')[0]));
-  if (resourceTypes.some(t => BLOCKED_RESOURCE_RE.test(t))) {
-    return { ok: false, reason: 'reading Secret values is blocked — use the Config-layer summary (key names only) instead' };
-  }
-  return { ok: true };
-}
-
-// `argsStr` is everything AFTER "kubectl" — the model never supplies "kubectl" or
-// "--context" itself, both are injected here, so a hallucinated or malicious context
-// value can never redirect the command at a different cluster.
+// Never throws — same contract as before the gateway existed: a failure comes back as an
+// "ERROR: ..." tool result the model can read and react to. That now also covers mesh
+// transport failures (gateway down/timeout, refused context), which would otherwise
+// reject the whole turn's Promise.all in _runInvestigationLoop / Planner / Fast Path.
 async function executeReadOnlyCommand(argsStr, context) {
-  const gate = _isReadOnlyCommand(argsStr);
-  if (!gate.ok) {
-    console.warn(`[INVESTIGATOR] [EXEC-LAYER] blocked: "${argsStr}" — ${gate.reason}`);
-    return `ERROR: command blocked — ${gate.reason}`;
-  }
-
-  // Unquoted --context=, matching every other sanitizer-routed call site in this
-  // codebase — no functional need to quote it (context names are plain identifiers),
-  // and it keeps our own server-built prefix out of policyEngine's quote-balance check.
-  const fullCommand = `kubectl --context=${context} ${argsStr.trim()}`;
-  const { safe, command, reason } = policyEngine.sanitizeCommand(fullCommand);
-  if (!safe) {
-    console.warn(`[INVESTIGATOR] [EXEC-LAYER] blocked by sanitizer: "${argsStr}" — ${reason}`);
-    return `ERROR: command blocked — ${reason}`;
-  }
-
   try {
-    console.log(`[INVESTIGATOR] [EXEC-LAYER] running: ${command}`);
-    const out = await kubectl.runCommand(command);
-    return out.length > MAX_TOOL_OUTPUT_CHARS ? out.slice(0, MAX_TOOL_OUTPUT_CHARS) + '\n...(truncated)' : out;
+    return await k8sRead.exec({ command: argsStr, context });
   } catch (err) {
     return `ERROR: ${err.message}`;
   }
@@ -447,7 +384,7 @@ function _extractUsage(response) {
   return null;
 }
 
-async function _runInvestigationLoop({ issues, clusterConfigs, reflexionContext, seed, previousAttemptFailure }) {
+async function _runInvestigationLoop({ issues, clusterConfigs, reflexionContext, seed, previousAttemptFailure, signal }) {
   const clusterNames = [...new Set(issues.map(i => i.clusterName))];
   const commandLog = [];
   // Counts repeats per normalized command, across the WHOLE investigation (not reset
@@ -488,11 +425,15 @@ async function _runInvestigationLoop({ issues, clusterConfigs, reflexionContext,
       console.warn(`[INVESTIGATOR][${clusterNames.join(',')}] hit the ${SAFETY_MAX_DURATION_MS}ms wall-clock cap after ${turnsUsed} turn(s) — stopping`);
       break;
     }
+    if (signal?.aborted) {
+      console.warn(`[INVESTIGATOR][${clusterNames.join(',')}] caller's deadline passed after ${turnsUsed} turn(s) — stopping (${signal.reason?.message ?? 'aborted'})`);
+      break;
+    }
     turnsUsed = i + 1;
 
     let response;
     try {
-      response = await runStructuredLLMCall(() => modelWithTools.invoke(messages));
+      response = await runStructuredLLMCall(() => modelWithTools.invoke(messages, signal ? { signal } : undefined));
     } catch (err) {
       console.warn(`[INVESTIGATOR] loop call failed (iteration ${i + 1}): ${err.message}`);
       break;
@@ -636,7 +577,10 @@ class Investigator {
   // present on a re-diagnose retry; folded into the model's initial message so it can be
   // taken into account rather than re-investigating blind (see SYSTEM_PROMPT's paragraph
   // on it).
-  async investigate(issues, clusterConfigs, seed = null, previousAttemptFailure = null) {
+  // `signal` (optional) — set when this runs as the investigator service: it aborts at the
+  // task's deadline, i.e. once the orchestrator has stopped waiting for this answer, so an
+  // abandoned investigation stops spending LLM calls instead of running to completion.
+  async investigate(issues, clusterConfigs, seed = null, previousAttemptFailure = null, { signal } = {}) {
     const clusterNames = [...new Set(issues.map(i => i.clusterName))];
     const keys = issues.map(_issueKey);
 
@@ -658,7 +602,7 @@ class Investigator {
           issueType, oomKilled: rep.oomKilled ?? false, exitCode: rep.exitCode ?? null,
           hasDeployment: !!rep.deployment, tier: _tierFor(clusterConfigs, rep.clusterName), imagePrefix: '',
         };
-        return reflectionAgent.getContext({ fingerprint, queryText, issueType });
+        return reflectionClient.getContext({ fingerprint, queryText, issueType });
       }));
       const reflexionContext = {
         rules:             contexts.flatMap(c => c.rules),
@@ -667,7 +611,7 @@ class Investigator {
       };
 
       const { report, commandLog, reachedTarget, turnsUsed } =
-        await _runInvestigationLoop({ issues, clusterConfigs, reflexionContext, seed, previousAttemptFailure });
+        await _runInvestigationLoop({ issues, clusterConfigs, reflexionContext, seed, previousAttemptFailure, signal });
       const finalReport = report ?? _fallback(issues);
       if (!reachedTarget) {
         console.warn(`[INVESTIGATOR][${clusterNames.join(',')}] returning best-effort report — never reached the confidence/evidence target (confidence=${finalReport.confidence}, evidenceSufficiency=${finalReport.evidenceSufficiency})`);
@@ -729,6 +673,8 @@ module.exports = new Investigator();
 // the security-critical piece of the execution layer — can be verified on its own,
 // without going through a full (LLM-driven) investigation.
 module.exports._isReadOnlyCommand    = _isReadOnlyCommand;
+// graph.js substitutes this when the investigator service itself is unreachable (remote mode).
+module.exports._fallback             = _fallback;
 module.exports.executeReadOnlyCommand = executeReadOnlyCommand;
 module.exports._hasConcreteEvidence  = _hasConcreteEvidence;
 module.exports._isGenericEvidence    = _isGenericEvidence;

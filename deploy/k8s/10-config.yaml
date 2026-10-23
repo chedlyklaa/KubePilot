@@ -1,0 +1,34 @@
+# Non-secret settings shared by every KubePilot process. Secrets are NOT in this repo:
+#
+#   kubectl -n kubepilot create secret generic kubepilot-env --from-env-file=.env
+#       (LLM keys, NOTIFICATION_SECRET, LANGCHAIN_API_KEY, … — the same .env the app uses;
+#        strip the quotes around values first, kubectl keeps them literally)
+#
+#   kubectl -n kubepilot create secret generic kubepilot-redis-acl \
+#       --from-literal=ORCH_PASS=… --from-literal=AGENT_PASS=… \
+#       --from-file=users.acl=deploy/k8s/redis-users.acl.example   (edit passwords in it)
+#
+#   kubectl -n kubepilot create secret generic kubepilot-write-signing \
+#       --from-literal=MESH_WRITE_SIGNING_KEY="$(openssl rand -hex 32)"
+#       Mounted ONLY by the orchestrator and k8s-write (never put it in kubepilot-env, which
+#       every agent loads): k8s-write refuses any apply the orchestrator didn't sign.
+#
+#   kubectl -n kubepilot create secret generic kubepilot-kubeconfig-read  --from-file=config=<read-only kubeconfig>
+#   kubectl -n kubepilot create secret generic kubepilot-kubeconfig-write --from-file=config=<executor kubeconfig>
+#   kubectl -n kubepilot create secret generic kubepilot-kubeconfig-detect --from-file=config=<read-only kubeconfig>
+#       Each should hold ONLY a minter token (deploy/k8s/target-cluster-rbac.yaml, option 2):
+#       read/detect → kubepilot-read-minter, write → kubepilot-write-minter. With
+#       CLUSTER_IDENTITY_MODE=serviceaccount below, the pods mint their short-lived
+#       reader/executor tokens from it — a gateway pod never holds a broader credential.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubepilot-config
+data:
+  MONGODB_URI: mongodb://mongo:27017/k8s_agent
+  QDRANT_URL: http://qdrant:6333
+  AGENT_PORT: "8080"
+  KUBECONFIG: /var/run/kubepilot/kubeconfig/config
+  WORKFLOW_RESUME_ENABLED: "true"
+  CLUSTER_IDENTITY_MODE: serviceaccount
+  MESH_LEASE_MS: "30000"

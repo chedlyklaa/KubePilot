@@ -1,6 +1,7 @@
 'use strict';
 const { createClient } = require('redis');
 const { loadConfig }   = require('../config');
+const effects          = require('../mesh/effects');
 
 // ── Short Memory ───────────────────────────────────────────────────────────
 // Live incident state for the v5 Orchestrator: dedup, priority queue, per-resource
@@ -31,6 +32,11 @@ function queueKey()  { return 'sm:queue:fleet'; }
 function activeKey() { return 'sm:active:fleet'; }
 function groupKey(group)   { return `sm:group:${group}`; }
 function pinKey(key)       { return `sm:pin:${key}`; }
+// workflowId -> { dispatchKey, startedAt } for every workflow currently running — what
+// boot reads to find workflows a previous process life left mid-run (see
+// OrchestratorAgent._resumeInterruptedWorkflows). Unlike sm:active:fleet it is NOT wiped at
+// boot; each entry is cleared when its workflow finishes or is given up on.
+function inflightKey()     { return 'sm:inflight:fleet'; }
 
 class ShortMemory {
   constructor() {
@@ -56,6 +62,9 @@ class ShortMemory {
   // ── Incident state ────────────────────────────────────────────────────────
 
   async upsertIncident(key, incident) {
+    // Before the ready check: a remote agent service never initializes shortMemory, so
+    // the write is shipped to the orchestrator (src/mesh/effects.js) instead of dropped.
+    if (effects.emit('incident', { key, incident })) return;
     if (!this.ready) return;
     await this.client.set(incidentKey(key), JSON.stringify(incident), { EX: INCIDENT_TTL_SEC });
   }
@@ -87,6 +96,35 @@ class ShortMemory {
   async releaseResourceLock(key) {
     if (!this.ready) return;
     await this.client.del(lockKey(key));
+  }
+
+  // For resuming an interrupted workflow: succeeds if the lock is free OR still held by
+  // this same workflowId (its TTL hadn't expired yet when the process came back up) —
+  // and refreshes the TTL either way. Fails only if a DIFFERENT workflow owns it now.
+  async reclaimResourceLock(key, workflowId, ttlMs = DEFAULT_LOCK_TTL_MS) {
+    if (!this.ready) return true;
+    if (await this.acquireResourceLock(key, workflowId, ttlMs)) return true;
+    if (await this.client.get(lockKey(key)) !== workflowId) return false;
+    await this.client.pExpire(lockKey(key), ttlMs);
+    return true;
+  }
+
+  // ── In-flight workflow registry (resume after restart) ──────────────────────
+
+  async registerInflight(workflowId, dispatchKey) {
+    if (!this.ready) return;
+    await this.client.hSet(inflightKey(), workflowId, JSON.stringify({ dispatchKey, startedAt: new Date().toISOString() }));
+  }
+
+  async clearInflight(workflowId) {
+    if (!this.ready) return;
+    await this.client.hDel(inflightKey(), workflowId);
+  }
+
+  async listInflight() {
+    if (!this.ready) return [];
+    const all = await this.client.hGetAll(inflightKey());
+    return Object.entries(all).map(([workflowId, v]) => ({ workflowId, ...JSON.parse(v) }));
   }
 
   // ── Priority queue — replaces the plain `issueQueue` array ─────────────────

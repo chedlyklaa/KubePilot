@@ -46,7 +46,7 @@ const assessLlm = new ChatOpenAI({
   model:  ROOTCAUSEFIT_MODEL,
   configuration: ROOTCAUSEFIT_BASE_URL ? { baseURL: ROOTCAUSEFIT_BASE_URL } : undefined,
   temperature: 0.1,
-}).withStructuredOutput(RootCauseFitSchema);
+}).withStructuredOutput(RootCauseFitSchema, { method: 'functionCalling' });
 
 const SYSTEM_PROMPT = `You are assessing ONE narrow question: does the MECHANISM of a
 proposed kubectl command plausibly address the stated root cause?

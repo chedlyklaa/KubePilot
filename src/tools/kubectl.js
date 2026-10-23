@@ -410,6 +410,7 @@ async function deleteNetworkResource(kind, name, namespace, context) {
 }
 
 module.exports = {
+  _parseArgs, // shared with kubectlArgGuard.js so it inspects exactly the argv kubectl gets
   runCommand,
   waitForFix,
   getPods,

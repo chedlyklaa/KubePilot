@@ -1,0 +1,80 @@
+# Network isolation for the Agent Mesh. Default-deny ingress, then open only what each
+# component needs. (Requires a CNI that enforces NetworkPolicy — minikube: --cni=calico.)
+#
+# Known gap: Mongo holds ClusterCredential documents and planner/reflection need Mongo for
+# their own collections — without per-role Mongo users (not set up here) those two pods
+# can technically read the credentials collection. Giving each role its own Mongo user
+# with collection-level grants closes that.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny-ingress }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+# Redis (the mesh bus): every KubePilot pod. What each may touch inside it is enforced
+# by the Redis ACL users (redis-users.acl.example), not here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: redis-from-kubepilot }
+spec:
+  podSelector: { matchLabels: { app: redis } }
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app.kubernetes.io/part-of: kubepilot } } }]
+      ports: [{ port: 6379 }]
+---
+# Mongo: orchestrator, the two gateways (ClusterCredential), planner (forecast cache),
+# reflection (rules/episodes). Not investigator, fastpath or guardian.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: mongo-from-allowed }
+spec:
+  podSelector: { matchLabels: { app: mongo } }
+  ingress:
+    - from:
+        - podSelector: { matchExpressions: [{ key: app.kubernetes.io/name, operator: In, values: [orchestrator, k8s-read, k8s-write, planner, reflection] }] }
+      ports: [{ port: 27017 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: qdrant-from-allowed }
+spec:
+  podSelector: { matchLabels: { app: qdrant } }
+  ingress:
+    - from:
+        - podSelector: { matchExpressions: [{ key: app.kubernetes.io/name, operator: In, values: [orchestrator, reflection] }] }
+      ports: [{ port: 6333 }]
+---
+# Dashboard/API.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: orchestrator-api }
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/name: orchestrator } }
+  ingress:
+    - ports: [{ port: 3001 }]
+---
+# LLM agents' egress: DNS, the in-namespace stores, and HTTPS out (their LLM endpoint).
+# They carry no ServiceAccount token, so even reaching the API server on 443 only gets an
+# anonymous (unauthorized) request — the egress rule can't name the API server by domain.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: llm-agents-egress }
+spec:
+  podSelector: { matchLabels: { kubepilot/role: agent, kubepilot/cluster-access: "false" } }
+  policyTypes: [Egress]
+  egress:
+    - ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+    - to: [{ podSelector: { matchExpressions: [{ key: app, operator: In, values: [redis, mongo, qdrant] }] } }]
+    - ports: [{ port: 443, protocol: TCP }]
+---
+# MCP clients → k8s-read (POST /mcp, only mounted when MCP_AUTH_TOKEN is set). Opt-in per
+# namespace: label a client namespace kubepilot/mcp-client=true. Nothing is labeled by default.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: k8s-read-mcp }
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/name: k8s-read } }
+  ingress:
+    - from: [{ namespaceSelector: { matchLabels: { kubepilot/mcp-client: "true" } } }]
+      ports: [{ port: 8080 }]
