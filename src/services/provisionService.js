@@ -3,10 +3,8 @@ const fs   = require('fs');
 const yaml = require('js-yaml');
 const { spawn } = require('child_process');
 
-// jobId → { status, log, error, profile, tier, createdAt }
 const jobs = new Map();
 
-// Purge jobs older than 1 hour
 setInterval(() => {
   const cutoff = Date.now() - 3_600_000;
   for (const [id, job] of jobs) {
@@ -65,7 +63,7 @@ class ProvisionService {
         clusters.push({ name: profile, context: profile, tier: tier ?? 'dev', namespaces: ['*'] });
         fs.writeFileSync(configPath, yaml.dump({ clusters }), 'utf8');
       }
-    } catch { /* config write failure is non-fatal */ }
+    } catch { }
   }
 }
 

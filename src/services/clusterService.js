@@ -4,13 +4,11 @@ const yaml    = require('js-yaml');
 const kubectl = require('../tools/kubectl');
 const metricsCollector = require('../monitoring/metricsCollector');
 const { ClusterCredential } = require('../db/models');
-const { isAllowed, filterAllowed } = require('../config/clusterConfig');
 
 const GPU_RESOURCES = ['nvidia.com/gpu', 'amd.com/gpu', 'intel.com/gpu', 'gpu.intel.com/i915'];
 const VALID_TIERS   = new Set(['dev', 'staging', 'production']);
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
+// Format a byte count
 function fmtBytes(b) {
   if (b == null || isNaN(b)) return null;
   if (b < 1024)      return `${b} B`;
@@ -31,7 +29,7 @@ function parseK8sQuantity(str) {
   return n;
 }
 
-// kubectl top pods -n <ns> --no-headers  →  NAME CPU MEM
+// Parse kubectl top pods output
 function parseTopOutput(raw, namespace) {
   const map = {};
   for (const line of (raw ?? '').split('\n').filter(Boolean)) {
@@ -45,7 +43,7 @@ function parseTopOutput(raw, namespace) {
   return map;
 }
 
-// kubectl top pods --all-namespaces --no-headers  →  NS NAME CPU MEM
+// Parse kubectl top pods output for all namespaces
 function parseTopOutputAllNs(raw) {
   const map = {};
   for (const line of (raw ?? '').split('\n').filter(Boolean)) {
@@ -59,14 +57,14 @@ function parseTopOutputAllNs(raw) {
   return map;
 }
 
-// ── ClusterService ────────────────────────────────────────────────────────────
-
+// Cluster data for the dashboard
 class ClusterService {
-  // ── Config ─────────────────────────────────────────────────────────────────
+  // Read the cluster config
   readConfig(configPath) {
     try {
-      return filterAllowed(yaml.load(fs.readFileSync(configPath, 'utf8')).clusters ?? []);
-    } catch {
+      return yaml.load(fs.readFileSync(configPath, 'utf8')).clusters ?? [];
+    } catch (err) {
+      console.warn('[ClusterService] Failed to read clusters config:', err.message);
       return [];
     }
   }
@@ -93,11 +91,7 @@ class ClusterService {
     fs.writeFileSync(configPath, content, 'utf8');
   }
 
-  // ── Kubectl contexts ────────────────────────────────────────────────────────
-  // Merges two sources: real contexts already in the server's shared kubeconfig file,
-  // and credential-backed clusters uploaded via /api/kube/clusters/upload — those have
-  // no entry in the shared file at all (sessionManager materializes their kubeconfig
-  // on demand), so `kubectl config get-contexts` alone would never surface them.
+  // List kubectl contexts
   async getContexts(configPath) {
     const namesRaw = await kubectl.runCommand('kubectl config get-contexts -o name');
     const names    = namesRaw.split('\n').map(s => s.trim()).filter(Boolean);
@@ -121,7 +115,7 @@ class ClusterService {
     try {
       const creds = await ClusterCredential.find().select('context').lean();
       uploaded = creds
-        .filter(c => !detectedNames.has(c.context) && isAllowed(c.context))
+        .filter(c => !detectedNames.has(c.context))
         .map(c => ({
           name:             c.context,
           isCurrent:        false,
@@ -136,12 +130,7 @@ class ClusterService {
     return [...detected, ...uploaded];
   }
 
-  // ── Pod health ─────────────────────────────────────────────────────────────
-  // Fetches one cluster's pod health. Split out from getPodHealth/streamPodHealth
-  // so callers can either wait for the whole set (Promise.allSettled) or react to
-  // each cluster as it individually finishes (streamPodHealth) — clusters vary
-  // wildly in latency (slow VPN, cold API server) so waiting for the slowest one
-  // to show the fast ones is a bad tradeoff for the UI.
+  // Fetch pod health for one cluster
   async _fetchClusterPods(cluster, prometheusMap) {
     const { name, context: ctx, tier = 'dev', namespaces: ns = ['default'] } = cluster;
     const rawPods    = [];
@@ -159,7 +148,7 @@ class ClusterService {
         (async () => {
           try { Object.assign(metricsMap, parseTopOutputAllNs(
             await kubectl.runCommand(`kubectl --context=${ctx} top pods --all-namespaces --no-headers`)
-          )); } catch { /* metrics-server not available */ }
+          )); } catch { }
         })(),
       ]);
     } else {
@@ -169,21 +158,17 @@ class ClusterService {
         try { Object.assign(metricsMap, parseTopOutput(
           await kubectl.runCommand(`kubectl --context=${ctx} top pods -n ${namespace} --no-headers`),
           namespace
-        )); } catch { /* metrics-server not available */ }
+        )); } catch { }
       }));
     }
 
-    // Pod fetch failing for every namespace means the cluster itself is
-    // unreachable (bad context, network down, auth expired) — not just "no pods".
     if (!podsFetchOk) throw lastPodsErr ?? new Error('Failed to connect');
 
     const pods = this._shapePods(rawPods, metricsMap, prometheusMap);
     return { name, context: ctx, tier, connected: true, podCount: pods.length, pods };
   }
 
-  // Turns raw kubectl pod objects into the shape the UI expects. Shared by the
-  // full-cluster fetch (_fetchClusterPods) and the single-namespace lazy fetch
-  // (getNamespacePods) so the two paths can't drift apart.
+  // Shape pods for the UI
   _shapePods(rawPods, metricsMap, prometheusMap) {
     return rawPods.map(pod => {
       const meta   = pod.metadata  ?? {};
@@ -273,15 +258,7 @@ class ClusterService {
     };
   }
 
-  // ── Namespaces (lazy pod loading) ─────────────────────────────────────────────
-  // The Cluster Health page no longer preloads every pod of every cluster — that's
-  // wasted work when most of it never gets looked at. Instead it lists namespaces
-  // (cheap: one `kubectl get namespaces` per cluster, no pod bodies) up front, and
-  // only fetches a namespace's pods once the user actually expands it.
-
-  // Invokes onCluster(result) as soon as each cluster's namespace list resolves,
-  // rather than waiting for the slowest cluster — same rationale as getPodHealth
-  // vs. the old streamPodHealth, just one level up (namespaces, not pods).
+  // Stream the namespaces of each cluster
   async streamClusterNamespaces(configPath, onCluster) {
     const clusters = this.readConfig(configPath);
 
@@ -319,7 +296,7 @@ class ClusterService {
       (async () => {
         try { Object.assign(metricsMap, parseTopOutput(
           await kubectl.runCommand(`kubectl --context=${ctx} top pods -n ${namespace} --no-headers`), namespace
-        )); } catch { /* metrics-server not available */ }
+        )); } catch { }
       })(),
     ]);
 

@@ -1,6 +1,4 @@
-// Generic in-app confirmation modal — replaces the native browser confirm() popup,
-// which can't be styled and looks inconsistent with the rest of the dashboard.
-// Modeled on SignOutModal's layout (icon + title + message + two actions).
+// Confirmation modal
 export default function ConfirmDialog({
   icon = '⚠',
   title,

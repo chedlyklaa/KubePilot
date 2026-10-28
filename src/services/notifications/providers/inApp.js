@@ -1,6 +1,5 @@
 'use strict';
 
-// Maps notification severity to the in-app notification type
 const SEVERITY_TYPE = { CRITICAL: 'error', ERROR: 'error', WARNING: 'warn', INFO: 'info' };
 
 async function _getAdminIds() {
@@ -36,7 +35,6 @@ async function send(notification, _config) {
 }
 
 async function testConnection(_config) {
-  // In-app is always available — just verify the DB is reachable
   const { Notification } = require('../../../db/models');
   await Notification.findOne().select('_id').lean();
 }

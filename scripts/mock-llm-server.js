@@ -1,44 +1,24 @@
 #!/usr/bin/env node
-// =============================================================================
-// scripts/mock-llm-server.js — scripted, OpenAI-compatible stand-in for the LLM
-//
-// DEMO ONLY. Lets the full v5 pipeline (Orchestrator → Investigator → Planner →
-// Guardian → Policy → Executor → Reflexion) run end-to-end in the dashboard with no
-// real LLM provider. Every agent's call is answered with a scripted response built
-// from what the request actually contains — the kubectl commands the "Investigator"
-// and "Planner" ask for are still executed for real by the app against the cluster,
-// and the mock reads their real outputs back to build the report / plan.
-//
-// Tuned for the scenario in demo/checkout-api.yaml (a Deployment crash-looping
-// because a required env var is missing), with a generic restart-style fallback for
-// anything else.
-//
-// Usage:
-//   node scripts/mock-llm-server.js            # listens on :4010
-//   MOCK_LLM_PORT=4010 MOCK_LLM_DELAY_MS=1500 node scripts/mock-llm-server.js
-// then point every *_BASE_URL in .env at http://localhost:4010/v1
-// =============================================================================
 'use strict';
 
 const http = require('http');
 const crypto = require('crypto');
 
 const PORT     = Number(process.env.MOCK_LLM_PORT ?? 4010);
-const DELAY_MS = Number(process.env.MOCK_LLM_DELAY_MS ?? 1500); // "thinking" time per call, so the UI visibly progresses
+const DELAY_MS = Number(process.env.MOCK_LLM_DELAY_MS ?? 1500);
 const EMBED_DIM = Number(process.env.EMBEDDING_VECTOR_SIZE ?? 768);
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const log = (...a) => console.log(`[MOCK-LLM ${new Date().toLocaleTimeString()}]`, ...a);
 
-// ── Request helpers ─────────────────────────────────────────────────────────
+// Get plain text from message content
 const textOf = c => (typeof c === 'string' ? c : Array.isArray(c) ? c.map(p => p.text ?? '').join('') : '');
 const systemText = msgs => msgs.filter(m => m.role === 'system').map(m => textOf(m.content)).join('\n');
 const firstUser = msgs => textOf(msgs.find(m => m.role === 'user')?.content);
 const toolNames = body => (body.tools ?? []).map(t => t.function?.name).filter(Boolean);
 const tryJson = s => { try { return JSON.parse(s); } catch { return null; } };
 
-// Pairs every tool call the "model" made earlier in this conversation with the real
-// result the app sent back for it.
+// Pair previous tool calls with their results
 function toolHistory(msgs) {
   const results = new Map(msgs.filter(m => m.role === 'tool').map(m => [m.tool_call_id, textOf(m.content)]));
   const out = [];
@@ -55,7 +35,7 @@ function findLine(text, re) {
   return (text ?? '').split('\n').map(l => l.trim()).find(l => re.test(l)) ?? null;
 }
 
-// ── Orchestrator: classify failing pods into incidents ──────────────────────
+// Mock orchestrator response
 function orchestrator(msgs) {
   const signals = tryJson(firstUser(msgs)) ?? {};
   const incidents = (signals.pods ?? []).map(p => {
@@ -76,7 +56,7 @@ function orchestrator(msgs) {
       evidenceSummary: `Pod ${p.namespace}/${p.name}: container "${bad.name}" is ${type}` +
         `${bad.exitCode != null ? ` (last exit code ${bad.exitCode})` : ''} after ${bad.restartCount ?? 0} restart(s).`,
       correlationTag: null,
-      complexity: 'COMPLEX', // always route through the full Investigator for the demo
+      complexity: 'COMPLEX',
       blastScope: null,
     };
   });
@@ -84,7 +64,7 @@ function orchestrator(msgs) {
   return { incidents };
 }
 
-// ── Investigator: scripted read-only tool loop, then a report from real output ──
+// Mock investigator response
 function investigator(msgs) {
   const payload = tryJson(firstUser(msgs)) ?? {};
   const issue = payload.issues?.[0] ?? {};
@@ -116,7 +96,6 @@ function investigator(msgs) {
     return { toolCalls: script[turn] };
   }
 
-  // ── Build the report from the REAL outputs the app sent back ──
   const describe = ran.find(h => h.args.command?.startsWith('describe pod'))?.result ?? '';
   const logs     = ran.find(h => h.args.command?.startsWith('logs'))?.result ?? '';
   const depYaml  = ran.find(h => h.args.command?.startsWith('get deployment'))?.result ?? '';
@@ -176,7 +155,7 @@ function investigator(msgs) {
   return { toolCalls: [{ name: 'submit_investigation_report', args: result }] };
 }
 
-// ── Planner: look up the target service, dry-run the fix, submit ────────────
+// Mock planner response
 function planner(msgs) {
   const payload = tryJson(firstUser(msgs)) ?? {};
   const issue = payload.issues?.[0] ?? {};
@@ -236,7 +215,7 @@ function planner(msgs) {
   return { toolCalls: [{ name: 'submit_plan', args: { steps: [step] } }] };
 }
 
-// ── Guardian: independent review of the proposed command ─────────────────────
+// Mock guardian response
 function guardian(msgs) {
   const prompt = firstUser(msgs);
   const command = prompt.match(/^Command:\s+(.*)$/m)?.[1]?.trim() ?? '';
@@ -280,8 +259,7 @@ function reflection(msgs) {
   };
 }
 
-// Fast Path (should not normally run — Orchestrator marks everything COMPLEX) and any
-// other structured call: produce a valid, conservative object.
+// Mock response for fast path and other calls
 function fastPathOrGeneric(body, schema) {
   const props = schema?.properties ?? {};
   if ('requiresDeepInvestigation' in props) {
@@ -308,7 +286,7 @@ function chatReply(msgs) {
   return { content: `I'm KubePilot running in demo mode. You asked: "${q}". The autonomous pipeline (Orchestrator → Investigator → Planner → Guardian → Executor) is active and watching the cluster — check the Workflows page to follow an incident live.` };
 }
 
-// ── Router ──────────────────────────────────────────────────────────────────
+// Route a request to the right mock
 function route(body) {
   const msgs = body.messages ?? [];
   const sys = systemText(msgs);
@@ -327,14 +305,12 @@ function route(body) {
   else if (schema)                                    out = fastPathOrGeneric(body, schema);
   else                                                out = chatReply(msgs);
 
-  // Normalize: tool calls, plain content, or a structured object (returned the way
-  // the request asked for it — json_schema content or a forced function call).
   if (out.toolCalls || out.content != null) return out;
   if (!rf && body.tool_choice?.function?.name) return { toolCalls: [{ name: body.tool_choice.function.name, args: out }] };
   return { content: JSON.stringify(out) };
 }
 
-// ── OpenAI wire format ──────────────────────────────────────────────────────
+// Build an OpenAI style message
 function buildMessage({ content, toolCalls }) {
   const msg = { role: 'assistant', content: toolCalls ? null : content };
   if (toolCalls) {
@@ -369,7 +345,6 @@ function sendCompletion(res, body, out) {
   if (message.tool_calls) {
     chunk({ tool_calls: message.tool_calls.map((tc, index) => ({ index, ...tc })) });
   } else {
-    // stream text in small pieces so chat UIs render it progressively
     for (const piece of (message.content ?? '').match(/[\s\S]{1,40}/g) ?? []) chunk({ content: piece });
   }
   chunk({}, finish);
@@ -394,7 +369,7 @@ const server = http.createServer(async (req, res) => {
   let raw = '';
   req.on('data', c => { raw += c; });
   req.on('end', async () => {
-    const url = req.url.replace(/^\/[0-9a-f-]{36}/, ''); // tolerate a Scaleway-style /<project>/v1 prefix
+    const url = req.url.replace(/^\/[0-9a-f-]{36}/, '');
     try {
       if (req.method === 'GET' && url.endsWith('/models')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });

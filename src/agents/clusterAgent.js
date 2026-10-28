@@ -36,10 +36,7 @@ const { ACTION_RISK_PARAMS }  = require('../policy/actionRiskParams');
 
 const riskEngine = new RiskEngine();
 
-// Returns false when a namespace's ResourceQuota has (almost) no memory headroom left
-// (>=98% used), true when there's room, null when there's no data to judge from (quota
-// awareness disabled/failed, or no quota configured for this namespace at all) —
-// PolicyEngine only blocks on an explicit false, never on an unknown.
+// Check memory headroom in a namespace quota
 function _hasMemoryHeadroom(namespace, resourceQuotas) {
   if (!resourceQuotas) return null;
   const nsQuotas = resourceQuotas.filter(q => q.metadata?.namespace === namespace);
@@ -59,12 +56,7 @@ function _hasMemoryHeadroom(namespace, resourceQuotas) {
   return true;
 }
 
-// PodDisruptionBudgets in the given namespaces that currently allow zero further
-// disruptions — draining a node hosting pods covered by one of these is exactly the
-// kind of action Kubernetes itself would reject (or worse, force past a safety margin
-// someone configured on purpose). This is a namespace-level approximation, not full
-// label-selector matching against the actual affected pods — coarser, but safe: it can
-// only ever be MORE cautious than necessary, never less.
+// Find PDBs that allow no disruptions
 function _findZeroDisruptionPDBs(namespaces, pdbs) {
   if (!pdbs || !namespaces?.length) return [];
   const nsSet = new Set(namespaces);
@@ -84,25 +76,22 @@ class ClusterAgent {
     this.guardian     = new GuardianAgent(this.name, this.tier);
     this.policyEngine = new PolicyEngine();
 
-    this.cooldowns        = new Map();  // issueKey → last attempt timestamp
-    this.attemptCounts    = new Map();  // issueKey → number of failed attempts
-    this.episodeTimelines = new Map();  // issueKey → { fingerprint, context, timeline[] }
+    this.cooldowns        = new Map();
+    this.attemptCounts    = new Map();
+    this.episodeTimelines = new Map();
 
-    // ── Run lock — prevents overlapping cycles on the same cluster ──────
     this._running = false;
-    // ── Per-resource lock — prevents two pipelines racing the same resource ──
     this._resourceLocks = new Map();
     this.ISSUE_CONCURRENCY = parseInt(process.env.ISSUE_CONCURRENCY || '3', 10);
 
-    // ── Node-level tracking ────────────────────────────────────────────────
-    this.nodeHistory      = {};         // nodeName → { transitions[] } for flapping detection
-    this.nodeDrainAttempts = new Map(); // nodeName → drain attempt count
+    this.nodeHistory      = {};
+    this.nodeDrainAttempts = new Map();
 
     this.COOLDOWN_MS      = 45_000;
     this.MAX_FIX_ATTEMPTS = 3;
   }
 
-  // ── Called once per cycle by orchestrator ─────────────────────────────────
+  // Run one cycle
   async run() {
     if (this._running) {
       console.log(`[${this.name}] [SKIP] Previous cycle still running — skipping this tick`);
@@ -122,17 +111,14 @@ class ClusterAgent {
     console.log(`[${this.name}] Cycle started`);
     console.log(`${'='.repeat(50)}`);
 
-    // ── Fetch pods, nodes, events, and node metrics in parallel ───────────
     let podsJson          = null;
     let nodesJson         = null;
     let eventsJson        = null;
     let allNodeMetrics    = null;
     let allPodMetrics     = null;
-    let resourceQuotas = null; // array, not {items:[...]} — getResourceQuotas() already unwraps it
-    let pdbs           = null; // array, not {items:[...]} — getPodDisruptionBudgets() already unwraps it
+    let resourceQuotas = null;
+    let pdbs           = null;
 
-    // Opt-in: two extra cluster-wide reads every cycle, only worth the cost if
-    // PolicyEngine is actually going to use them (see Rule 9 / Rule N6 below).
     const policyAware = process.env.POLICY_AWARENESS_ENABLED === 'true';
 
     const fetches = [
@@ -169,10 +155,6 @@ class ClusterAgent {
       else if (pdbsResult)     console.warn(`[${this.name}] kubectl get pdb failed: ${pdbsResult.reason?.message}`);
     }
 
-    // ── Connectivity check (fire-and-forget) ──────────────────────────────
-    // pods+nodes+events all failing together is a much stronger "can't reach this
-    // cluster at all" signal than any single one failing on its own (which is more
-    // often a narrow RBAC gap on one resource type).
     if (process.env.CONNECTIVITY_ALERTS_ENABLED === 'true') {
       const unreachable = podsResult.status === 'rejected'
         && nodesResult.status === 'rejected'
@@ -181,21 +163,18 @@ class ClusterAgent {
         .catch(err => console.warn(`[${this.name}] [CONNECTIVITY] Non-blocking error: ${err.message}`));
     }
 
-    // ── Pod issue extraction (unchanged) ──────────────────────────────────
     const allPodIssues = [];
     if (podsJson) {
       if (this.namespaces.includes('*')) {
         const issues = PodAnalyzer.extractIssues(podsJson).map(i => ({ ...i, clusterName: this.name }));
         allPodIssues.push(...issues);
       } else {
-        // filter to monitored namespaces
         const filtered = { ...podsJson, items: (podsJson.items ?? []).filter(p => this.namespaces.includes(p.metadata?.namespace)) };
         const issues   = PodAnalyzer.extractIssues(filtered).map(i => ({ ...i, clusterName: this.name }));
         allPodIssues.push(...issues);
       }
     }
 
-    // ── Node issue extraction ─────────────────────────────────────────────
     const allNodeIssues = [];
     if (nodesJson) {
       const nodeIssues = NodeAnalyzer.extractIssues(nodesJson, this.nodeHistory, allNodeMetrics ?? {});
@@ -203,22 +182,18 @@ class ClusterAgent {
       if (allNodeIssues.length) console.log(`[${this.name}] ${allNodeIssues.length} node issue(s) detected`);
     }
 
-    // ── Event extraction ─────────────────────────────────────────────────
     const events = eventsJson ? EventAnalyzer.extractEvents(eventsJson) : [];
     if (events.length) console.log(`[${this.name}] ${events.length} warning event(s)`);
 
-    // ── Correlation: pod failures → node root causes (spatial hotspot detection) ──
     const correlation = NodeHotspotCorrelator.correlate(allPodIssues, allNodeIssues, podsJson ?? { items: [] }, events);
     if (correlation.hotNodes.length) {
       console.log(`[${this.name}] [CORRELATION] ${correlation.hotNodes.length} hot node(s): ${correlation.hotNodes.map(h => h.nodeName).join(', ')}`);
     }
 
-    // ── Annotate pod issues with their node name ──────────────────────────
     const annotatedPodIssues = podsJson
       ? NodeHotspotCorrelator.annotatePodIssues(allPodIssues, podsJson)
       : allPodIssues;
 
-    // ── Cluster-level analysis ─────────────────────────────────────────────
     const { clusterIssues, summary } = ClusterAnalyzer.analyze({
       podIssues:   annotatedPodIssues,
       nodeIssues:  allNodeIssues,
@@ -230,17 +205,14 @@ class ClusterAgent {
       console.log(`[${this.name}] [CLUSTER] ${summary}`);
     }
 
-    // ── Build node map for correlation context lookup ─────────────────────
     const nodeMap = nodesJson ? NodeAnalyzer.buildNodeMap(nodesJson) : {};
 
-    // ── Temporal risk pattern detection ──────────────────────────────────────
     await temporal.initialize();
     const riskPattern = temporal.detectRiskPattern();
     if (riskPattern.requiresHumanAttention) {
       console.warn(`[${this.name}] [TEMPORAL] ${riskPattern.highRiskCount} high-risk events in session — human attention recommended`);
     }
 
-    // ── Handle node issues first (higher priority when node causes pod failures)
     for (const nodeIssue of allNodeIssues) {
       await this._handleNodeIssue(nodeIssue, {
         allNodeMetrics, correlation, events, nodeMap, pdbs,
@@ -248,7 +220,6 @@ class ClusterAgent {
       });
     }
 
-    // ── Handle pod issues (concurrency-capped with per-resource locks) ────
     if (annotatedPodIssues.length === 0) {
       console.log(`[${this.name}] All pods healthy`);
     } else {
@@ -274,12 +245,7 @@ class ClusterAgent {
       await this._processIssuePool(issueQueue);
     }
 
-    // ── Capacity Forecasting (fire-and-forget — never delays remediation) ─────
     if (process.env.CAPACITY_FORECAST_ENABLED === 'true') {
-      // HPA state lets the forecast engine skip alerting on CPU pressure a namespace's
-      // own autoscaler still has headroom to handle by itself — see
-      // capacityForecastEngine.js's _hpaCoversPressure(). Best-effort: a failed fetch
-      // just means no suppression this cycle, never blocks the forecast itself.
       const hpas = await kubectl.getHPAs('*', this.context)
         .then(items => items.map(h => ({
           namespace:       h.metadata?.namespace,
@@ -296,32 +262,26 @@ class ClusterAgent {
       }).catch(err => console.warn(`[${this.name}] [CAPACITY] Non-blocking error: ${err.message}`));
     }
 
-    // ── RBAC drift reconciliation (fire-and-forget — never delays remediation) ──
     if (process.env.RBAC_DRIFT_ENABLED === 'true') {
       RbacDriftEngine.checkDrift({ cluster: this.name, context: this.context })
         .catch(err => console.warn(`[${this.name}] [RBAC-DRIFT] Non-blocking error: ${err.message}`));
     }
 
-    // ── RBAC posture scan (fire-and-forget — notify-only, never touches the
-    // remediation pipeline; findings are standing state, not transient issues) ──
     if (process.env.RBAC_POSTURE_ENABLED === 'true') {
       RbacPostureEngine.check({ cluster: this.name, context: this.context })
         .catch(err => console.warn(`[${this.name}] [RBAC-POSTURE] Non-blocking error: ${err.message}`));
     }
 
-    // ── Workload hardening scan (fire-and-forget — notify-only) ───────────
     if (process.env.WORKLOAD_HARDENING_ENABLED === 'true') {
       WorkloadHardeningEngine.check({ cluster: this.name, context: this.context })
         .catch(err => console.warn(`[${this.name}] [WORKLOAD-HARDENING] Non-blocking error: ${err.message}`));
     }
 
-    // ── Network exposure scan (fire-and-forget — notify-only) ─────────────
     if (process.env.NETWORK_EXPOSURE_ENABLED === 'true') {
       NetworkExposureEngine.check({ cluster: this.name, context: this.context })
         .catch(err => console.warn(`[${this.name}] [NETWORK-EXPOSURE] Non-blocking error: ${err.message}`));
     }
 
-    // ── Secrets hygiene scan (fire-and-forget — notify-only) ──────────────
     if (process.env.SECRETS_HYGIENE_ENABLED === 'true') {
       SecretsHygieneEngine.check({ cluster: this.name, context: this.context })
         .catch(err => console.warn(`[${this.name}] [SECRETS-HYGIENE] Non-blocking error: ${err.message}`));
@@ -330,7 +290,7 @@ class ClusterAgent {
     console.log(`[${this.name}] Cycle complete\n`);
   }
 
-  // ── Concurrency-capped issue worker pool with per-resource locks ──────────
+  // Process issues with a concurrency limit
   async _processIssuePool(items) {
     const queue = [...items];
     const running = new Set();
@@ -343,7 +303,6 @@ class ClusterAgent {
           const { issue, ctx } = queue.shift();
           const resourceKey = `${issue.namespace}/${issue.deployment ?? issue.podName}`;
 
-          // Per-resource lock — skip if another pipeline is working on the same resource
           if (self._resourceLocks.has(resourceKey)) {
             console.log(`[${self.name}] [POOL] Skipping ${resourceKey} — already being handled`);
             next();
@@ -365,7 +324,7 @@ class ClusterAgent {
     });
   }
 
-  // ── 12-step self-improving pipeline (pod issues) ──────────────────────────
+  // Handle one pod issue
   async _handle(issue, nodeCtx = {}) {
     const target = issue.controllerName ?? issue.deployment ?? issue.podName;
     const key    = `${issue.type}:${target}:${issue.namespace}`;
@@ -387,7 +346,6 @@ class ClusterAgent {
     const attempt = (this.attemptCounts.get(key) ?? 0) + 1;
     this.attemptCounts.set(key, attempt);
 
-    // ── Build fingerprint (used by all memory layers) ─────────────────────────
     const fingerprint = {
       issueType:    issue.type,
       oomKilled:    issue.oomKilled    ?? false,
@@ -400,15 +358,13 @@ class ClusterAgent {
     if (attempt > this.MAX_FIX_ATTEMPTS) {
       console.warn(`[${this.name}] [ESCALATE] ${key} — ${this.MAX_FIX_ATTEMPTS} attempts exhausted`);
 
-      // Store the failed episode before escalating
       const epDraft = this.episodeTimelines.get(key);
       if (epDraft) {
-        // Fetch fresh logs — stale logSnippet in epDraft.context is from attempt 1
         let escalationLogs = '';
         if (issue.podName) {
           try {
             escalationLogs = await kubectl.getLogs(issue.podName, issue.namespace ?? 'default', this.context);
-          } catch { /* unavailable */ }
+          } catch { }
         }
         const reflection = await ReflectionAgent.reflect({
           issue,
@@ -444,28 +400,23 @@ class ClusterAgent {
         stage: 'escalated', cluster: this.name, tier: this.tier, issue,
         note: `escalated after ${this.MAX_FIX_ATTEMPTS} failed attempt(s)`,
       });
-      // Reset attempt counter so the agent keeps retrying next cycle.
-      // Duplicate escalation records are suppressed by escalationStore.escalate().
       this.attemptCounts.delete(key);
       return;
     }
 
     console.log(`\n[${this.name}] ── ${key}  (attempt ${attempt}/${this.MAX_FIX_ATTEMPTS}) ──`);
 
-    // Check temporal repeated-failure pattern for this issue type
     if (temporal.detectRepeatedFailures(issue.type)) {
       console.warn(`[${this.name}] [TEMPORAL] Repeated failures for ${issue.type} detected in session — exercising extra caution`);
     }
 
-    // ── Step 1: Fetch pod logs once — reused by planner, guardian, reflection ──
     let podLogs = '';
     if (issue.podName) {
       try {
         podLogs = await kubectl.getLogs(issue.podName, issue.namespace ?? 'default', this.context);
-      } catch { /* logs unavailable — not critical */ }
+      } catch { }
     }
 
-    // ── Step 1a: Collect Prometheus metrics (non-blocking, fails gracefully) ───
     let podMetrics = null;
     if (issue.podName && metricsCollector.isAvailable()) {
       try {
@@ -473,13 +424,9 @@ class ClusterAgent {
           issue.namespace ?? 'default',
           issue.podName,
         );
-      } catch { /* metrics unavailable */ }
+      } catch { }
     }
 
-    // ── Step 1b: Investigation Gate ────────────────────────────────────────────
-    // Deterministic check: is the current evidence bundle sufficient for confident
-    // LLM planning?  If not, enrich it in-place before calling the planner.
-    // This runs in the same cycle — no retry delay, no new action types.
     const evidenceAssessment = this._assessEvidenceSufficiency(
       issue, podLogs, podMetrics, nodeCtx.events ?? [], attempt
     );
@@ -499,8 +446,6 @@ class ClusterAgent {
       console.log(`[${this.name}] [INVESTIGATE] enrichment complete  ${Date.now() - t0inv}ms`);
     }
 
-    // Pre-initialize the episode draft so metricsSnapshot is attached before the
-    // first _recordTimelineEntry call (which may fire as early as policy rejection).
     if (!this.episodeTimelines.has(key)) {
       this.episodeTimelines.set(key, {
         fingerprint,
@@ -514,16 +459,12 @@ class ClusterAgent {
         note: `${issue.type} detected on ${target}`,
       });
     } else {
-      // Refresh the snapshot every cycle so the stored episode has the latest reading.
       this.episodeTimelines.get(key).metricsSnapshot = podMetrics;
     }
-    // Attach investigation artifacts to the episode context so escalation tickets
-    // carry the enriched diagnostic data collected by the gate.
     if (investigationArtifacts) {
       this.episodeTimelines.get(key).context.investigationArtifacts = investigationArtifacts;
     }
 
-    // ── Step 2: Retrieve similar past episodes from memory ────────────────────
     const structuralMatches = episodicMemory.findByFingerprint(fingerprint);
     const queryText         = vectorStore.issueToQueryText({ ...issue, tier: this.tier }, podLogs);
     const semanticMatches   = await episodicMemory.findSemantic(queryText);
@@ -535,14 +476,11 @@ class ClusterAgent {
       console.log(`[${this.name}] [MEMORY] ${semanticMatches.length} semantic match(es) retrieved (top score: ${semanticMatches[0]?.score?.toFixed(3)})`);
     }
 
-    // ── Step 3: Load learned rules for this issue type ────────────────────────
     const learnedRules = await ruleEngine.getRules(issue.type);
     if (learnedRules.length > 0) {
       console.log(`[${this.name}] [RULES] ${learnedRules.length} active rule(s) for ${issue.type}`);
     }
 
-    // ── Step 3b: InvestigatorAgent + ChangeCorrelationEngine run in parallel ──
-    // ChangeCorrelationEngine is zero-cost when disabled (returns null immediately).
     const [rca, changeCorrelation] = await Promise.all([
       InvestigatorAgent.investigate(issue, this.name, this.context),
       ChangeCorrelationEngine.correlate({
@@ -566,7 +504,6 @@ class ClusterAgent {
       console.log(`[${this.name}] [CHANGE] ${changeCorrelation.triggerType} "${changeCorrelation.triggerResource}" conf=${changeCorrelation.confidence.toFixed(2)}`);
     }
 
-    // ── Step 4: Planner Agent generates an informed execution plan ────────────
     let diagnosis;
     try {
       diagnosis = await PlannerAgent.plan({
@@ -582,13 +519,12 @@ class ClusterAgent {
         events:              nodeCtx.events              ?? [],
         correlationFindings: nodeCtx.correlationFindings ?? [],
         clusterFindings:     nodeCtx.clusterFindings     ?? [],
-        // Investigation gate output — null when evidence was already sufficient
         investigationContext: evidenceAssessment.needsInvestigation
           ? { mode: evidenceAssessment.mode, reasons: evidenceAssessment.reasons,
               confidence: evidenceAssessment.confidence, ...investigationArtifacts }
           : null,
         rca,
-        changeCorrelation,   // null when feature is disabled or no signal found
+        changeCorrelation,
         capacityForecast:    await CapacityForecastEngine.getPodForecast(this.name, issue.podName).catch(() => null),
       });
     } catch (err) {
@@ -597,8 +533,6 @@ class ClusterAgent {
       return;
     }
 
-    // Normalize risk to uppercase so downstream === 'HIGH' comparisons are reliable
-    // regardless of what case the LLM returned.
     if (diagnosis.risk) diagnosis.risk = diagnosis.risk.toUpperCase();
 
     console.log(`[${this.name}] [PLANNER] rootCause : ${diagnosis.rootCause}`);
@@ -613,7 +547,6 @@ class ClusterAgent {
       return;
     }
 
-    // ── Step 5: PolicyEngine — deterministic non-bypassable safety gate ───────
     const policyPlan = {
       action: diagnosis.action,
       target: {
@@ -644,9 +577,6 @@ class ClusterAgent {
     policyResult.warnings.forEach(w => console.warn(`[${this.name}] [POLICY] ⚠ ${w}`));
 
     if (policyResult.status === 'rejected') {
-      // Don't count policy rejections as fix attempts — no remediation was ever applied.
-      // Without this, a permanently-forbidden action exhausts MAX_FIX_ATTEMPTS and
-      // fires a spurious escalation that looks like 3 failed fixes.
       this.attemptCounts.set(key, attempt - 1);
       console.error(`[${this.name}] [POLICY] BLOCKED — ${policyResult.reason}`);
       temporal.add({ cluster: this.name, action: diagnosis.action, status: 'blocked', issue: issue.type, riskScore: 0.9 });
@@ -659,9 +589,6 @@ class ClusterAgent {
       console.warn(`[${this.name}] [POLICY] Action MODIFIED: ${diagnosis.action} → ${policyResult.action}`);
       diagnosis.action = policyResult.action;
       if (policyResult.action === 'noop') {
-        // Policy reduced the action to noop (e.g. retry-protection, ImagePullBackOff, bare-pod
-        // scale_down). Continuing would burn an attempt slot, run Guardian/risk engine, and
-        // emit a spurious audit entry — all for an operation that does nothing.
         this.attemptCounts.set(key, attempt - 1);
         this._recordTimelineEntry(key, fingerprint, issue, podLogs, diagnosis, null, 'skipped', `policy modified action to noop: ${policyResult.reason}`);
         this.cooldowns.set(key, Date.now());
@@ -669,7 +596,6 @@ class ClusterAgent {
       }
     }
 
-    // Policy can escalate risk independently of LLM classification
     const riskOverride = this.policyEngine.evaluateRiskOverrides(
       { ...policyPlan, action: policyResult.action },
       policyCtx
@@ -679,7 +605,6 @@ class ClusterAgent {
       diagnosis.risk = riskOverride.risk;
     }
 
-    // ── Step 6: Guardian Agent reviews the plan ───────────────────────────────
     const guardian = await this.guardian.review({ issue, diagnosis, podLogs, attempt, rca });
 
     console.log(`[${this.name}] [GUARDIAN] verdict=${guardian.verdict}  class=${guardian.classification}  confidence=${guardian.confidence?.toFixed(2)}`);
@@ -700,10 +625,6 @@ class ClusterAgent {
       return;
     }
 
-    // DELEGATE_HUMAN (architecture-doc §3.4's 4th verdict, now actually producible by
-    // guardianAgent.js) means Guardian judged that no available automated action can fix
-    // this — escalate immediately rather than falling through to the implicit-approve
-    // path below, which is what an unhandled verdict string would otherwise do.
     if (guardian.verdict === 'DELEGATE_HUMAN') {
       console.warn(`[${this.name}] [GUARDIAN] DELEGATE_HUMAN — ${guardian.reason}`);
       audit.blocked({
@@ -721,12 +642,6 @@ class ClusterAgent {
     }
 
     if (guardian.verdict === 'MODIFY') {
-      // guardianAgent.js (shared with the v5 pipeline) now returns a free-form
-      // suggestedCommand, not a fixed action name — this legacy pipeline's own
-      // dispatch table (_applyFix) only understands the old fixed action set, so a
-      // MODIFY verdict here will fail loudly downstream ("Unknown action") rather than
-      // silently misbehave. Acceptable only because this path is already unreachable
-      // from the main entrypoint; a real fix would need its own legacy-shaped verdict.
       console.warn(`[${this.name}] [GUARDIAN] Action MODIFIED: ${diagnosis.action} → ${guardian.suggestedCommand}`);
       diagnosis.action = guardian.suggestedCommand;
     }
@@ -736,14 +651,10 @@ class ClusterAgent {
       diagnosis.risk = 'HIGH';
     }
 
-    // Store guardian classification in the episode draft for Qdrant payload enrichment
     if (this.episodeTimelines.has(key)) {
       this.episodeTimelines.get(key).guardianClassification = guardian.classification;
     }
 
-    // ── UNCERTAIN detection (Rec 10) ─────────────────────────────────────────
-    // Low evidence confidence + RISKY guardian + not already HIGH → mark UNCERTAIN
-    // so operators can distinguish "ambiguous situation" from "confirmed dangerous action"
     if (
       evidenceAssessment.confidence === 'low' &&
       guardian.classification === 'RISKY' &&
@@ -753,7 +664,6 @@ class ClusterAgent {
       diagnosis.risk = 'UNCERTAIN';
     }
 
-    // ── Step 7: Risk engine — tier-aware score ────────────────────────────────
     const riskParams = ACTION_RISK_PARAMS[diagnosis.action];
     if (riskParams) {
       const engineResult = riskEngine.calculateRisk({
@@ -772,7 +682,6 @@ class ClusterAgent {
       }
     }
 
-    // ── Step 8: Approval gate for high-risk and uncertain actions ────────────
     if (HIGH_RISK_ACTIONS.has(diagnosis.action) || diagnosis.risk === 'HIGH' || diagnosis.risk === 'UNCERTAIN') {
       const gateReason = diagnosis.risk === 'UNCERTAIN'
         ? 'Uncertain — evidence insufficient for confident automated decision'
@@ -798,7 +707,6 @@ class ClusterAgent {
       });
     }
 
-    // ── Step 9: Executor applies the fix ─────────────────────────────────────
     try {
       await this._applyFix(issue, diagnosis.action);
       console.log(`[${this.name}] [FIX] Applied: ${diagnosis.action} on ${target}`);
@@ -811,7 +719,6 @@ class ClusterAgent {
       return;
     }
 
-    // ── Step 10: Validate — did the fix work? ─────────────────────────────────
     console.log(`[${this.name}] [VALIDATE] Waiting for fix to settle…`);
     try {
       await kubectl.waitForFix(issue, diagnosis.action, this.context);
@@ -831,14 +738,12 @@ class ClusterAgent {
       temporal.add({ cluster: this.name, action: diagnosis.action, status: 'failed', issue: issue.type, riskScore: 0.5 });
     }
 
-    // Record this attempt in the episode timeline draft
     this._recordTimelineEntry(
       key, fingerprint, issue, podLogs, diagnosis, guardian,
       resolved ? 'success' : 'failed',
       resolved ? 'issue resolved' : 'issue persists after fix',
     );
 
-    // ── Step 11: Reflection + episode persistence on resolution ──────────────
     if (resolved) {
       const epDraft = this.episodeTimelines.get(key);
 
@@ -852,7 +757,6 @@ class ClusterAgent {
         rca:                epDraft?.rca ?? null,
       });
 
-      // ── Step 12: Store episode in MongoDB + Qdrant + extract rules ───────
       await episodicMemory.store({
         fingerprint,
         context:               epDraft?.context         ?? this._buildContext(issue, podLogs),
@@ -880,11 +784,8 @@ class ClusterAgent {
     this.cooldowns.set(key, Date.now());
   }
 
-  // ── Investigation Gate ─────────────────────────────────────────────────────
-  // Deterministic evidence-sufficiency check — no LLM, no I/O.
-  // Returns { needsInvestigation, reasons, mode, confidence }.
+  // Check if the evidence is sufficient
   _assessEvidenceSufficiency(issue, podLogs, metrics, events, attempt) {
-    // Self-evident failures: root cause is unambiguous, extra evidence adds nothing.
     if (issue.oomKilled === true || issue.exitCode === 137 || issue.type === 'OOMKilled') {
       return { needsInvestigation: false, reasons: [], mode: 'standard', confidence: 'high' };
     }
@@ -895,39 +796,32 @@ class ClusterAgent {
     const reasons = [];
     const logLen  = (podLogs ?? '').trim().length;
 
-    // R1: No exit code for a crash-type issue — can't determine cause without describe/prev-logs
     if (issue.exitCode == null &&
         (issue.type === 'CrashLoopBackOff' || issue.type === 'ContainerError')) {
       reasons.push('MISSING_EXIT_CODE');
     }
 
-    // R2: Logs are empty or too short to support a confident diagnosis
     if (logLen < 80) {
       reasons.push('INSUFFICIENT_LOGS');
     }
 
-    // R3: CrashLoopBackOff is always ambiguous without previous-container logs
     if (issue.type === 'CrashLoopBackOff') {
       reasons.push('CRASH_LOOP_DETECTED');
     }
 
-    // R4: High restart count — persistent failure pattern, needs deeper context
     if ((issue.restartCount ?? 0) > 3) {
       reasons.push('HIGH_RESTART_COUNT');
     }
 
-    // R5: This is a retry — the previous action did not resolve the issue
     if (attempt > 1) {
       reasons.push('REPEATED_ATTEMPT');
     }
 
-    // R6: Ambiguous exit codes that require deeper inspection
     const AMBIGUOUS_CODES = new Set([1, 2, 126, 127]);
     if (issue.exitCode != null && AMBIGUOUS_CODES.has(issue.exitCode)) {
       reasons.push('AMBIGUOUS_EXIT_CODE');
     }
 
-    // R7: Backoff / kill events detected for this pod or namespace
     const BACKOFF_SIGNALS = new Set(['BackOff', 'CrashLoopBackOff', 'OOMKilling', 'Killing', 'Unhealthy']);
     const hasBackoffEvent = (events ?? []).some(e =>
       BACKOFF_SIGNALS.has(e.reason) &&
@@ -950,10 +844,7 @@ class ClusterAgent {
     };
   }
 
-  // ── Evidence Enrichment ────────────────────────────────────────────────────
-  // Fetches additional kubectl data in parallel when evidence is insufficient.
-  // All fetches fail silently — enrichment is best-effort, never blocking.
-  // Returns { previousLogs, describeEvents, rolloutHistory }.
+  // Fetch extra evidence with kubectl
   async _enrichEvidence(issue, existingLogs) {
     const ns     = issue.namespace ?? 'default';
     const pod    = issue.podName;
@@ -961,8 +852,6 @@ class ClusterAgent {
     const result = { previousLogs: null, describeEvents: null, rolloutHistory: null };
     const tasks  = [];
 
-    // T1: Previous container logs — the crash output before the current restart.
-    //     This is the single most valuable signal for CrashLoopBackOff diagnosis.
     if (pod) {
       tasks.push(
         this._runSafeCommand(
@@ -970,12 +859,10 @@ class ClusterAgent {
           { readOnly: true }
         )
         .then(out => { result.previousLogs = out.trim() || null; })
-        .catch(() => {}) // no previous state on first crash — not an error
+        .catch(() => {})
       );
     }
 
-    // T2: kubectl describe pod Events section — only when current logs are sparse.
-    //     Extracted section avoids dumping the full (verbose) describe output.
     const logLen = (existingLogs ?? '').trim().length;
     if (pod && logLen < 80) {
       tasks.push(
@@ -993,8 +880,6 @@ class ClusterAgent {
       );
     }
 
-    // T3: Rollout history — assess rollback eligibility.
-    //     Only useful for deployment-managed pods with image/command failure exit codes.
     const ROLLBACK_CODES = new Set([126, 127]);
     if (dep && (issue.exitCode == null || ROLLBACK_CODES.has(issue.exitCode))) {
       tasks.push(
@@ -1011,7 +896,7 @@ class ClusterAgent {
     return result;
   }
 
-  // ── Accumulate timeline entries across attempts ────────────────────────────
+  // Add a timeline entry
   _recordTimelineEntry(key, fingerprint, issue, podLogs, diagnosis, guardian, outcome, note) {
     if (!this.episodeTimelines.has(key)) {
       this.episodeTimelines.set(key, {
@@ -1031,15 +916,13 @@ class ClusterAgent {
     });
     draft.lastDiagnosis = diagnosis.rootCause;
 
-    // Mirror this entry into the persistent issue tracker so the tracking page
-    // reflects every skip/block/failure/success, not just the terminal outcome.
     issueTrackerStore.track(key, {
       stage: 'progress', cluster: this.name, tier: this.tier, issue, diagnosis, guardian,
       outcome, note, fingerprint,
     });
   }
 
-  // ── Snapshot execution context at incident start ───────────────────────────
+  // Build the execution context
   _buildContext(issue, podLogs) {
     return {
       cluster:     this.name,
@@ -1051,11 +934,7 @@ class ClusterAgent {
     };
   }
 
-  // ── Execute a kubectl command after sanitization ──────────────────────────
-  // All direct kubectl.runCommand() calls go through here so the PolicyEngine
-  // sanitizer is always applied. Mutating commands are also gated by dryRunMode;
-  // pass { readOnly: true } for evidence-gathering reads so dry-run mode doesn't
-  // fake out reads that don't change cluster state.
+  // Run a sanitized kubectl command
   async _runSafeCommand(cmd, { readOnly = false } = {}) {
     const { safe, command, reason } = this.policyEngine.sanitizeCommand(cmd);
     if (!safe) throw new Error(`Command blocked by policy sanitizer: ${reason}`);
@@ -1066,13 +945,12 @@ class ClusterAgent {
     return kubectl.runCommand(command);
   }
 
-  // ── Apply the chosen fix ───────────────────────────────────────────────────
+  // Apply the chosen fix
   async _applyFix(issue, action) {
     const ns  = issue.namespace ?? 'default';
     const dep = issue.deployment;
     const pod = issue.podName;
 
-    // Dry-run mode: log intent but skip all kubectl calls
     if (this.policyEngine.dryRunMode) {
       console.log(`[${this.name}] [DRY-RUN] Simulating "${action}" on ${dep ?? pod} (ns: ${ns})`);
       return;
@@ -1111,7 +989,7 @@ class ClusterAgent {
             { readOnly: true }
           );
           if (raw.trim()) currentLimitMi = _parseMiB(raw.trim());
-        } catch { /* use fallback 128Mi */ }
+        } catch { }
 
         const newLimitMi   = Math.max(256, Math.ceil(currentLimitMi * 1.5));
         const newRequestMi = Math.ceil(newLimitMi * 0.5);
@@ -1144,24 +1022,20 @@ class ClusterAgent {
     }
   }
 
-  // ── Re-check if pod issue is gone after fix ──────────────────────────────
+  // Check if the pod issue is gone
   async _validateFix(issue, action) {
     try {
       const pods   = await kubectl.getPods(issue.namespace, this.context, true);
       const issues = PodAnalyzer.extractIssues(pods);
 
-      // For delete_pod: the original pod is gone. Check if a controller
-      // recreated a replacement (Job, ReplicaSet, etc.) that is now healthy.
       if (action === 'delete_pod') {
         const originalGone = !(pods.items ?? []).some(p => p.metadata?.name === issue.podName);
         if (!originalGone) return false;
 
-        // If there's a deployment, check if its pods are healthy
         if (issue.deployment) {
           const depIssues = issues.filter(i => i.deployment === issue.deployment);
           return depIssues.length === 0;
         }
-        // Bare pod — deletion is the terminal action, pod is gone = "resolved"
         return true;
       }
 
@@ -1175,7 +1049,7 @@ class ClusterAgent {
     }
   }
 
-  // ── Node issue pipeline ────────────────────────────────────────────────────
+  // Handle one node issue
   async _handleNodeIssue(nodeIssue, { allNodeMetrics, correlation, events, nodeMap, affectedPods, pdbs }) {
     const key  = `node:${nodeIssue.type}:${nodeIssue.nodeName}`;
 
@@ -1202,7 +1076,6 @@ class ClusterAgent {
     const nodeMetrics  = allNodeMetrics?.[nodeIssue.nodeName] ?? null;
     const drainAttempts = this.nodeDrainAttempts.get(nodeIssue.nodeName) ?? 0;
 
-    // Plan
     let diagnosis;
     try {
       diagnosis = await PlannerAgent.planNodeAction({
@@ -1216,7 +1089,6 @@ class ClusterAgent {
     if (diagnosis.risk) diagnosis.risk = diagnosis.risk.toUpperCase();
     console.log(`[${this.name}] [NODE-PLANNER] action=${diagnosis.action}  risk=${diagnosis.risk}  cause=${diagnosis.rootCause}`);
 
-    // Policy gate
     const affectedNamespaces = [...new Set(affectedPods.map(p => p.namespace).filter(Boolean))];
     const policyResult = this.policyEngine.validateNodeAction(
       { action: diagnosis.action, target: { nodeName: nodeIssue.nodeName }, risk: diagnosis.risk },
@@ -1237,7 +1109,6 @@ class ClusterAgent {
     if (policyResult.status === 'modified') diagnosis.action = policyResult.action;
     if (diagnosis.action === 'noop') { this.cooldowns.set(key, Date.now()); return; }
 
-    // Guardian review
     const guardian = await this.guardian.review({
       issue:    { ...nodeIssue, podName: `node:${nodeIssue.nodeName}`, namespace: 'kube-system', deployment: null },
       diagnosis,
@@ -1251,7 +1122,6 @@ class ClusterAgent {
       this.cooldowns.set(key, Date.now());
       return;
     }
-    // See the pod-path DELEGATE_HUMAN handling above — same reasoning, node actions.
     if (guardian.verdict === 'DELEGATE_HUMAN') {
       console.warn(`[${this.name}] [NODE-GUARDIAN] DELEGATE_HUMAN — ${guardian.reason}`);
       await escalationStore.escalate(key, { ...nodeIssue, isNodeIssue: true }, [], null);
@@ -1259,10 +1129,8 @@ class ClusterAgent {
       this.cooldowns.set(key, Date.now());
       return;
     }
-    // See the pod-path MODIFY comment above — guardian.suggestedCommand is free-form now.
     if (guardian.verdict === 'MODIFY') diagnosis.action = guardian.suggestedCommand;
 
-    // Risk engine with dynamic blast radius from actual affected pod count (Rec 5)
     const nodeRiskParams = ACTION_RISK_PARAMS[diagnosis.action];
     if (nodeRiskParams) {
       const dynamicBlastRadius = (diagnosis.action === 'drain_node' || diagnosis.action === 'cordon_node')
@@ -1283,7 +1151,6 @@ class ClusterAgent {
       }
     }
 
-    // Approval gate for high-risk actions (drain) or production tier
     if (HIGH_RISK_ACTIONS.has(diagnosis.action) || diagnosis.risk === 'HIGH') {
       console.log(`[${this.name}] [NODE-APPROVAL] High-risk node action — waiting for human decision…`);
       const approved = await approvalStore.requestApproval({
@@ -1296,7 +1163,6 @@ class ClusterAgent {
       }
     }
 
-    // Execute
     try {
       await this._applyNodeFix(nodeIssue.nodeName, diagnosis.action);
       console.log(`[${this.name}] [NODE-FIX] Applied: ${diagnosis.action} on ${nodeIssue.nodeName}`);
@@ -1313,7 +1179,7 @@ class ClusterAgent {
     this.cooldowns.set(key, Date.now());
   }
 
-  // ── Apply a node-level fix ────────────────────────────────────────────────
+  // Apply a node fix
   async _applyNodeFix(nodeName, action) {
     if (this.policyEngine.dryRunMode) {
       console.log(`[${this.name}] [DRY-RUN] Simulating "${action}" on node ${nodeName}`);

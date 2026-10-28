@@ -1,24 +1,4 @@
 #!/usr/bin/env node
-// =============================================================================
-// scripts/test-orchestrator-live.js — run the REAL fleet-wide OrchestratorAgent
-// classification pipeline against one or more REAL clusters (via the same
-// src/tools/kubectl.js calls _runFleetCycle makes: getPods/getNodes/getEvents per
-// cluster), and print ONLY what the orchestrator itself produces — classified
-// incidents + dispatch groups, now correlated by NAMESPACE ACROSS CLUSTERS, not per
-// cluster. Nothing downstream runs: no shortMemory dedup/cooldown/queue, no
-// runWorkflow, no Investigator/Planner/Guardian/Executor.
-//
-// Pairs with scripts/reset-test-pods.sh, which deploys a realistic broken
-// environment (CrashLoopBackOff, OOMKilled, ImagePullBackOff, missing secrets, etc.)
-// across 5 namespaces on the `minikube` context — run that first, give it ~30-60s
-// for pods to actually reach their failure steady-state, then run this.
-//
-// Usage:
-//   node scripts/test-orchestrator-live.js --context=minikube --namespaces=backend,ml
-//   node scripts/test-orchestrator-live.js \
-//     --clusters=kubepilot-test:kind-kubepilot-test,kubepilot-test-2:kind-kubepilot-test-2 \
-//     --namespaces=kp-test
-// =============================================================================
 'use strict';
 
 require('dotenv').config({ override: true });
@@ -35,8 +15,6 @@ const args = Object.fromEntries(process.argv.slice(2).map(a => {
   return [k, v ?? 'true'];
 }));
 
-// --clusters=name1:context1,name2:context2 (multi-cluster) takes priority; falls back
-// to the original single-cluster --context[=X] --cluster[=Y] shape for backward compat.
 const CLUSTERS = args.clusters
   ? args.clusters.split(',').map(pair => {
       const [name, context] = pair.split(':');
@@ -77,16 +55,10 @@ async function _gatherAndTag(cluster) {
 }
 
 async function main() {
-  // kubectl.js resolves --context=X through sessionManager.getKubeconfigPath(), which
-  // looks up a per-cluster credential in Mongo (falls back to the shared kubeconfig
-  // file when none exists) — needs a live connection or that lookup just hangs.
   await dbConnection.connect();
 
   const perClusterSignals = await Promise.all(CLUSTERS.map(_gatherAndTag));
 
-  // Group by namespace ACROSS clusters — same logic as orchestratorAgent.js's
-  // _groupByNamespace, reused here via the exported hook so this harness observes
-  // exactly what production does, not a re-derived approximation.
   const byNamespace = OrchestratorAgent._groupByNamespace(perClusterSignals);
   const allNodes = perClusterSignals.flatMap(cs => cs.nodes);
 
@@ -121,13 +93,12 @@ async function main() {
   }));
   const priorities = OrchestratorAgent._computeGroupPriorities(survivors);
 
-  const groups = new Map(); // dispatchKey -> incident[]
+  const groups = new Map();
   for (const { incident, dispatchKey } of survivors) {
     if (!groups.has(dispatchKey)) groups.set(dispatchKey, []);
     groups.get(dispatchKey).push(incident);
   }
 
-  // ── Print ONLY the orchestrator's output ────────────────────────────────────
   console.log('\n' + '='.repeat(78));
   console.log(`ORCHESTRATOR OUTPUT — ${allIncidents.length} incident(s), ${groups.size} dispatch group(s)`);
   console.log('='.repeat(78));

@@ -6,22 +6,10 @@ const { loadConfig } = require('../config');
 const MASS_FAILURE_THRESHOLD = loadConfig().MASS_FAILURE_THRESHOLD;
 
 class ClusterAnalyzer {
-  /**
-   * Identify cluster-wide incident patterns from the combined findings.
-   *
-   * @param {object} params
-   * @param {Array}  params.podIssues        - From PodAnalyzer
-   * @param {Array}  params.nodeIssues       - From NodeAnalyzer
-   * @param {object} params.correlation      - From NodeHotspotCorrelator.correlate()
-   * @param {Array}  params.events           - From EventAnalyzer
-   * @param {string} params.clusterName
-   *
-   * @returns {{ clusterIssues: Array, summary: string }}
-   */
+  // Find cluster-wide incident patterns
   static analyze({ podIssues, nodeIssues, correlation, events, clusterName }) {
     const clusterIssues = [];
 
-    // ── MassPodFailure ──────────────────────────────────────────────────────
     if (podIssues.length >= MASS_FAILURE_THRESHOLD) {
       const namespaces = [...new Set(podIssues.map(i => i.namespace))];
       const types      = [...new Set(podIssues.map(i => i.type))];
@@ -36,7 +24,6 @@ class ClusterAnalyzer {
       });
     }
 
-    // ── SchedulingFailure ───────────────────────────────────────────────────
     const schedEvents = events.filter(e => e.reason === 'FailedScheduling');
     if (schedEvents.length >= 3) {
       const affectedPods = [...new Set(schedEvents.map(e => e.name))];
@@ -50,7 +37,6 @@ class ClusterAnalyzer {
       });
     }
 
-    // ── ClusterDegradation ─────────────────────────────────────────────────
     const notReadyNodes = nodeIssues.filter(n => n.type === 'NodeNotReady').length;
     const pressureNodes = nodeIssues.filter(n =>
       NODE_RESOURCE_PRESSURE_TYPES.includes(n.type)
@@ -67,7 +53,6 @@ class ClusterAnalyzer {
       });
     }
 
-    // ── Build summary text ─────────────────────────────────────────────────
     const parts = [];
     if (podIssues.length)           parts.push(`${podIssues.length} pod issue(s)`);
     if (nodeIssues.length)          parts.push(`${nodeIssues.length} node issue(s)`);
@@ -79,9 +64,7 @@ class ClusterAnalyzer {
     return { clusterIssues, summary };
   }
 
-  /**
-   * Format cluster findings as a text block for LLM prompt injection.
-   */
+  // Format cluster findings for the prompt
   static formatForPrompt({ clusterIssues, correlation, clusterName }) {
     const lines = [];
 

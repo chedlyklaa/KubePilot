@@ -1,23 +1,4 @@
 #!/usr/bin/env node
-// =============================================================================
-// agent-benchmark-advanced1.js — Extended agent benchmark
-//
-// Includes all tests from agent-benchmark.js PLUS:
-//   - Cascading failures (db dependency)
-//   - Rollback chain (v1→v2→v3 broken)
-//   - Self-resolving issues
-//   - Flapping pods
-//   - Controller type coverage (StatefulSet, Job, DaemonSet)
-//   - Namespace isolation
-//   - Decision consistency (same test × 3 runs)
-//   - Multi-failure stress
-//   - Wrong action recovery
-//   - Resource pressure victim
-//
-// Usage:
-//   node benchmark/agent-benchmark-advanced.js
-//   node benchmark/agent-benchmark-advanced.js --context=minikube --timeout=400
-// =============================================================================
 'use strict';
 
 const { execFileSync, execSync } = require('child_process');
@@ -33,29 +14,11 @@ const ARGS = process.argv.slice(2).reduce((o, a) => {
 const CTX          = ARGS.context  || 'minikube';
 const API          = ARGS.api      || 'http://localhost:3001';
 const NS           = ARGS.ns       || 'bench-adv';
-// TIMEOUT is now a SAFETY CAP, not the expected run length — the poll loop's real
-// stopping condition is Short Memory going idle (see fetchShortMemoryState() and the
-// poll loop in main()), so this only matters if the system is genuinely stuck (Redis
-// down, a hung workflow that never releases its concurrency slot, etc.). Raised well
-// past the old 2000s default, which was being hit as a normal, expected occurrence on
-// any run with more failing tests than ISSUE_CONCURRENCY allows through at once —
-// misreporting real-but-still-queued incidents as "not detected" (see IDLE_CONFIRM_TICKS
-// below for the actual completion signal).
-const TIMEOUT      = parseInt(ARGS.timeout || '5400', 10); // 90 min hard cap
+const TIMEOUT      = parseInt(ARGS.timeout || '5400', 10);
 const POLL         = parseInt(ARGS.poll    || '10', 10);
-// Consecutive idle poll ticks (queue empty + no active workflows + no pending groups)
-// required before concluding "nothing left will ever be detected" — more than one tick
-// so a brief lull between fleet cycles (dispatch happens once per CYCLE_INTERVAL_MS,
-// not continuously) can't be mistaken for real completion.
 const IDLE_CONFIRM_TICKS = parseInt(ARGS.idleTicks || '3', 10);
 const RESULTS_DIR  = path.join(__dirname, 'results');
-// Friendly cluster name registered in clusters.yaml — usually the same string as CTX
-// (true for a plain "minikube" entry), but override with --cluster= if yours differs.
 const HPA_CLUSTER  = ARGS.cluster  || CTX;
-// Deliberately its OWN namespace, separate from NS — the main cleanup step below wipes
-// NS entirely right after these checks run, which would delete hpa-demo again before
-// there's any chance to actually look at it in the dashboard. This one is intentionally
-// left alone (see the note printed after the checks run).
 const AUTOSCALE_NS = ARGS.autoscaleNs || 'bench-autoscale-demo';
 
 const C = {
@@ -103,35 +66,8 @@ async function login() {
 }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// =============================================================================
-// TEST DEFINITIONS
-// =============================================================================
-// Categories:
-//   basic      — core detection + action (OOM, ImagePull, CrashLoop, bad config)
-//   cascade    — multi-pod dependency chain (db + app)
-//   rollback   — rollback chain (v1→v2→v3 broken)
-//   controller — different K8s owner types (StatefulSet, Job, DaemonSet)
-//   behavior   — flapping, self-resolving
-//   isolation  — namespace separation
-//   resource   — CPU throttling, impossible resource requests
-//   probes     — readiness/liveness probe failures
-//   init       — init container crashes + stuck waiting
-//   config     — missing ConfigMap/Secret mounts
-//   multi      — multi-replica failures, partial failures
-//   exitcodes  — specific exit code handling (137, 127, 126)
-//   policy     — PolicyEngine blocks an action the planner would otherwise take
-//   healthy    — false positive checks
-// =============================================================================
-// "policy" tests need POLICY_AWARENESS_ENABLED=true on the running server (see .env) —
-// PolicyEngine only receives ResourceQuota/PDB data to check against when that flag is
-// on. Without it, the block never fires and the test will time out, not fail cleanly.
-// =============================================================================
-
 const TESTS = [
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // BASIC — carried over from v1
-  // ═══════════════════════════════════════════════════════════════════════════
   {
     name: 'OOMKilled deployment', category: 'basic', weight: 5, kind: 'failure', pod: 'oom-dep',
     create() {
@@ -215,9 +151,6 @@ spec:
     expected: { detected: true, diagnosis: /config|exit|crash|error/i, action: 'rollback', altActions: ['restart'] },
   },
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // CASCADE — database dependency chain
-  // ═══════════════════════════════════════════════════════════════════════════
   {
     name: 'Cascade: broken database', category: 'cascade', weight: 6, kind: 'failure', pod: 'cascade-db',
     create() {
@@ -259,19 +192,13 @@ spec:
     expected: { detected: true, diagnosis: /crash|connect|exit|fail|depend/i, action: 'restart', altActions: ['rollback', 'ESCALATED'] },
   },
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // ROLLBACK CHAIN — v1 working → v2 working → v3 broken
-  // ═══════════════════════════════════════════════════════════════════════════
   {
     name: 'Rollback chain: v3 broken (should rollback)', category: 'rollback', weight: 10, kind: 'failure', pod: 'rollchain',
     create() {
-      // v1: working
       kube('create', 'deployment', 'rollchain', '--image=nginx');
       waitRollout('rollchain');
-      // v2: also working (different image to create a revision)
       kube('set', 'image', 'deployment/rollchain', 'nginx=httpd:alpine');
       waitRollout('rollchain');
-      // v3: broken
       kube('set', 'image', 'deployment/rollchain', 'nginx=busybox');
       kubeApply(`apiVersion: apps/v1
 kind: Deployment
@@ -291,9 +218,6 @@ spec:
     expected: { detected: true, diagnosis: /crash|exit|config|image|broken/i, action: 'rollback', altActions: ['restart', 'ESCALATED'] },
   },
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // CONTROLLER TYPES — same failure, different owners
-  // ═══════════════════════════════════════════════════════════════════════════
   {
     name: 'Controller: StatefulSet crash', category: 'controller', weight: 5, kind: 'failure', pod: 'sts-crash',
     create() {
@@ -356,9 +280,6 @@ spec:
     expected: { detected: true, diagnosis: /crash|exit|fail/i, action: 'restart', altActions: ['ESCALATED', 'noop', 'rollback'] },
   },
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // BEHAVIOR — flapping, self-resolving, wrong-action recovery
-  // ═══════════════════════════════════════════════════════════════════════════
   {
     name: 'Behavior: flapping pod (alternate crash/run)', category: 'behavior', weight: 6, kind: 'failure', pod: 'flapper',
     create() {
@@ -382,7 +303,6 @@ spec:
   {
     name: 'Behavior: self-resolving (delayed start)', category: 'behavior', weight: 5, kind: 'failure', pod: 'self-resolve',
     create() {
-      // Pod that fails for ~60s then starts succeeding (simulated with a file touch)
       kubeApply(`apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -401,9 +321,6 @@ spec:
     expected: { detected: true, diagnosis: /crash|exit|fail|transient/i, action: 'restart', altActions: ['ESCALATED', 'noop', 'rollback'] },
   },
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // NAMESPACE ISOLATION — same broken app in two namespaces
-  // ═══════════════════════════════════════════════════════════════════════════
   {
     name: 'Isolation: crash in ns-alpha', category: 'isolation', weight: 4, kind: 'failure', pod: 'iso-crash',
     ns: 'bench-ns-alpha',
@@ -449,9 +366,6 @@ spec:
     expected: { detected: true, diagnosis: /crash|exit|fail/i, action: 'restart', altActions: ['ESCALATED', 'rollback'] },
   },
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // RESOURCE PRESSURE — pods evicted or throttled by node pressure
-  // ═══════════════════════════════════════════════════════════════════════════
   {
     name: 'Resource: CPU throttled deployment', category: 'resource', weight: 5, kind: 'failure', pod: 'cpu-hog',
     create() {
@@ -496,9 +410,6 @@ spec:
     expected: { detected: true, diagnosis: /pending|schedul|resource|insufficient/i, action: 'noop', altActions: ['ESCALATED'] },
   },
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // PROBES — readiness/liveness probe failures
-  // ═══════════════════════════════════════════════════════════════════════════
   {
     name: 'Probe: readiness failing (app starts slow)', category: 'probes', weight: 5, kind: 'failure', pod: 'slow-ready',
     create() {
@@ -550,9 +461,6 @@ spec:
     expected: { detected: true, diagnosis: /liveness|probe|kill|restart|health/i, action: 'restart', altActions: ['noop', 'ESCALATED', 'rollback'] },
   },
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // INIT CONTAINER — failures before main container starts
-  // ═══════════════════════════════════════════════════════════════════════════
   {
     name: 'Init: init container crash', category: 'init', weight: 5, kind: 'failure', pod: 'init-crash',
     create() {
@@ -600,9 +508,6 @@ spec:
     expected: { detected: true, diagnosis: /init|pending|wait|dns|not.ready/i, action: 'noop', altActions: ['restart', 'ESCALATED'] },
   },
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // CONFIG ERRORS — misconfigurations that kubectl can't fix
-  // ═══════════════════════════════════════════════════════════════════════════
   {
     name: 'Config: missing ConfigMap mount', category: 'config', weight: 5, kind: 'failure', pod: 'missing-cm',
     create() {
@@ -655,9 +560,6 @@ spec:
     expected: { detected: true, diagnosis: /secret|mount|missing|not.found|config/i, action: 'noop', altActions: ['ESCALATED'] },
   },
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // MULTI-REPLICA — stress test with multiple failing replicas
-  // ═══════════════════════════════════════════════════════════════════════════
   {
     name: 'Multi: 3-replica crash deployment', category: 'multi', weight: 6, kind: 'failure', pod: 'multi-crash',
     create() {
@@ -701,9 +603,6 @@ spec:
     expected: { detected: true, diagnosis: /crash|exit|fail|config|broken/i, action: 'rollback', altActions: ['restart', 'ESCALATED'] },
   },
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // EXIT CODES — specific exit code handling
-  // ═══════════════════════════════════════════════════════════════════════════
   {
     name: 'Exit: code 137 OOM (deployment)', category: 'exitcodes', weight: 5, kind: 'failure', pod: 'exit137',
     create() {
@@ -766,13 +665,7 @@ spec:
     expected: { detected: true, diagnosis: /permission|denied|126|exec|cannot|error/i, action: 'rollback', altActions: ['restart', 'ESCALATED'] },
   },
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // POLICY — PolicyEngine blocks an action the planner would otherwise take
-  // ═══════════════════════════════════════════════════════════════════════════
   {
-    // The quota's hard.limits.memory is set to exactly match what this single pod
-    // already consumes, so usage sits at 100% the moment the pod is admitted —
-    // deterministic, no need to pre-fill the namespace with other pods first.
     name: 'Policy: OOM blocked by exhausted ResourceQuota', category: 'policy', weight: 6,
     kind: 'policyBlock', pod: 'policy-oom', ns: 'bench-policy', expectedRule: /POLICY_QUOTA_EXHAUSTED/,
     create() {
@@ -800,15 +693,9 @@ spec:
         command: ["stress","--vm","1","--vm-bytes","128M"]
         resources: { limits: { memory: "4Mi" } }`, 'bench-policy');
     },
-    // Same OOM failure as the very first test — but this namespace's ResourceQuota has
-    // no headroom left, so PolicyEngine's Rule 9 should block increase_memory instead
-    // of letting the planner apply it. Expects a BLOCK, not a fix.
     expected: { detected: true, diagnosis: /POLICY_QUOTA_EXHAUSTED/, action: 'BLOCKED', altActions: [] },
   },
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // FALSE POSITIVES — healthy resources
-  // ═══════════════════════════════════════════════════════════════════════════
   {
     name: 'Healthy: nginx', category: 'healthy', weight: 8, kind: 'healthy', pod: 'healthy-nginx',
     create() { kube('run', 'healthy-nginx', '--image=nginx', '--restart=Never'); },
@@ -854,25 +741,10 @@ spec:
   },
 ];
 
-// =============================================================================
-// AUTOSCALING API CHECKS — not agent decisions
-// =============================================================================
-// A HorizontalPodAutoscaler isn't something PlannerAgent/GuardianAgent ever detects
-// or acts on — it's a passive object the Autoscaling page just reads. These don't fit
-// the detect→diagnose→act→resolve scoring model above, so they're checked separately
-// and don't count toward the weighted score — they verify the Autoscaling page's
-// read/edit API actually reflects reality, not agent intelligence.
-// =============================================================================
 const HPA_CHECKS = [
   {
     name: 'HPA created with min=1 max=5 target=50% is visible via the API',
     async setup() {
-      // kubeGlobal() swallows kubectl errors (returns stdout, never throws) — verify
-      // each step actually landed instead of silently continuing on a failed
-      // create/autoscale (e.g. a leftover namespace from a previous run still
-      // mid-Terminating rejects new objects silently). A clear error here beats an
-      // ambiguous "not found" later. Uses AUTOSCALE_NS (its own namespace, not NS) —
-      // NS gets wiped by the main cleanup step right after these checks run.
       kubeGlobal('create', 'namespace', AUTOSCALE_NS);
       kubeGlobal('-n', AUTOSCALE_NS, 'create', 'deployment', 'hpa-demo', '--image=nginx');
       waitRollout('hpa-demo', AUTOSCALE_NS);
@@ -893,8 +765,6 @@ const HPA_CHECKS = [
   {
     name: 'Editing an HPA (the "Edit" modal\'s PUT) persists the new min/max',
     async setup() {
-      // Depends on hpa-demo already existing from the check above — if that one
-      // failed, this one will too; that's expected, not a separate bug.
       const r = await fetch(`${API}/api/autoscaling/hpas/hpa-demo`, {
         method: 'PUT',
         headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
@@ -915,24 +785,7 @@ const HPA_CHECKS = [
   },
 ];
 
-// =============================================================================
-// DECISION FINDER
-// =============================================================================
-// Reads /api/live-workflows — the SAME structured, per-component decision events
-// IncidentTracer.step() feeds at every src/orchestrator/graph.js node (see
-// src/monitoring/liveWorkflowStore.js), i.e. exactly what the dashboard's Live
-// Pipeline page renders. This REPLACES the old approach of scraping /api/audit's
-// metadata.issueKey/metadata.action and /api/logs for "[PLANNER] raw:"-style
-// strings — those were legacy ClusterAgent/plannerAgent.js artifacts that the v5
-// pipeline (graph.js/planner.js) never produces, which is why detection silently
-// never fired for anything the orchestrator actually picked up (found live,
-// 2026-09-09: an orchestrator-detected, fully-resolved incident still scored as
-// "not detected" every time).
-//
-// Fetched ONCE per poll tick (see main()'s poll loop) and matched in-memory against
-// every still-undetected test, instead of one /api/live-workflows call per test per
-// tick — cheaper, and keeps every test's view of "what's in flight right now"
-// perfectly consistent within a tick.
+// Fetch live workflow incidents from the API
 async function fetchLiveWorkflows() {
   try {
     const d = await api('/api/live-workflows');
@@ -940,29 +793,14 @@ async function fetchLiveWorkflows() {
   } catch { return []; }
 }
 
-// Short Memory's own dispatch-side state (src/memory/shortMemory.js's dumpState(), via
-// GET /api/live-workflows/short-memory) — the REAL signal for "is the orchestrator still
-// working through a backlog, or genuinely done". Used to replace a blind elapsed-time
-// cutoff (see main()'s poll loop): with ISSUE_CONCURRENCY defaulting to 3 and every
-// uncorrelated incident getting its own solo dispatch key, a burst of N failing test
-// pods takes ceil(N/3) dispatch "waves" to clear — a fixed timeout picked independent of
-// N and the live queue depth will always either be too short (misreporting a still-
-// queued incident as "not detected") or wastefully long. Polling this instead lets the
-// benchmark wait exactly as long as real work is happening, no more, no less.
+// Fetch Short Memory dispatch state from the API
 async function fetchShortMemoryState() {
   try {
     return await api('/api/live-workflows/short-memory');
   } catch { return null; }
 }
 
-// Finds the most-recently-updated live-workflow incident whose resource matches this
-// test's target, started at/after this benchmark run began (so a leftover incident
-// from an earlier run/session — liveWorkflowStore keeps a finished one visible for 30
-// min — never gets misattributed to this run). `.includes()` rather than an exact
-// name match on purpose: t.pod is usually the Deployment name (e.g. "oom-dep"), but
-// resourceFromIssue() may carry either that or the literal generated pod name
-// ("oom-dep-7f9c6d-x2k4l") depending on how far the incident got — same substring-match
-// philosophy the old issueKey-scraping version used.
+// Find the latest incident matching the test target
 function matchIncident(items, podName, namespace, afterIso) {
   const searchNs = namespace || NS;
   const afterMs = new Date(afterIso).getTime();
@@ -978,15 +816,7 @@ function matchIncident(items, podName, namespace, afterIso) {
   return candidates[0];
 }
 
-// Best-effort translation of v5's free-form kubectl command/plan summary onto the
-// short legacy action labels this file's TESTS[].expected.action still uses.
-// schemas.js's PlanStepSchema comment explains why there's no literal label to read
-// anymore: "the Planner writes the complete kubectl command itself... instead of
-// picking from a closed action set" — so this is pattern-matching command TEXT, an
-// approximation, not something the pipeline reports directly. Kept intentionally
-// narrow/explicit rather than guessing broadly, so a genuinely novel command falls
-// through to 'restart' (the closest "some remediation ran" bucket) instead of being
-// silently mislabeled as a specific action it isn't.
+// Map a kubectl command to a legacy action label
 function classifyAction(planSummary, executorAction) {
   const text = `${planSummary ?? ''} ${executorAction ?? ''}`.toLowerCase();
   if (!text.trim()) return 'noop';
@@ -999,12 +829,10 @@ function classifyAction(planSummary, executorAction) {
   return 'restart';
 }
 
-// Derives a findDecision()-shaped result from a live-workflow incident record, plus
-// the raw `steps` trail (kept on the returned object) so main() can render it into
-// the HTML report without a second lookup.
+// Build a decision result from a live incident
 function decisionFromIncident(incident) {
   const byComponent = {};
-  for (const s of incident.steps) byComponent[s.component] = s.output ?? {}; // last write wins — steps are chronological
+  for (const s of incident.steps) byComponent[s.component] = s.output ?? {};
   const inv = byComponent.investigator, plan = byComponent.planner;
   const guard = byComponent.guardian, pol = byComponent.policy, exec = byComponent.executor;
   const refl = byComponent.reflector;
@@ -1030,10 +858,7 @@ async function findDecision(items, podName, namespace, afterIso) {
   return incident ? decisionFromIncident(incident) : null;
 }
 
-// "policy" tests need to see PolicyEngine actually FAIL a step (not just any
-// decision) — checked against the same live-workflow incident's own 'policy' step
-// output rather than a separate query, since that step is exactly where
-// PolicyEngine's verdict for this incident already landed.
+// Find a policy step that blocked the incident
 async function findPolicyBlock(items, deploymentName, namespace, rulePattern, afterIso) {
   const incident = matchIncident(items, deploymentName, namespace, afterIso);
   if (!incident) return null;
@@ -1056,15 +881,6 @@ function checkResolved(podName) {
   return false;
 }
 
-// =============================================================================
-// HTML REPORT — one page mirroring the app's own Live Pipeline table
-// (dashboard-ui/src/pages/LiveWorkflowPage.jsx): same step icons/labels/order
-// (WORKFLOW_STEP/WORKFLOW_STEP_ORDER, dashboard-ui/src/constants/index.js) and the
-// same dark palette (dashboard-ui/src/App.css's :root vars), so a benchmark result
-// reads like an extension of the dashboard instead of a foreign report format.
-// Self-contained (no external assets, no JS framework) — <details> gives free
-// expand/collapse for each test's step trail without needing any script at all.
-// =============================================================================
 const WORKFLOW_STEP = {
   orchestrator: { icon: '🛰',  label: 'Detected' },
   investigator: { icon: '🔎', label: 'Investigator' },
@@ -1083,9 +899,7 @@ function badge(pass, label) {
   return `<span class="badge ${pass ? 'badge-success' : 'badge-danger'}">${esc(label)}</span>`;
 }
 
-// Same generic "render whatever fields this component's output happens to carry"
-// approach as StepOutput in LiveWorkflowPage.jsx, for the same reason: it keeps
-// working as those per-component payloads evolve, with zero changes here.
+// Render a step's output fields as HTML
 function stepFieldsHtml(output) {
   const entries = Object.entries(output ?? {}).filter(([, v]) => v !== null && v !== undefined && v !== '');
   if (entries.length === 0) return '<div class="no-decision">(no additional output)</div>';
@@ -1201,9 +1015,7 @@ function buildHtmlReport(report, results, decisions) {
 </html>`;
 }
 
-// =============================================================================
-// MAIN
-// =============================================================================
+// Run the benchmark
 async function main() {
   console.log(`\n${C.B}${C.b}━━━ KubePilot Advanced Agent Benchmark ━━━${C.n}`);
   console.log(`${C.d}cluster=${CTX}  ns=${NS}  timeout=${TIMEOUT}s  tests=${TESTS.length}${C.n}\n`);
@@ -1211,7 +1023,6 @@ async function main() {
   await login();
   console.log(`${C.g}  OK${C.n} Logged in\n`);
 
-  // Setup namespaces
   try { execFileSync('kubectl', [`--context=${CTX}`, 'create', 'namespace', NS], { encoding: 'utf8', timeout: 10000, stdio: 'pipe' }); } catch {}
 
   const benchStartIso = new Date().toISOString();
@@ -1219,10 +1030,8 @@ async function main() {
   const startTimes = {};
   const results = [];
 
-  // Group tests by category for display
   const categories = [...new Set(TESTS.map(t => t.category))];
 
-  // Create all workloads
   console.log(`${C.b}[create]${C.n} Deploying ${TESTS.length} test workloads across ${categories.length} categories...`);
   for (const cat of categories) {
     const catTests = TESTS.filter(t => t.category === cat);
@@ -1235,14 +1044,13 @@ async function main() {
     }
   }
 
-  // Poll
   console.log(`\n${C.b}[poll]${C.n} Waiting for real agent decisions (idle-detection, ${TIMEOUT}s hard cap)...\n`);
 
   const decisions = {};
   const detectionTimes = {};
   let elapsed = 0;
   let idleTicks = 0;
-  let stopReason = 'safety-cap'; // overwritten below on any other exit path
+  let stopReason = 'safety-cap';
   const failureTests = TESTS.filter(t => t.expected.detected !== false);
   const healthyTests = TESTS.filter(t => t.expected.detected === false);
 
@@ -1275,22 +1083,12 @@ async function main() {
       break;
     }
 
-    // Redis unreachable means shortMemory.ready is false fleet-wide — enqueue/dequeue
-    // silently no-op (see orchestratorAgent.js's own loud per-cycle warning for this
-    // exact condition), so NOTHING will ever be dispatched from here on. Waiting out
-    // the rest of the safety cap would just misreport "still queued" as the reason for
-    // what's actually a total dispatch outage — stop immediately and say so plainly.
     if (sm && sm.ready === false) {
       console.log(`\n\n  ${C.r}${C.B}Short Memory (Redis) is unreachable${C.n} — dispatch is fleet-wide disabled, nothing further will be detected this run.`);
       stopReason = 'shortmemory-offline';
       break;
     }
 
-    // The REAL completion signal, replacing a blind elapsed-time guess: nothing queued,
-    // nothing actively running, nothing grouped-but-not-yet-dispatched. Confirmed for
-    // IDLE_CONFIRM_TICKS consecutive polls (not just one) so a normal ~30s gap between
-    // fleet cycles — dispatch only happens once per CYCLE_INTERVAL_MS, not continuously —
-    // can't be mistaken for the orchestrator being done.
     const isIdle = sm?.ready && (sm.queue?.length ?? 0) === 0 && (sm.activeWorkflows?.length ?? 0) === 0 && (sm.groups?.length ?? 0) === 0;
     idleTicks = isIdle ? idleTicks + 1 : 0;
     if (idleTicks >= IDLE_CONFIRM_TICKS) {
@@ -1303,10 +1101,6 @@ async function main() {
     console.log(`\n\n  ${C.r}${C.B}Hit the ${TIMEOUT}s safety cap${C.n} while the system was STILL actively working (queue/active workflows non-empty) — remaining undetected tests are genuinely unknown, not confirmed misses. Re-run with a higher --timeout if this keeps happening.`);
   }
 
-  // One final authoritative fetch regardless of which condition stopped the loop above —
-  // catches anything that finished in the gap between the last tick and here, so the
-  // report reflects the system's real state at the moment we actually stop watching it,
-  // not a stale mid-poll snapshot.
   const finalItems = await fetchLiveWorkflows();
   for (const t of TESTS) {
     const dKey = t.pod + (t.ns || '');
@@ -1318,7 +1112,6 @@ async function main() {
   }
   console.log('\n');
 
-  // Score
   console.log(`${C.B}${C.b}━━━ Results ━━━${C.n}\n`);
 
   let totalWeight = 0, earnedWeight = 0;
@@ -1342,11 +1135,6 @@ async function main() {
     const latencyMs = detectionTimes[dKey] ?? null;
     const latencySec = latencyMs ? (latencyMs / 1000).toFixed(1) : null;
 
-    // A failure/policyBlock test with no decision is only a CONFIRMED miss if the poll
-    // loop stopped because the system genuinely went idle (or all other tests were
-    // already detected) — if it stopped on the safety cap or a Redis outage instead, the
-    // system was still working (or unable to work at all) and this is honestly unknown,
-    // not a real false negative. See the stopReason logging above the poll loop.
     const unknown = t.kind !== 'healthy' && !dec && (stopReason === 'safety-cap' || stopReason === 'shortmemory-offline');
 
     const r = {
@@ -1380,8 +1168,6 @@ async function main() {
         r.action = { pass: false, detail: 'not detected' };
       }
 
-      // 'BLOCKED' (policyBlock tests) means the fix was correctly withheld — there's
-      // nothing to check "resolved", unlike a real remediation action.
       if (dec?.action && dec.action !== 'noop' && dec.action !== 'ESCALATED' && dec.action !== 'BLOCKED') {
         totalResolution++; const isRes = checkResolved(t.pod);
         r.resolution = { pass: isRes, skipped: false }; if (isRes) { r.earned += t.weight * 0.15; resolved++; }
@@ -1395,9 +1181,6 @@ async function main() {
     categoryScores[t.category].earned += r.earned;
     categoryScores[t.category].total += t.weight;
 
-    // UNKNOWN (not FAIL) only when the poll loop couldn't confirm one way or the other
-    // (safety-cap hit while the system was still working, or Redis was offline) — once
-    // idle-confirmed or all-detected, a missing decision is a real, scored miss.
     const icon = r.unknown ? `${C.y}UNKNOWN` : r.detection.pass && r.action.pass ? `${C.g}PASS` : `${C.r}FAIL`;
     console.log(`    ${icon}${C.n}  ${t.name} ${C.d}(w=${t.weight})${C.n}`);
     if (t.kind !== 'healthy') {
@@ -1405,7 +1188,6 @@ async function main() {
     }
   }
 
-  // Metrics
   const ws = totalWeight > 0 ? ((earnedWeight / totalWeight) * 100).toFixed(1) : 0;
   const avgLat = latencies.length ? (latencies.reduce((a,b) => a+b, 0) / latencies.length / 1000).toFixed(1) : 'n/a';
   const p95Lat = latencies.length >= 2 ? (latencies.sort((a,b) => a-b)[Math.floor(latencies.length * 0.95)] / 1000).toFixed(1) : avgLat;
@@ -1430,7 +1212,6 @@ async function main() {
     console.log(`    ${cat.padEnd(12)} ${bar} ${pct}%`);
   }
 
-  // Save
   if (!fs.existsSync(RESULTS_DIR)) fs.mkdirSync(RESULTS_DIR, { recursive: true });
   let commit = 'unknown';
   try { commit = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim(); } catch {}
@@ -1439,11 +1220,6 @@ async function main() {
   const report = {
     date: new Date().toISOString(), commit, cluster: CTX, model: process.env.OPENAI_MODEL ?? 'unknown',
     benchmark: 'advanced', timeout: TIMEOUT,
-    // stopReason tells you whether "not detected" below means anything: 'all-detected'/
-    // 'idle-confirmed' are real, trustworthy results (the system was verifiably done);
-    // 'safety-cap'/'shortmemory-offline' mean the run stopped before the system finished
-    // or could even start, so any test with unknown:true in `tests` below is NOT a
-    // confirmed miss — see main()'s poll loop for how this is decided.
     stopReason, unknownCount,
     metrics: {
       weightedScore: parseFloat(ws), detectionAcc: results.filter(r => r.detection.pass).length / TESTS.length,
@@ -1471,7 +1247,6 @@ async function main() {
   fs.writeFileSync(path.join(RESULTS_DIR, htmlFilename), buildHtmlReport(report, results, decisions));
   console.log(`${C.d}HTML:   benchmark/results/${htmlFilename}${C.n}`);
 
-  // Regression
   const prevFiles = fs.existsSync(RESULTS_DIR)
     ? fs.readdirSync(RESULTS_DIR).filter(f => f.startsWith('bench-adv-') && f.endsWith('.json')).sort() : [];
   if (prevFiles.length >= 2) {
@@ -1481,14 +1256,13 @@ async function main() {
     else if (diff > 0) console.log(`\n  ${C.g}Improvement: +${diff.toFixed(1)}%${C.n}`);
   }
 
-  // Autoscaling API checks (not agent-scored — see HPA_CHECKS above)
   console.log(`\n${C.B}${C.b}━━━ Autoscaling API Checks (not agent-scored) ━━━${C.n}\n`);
   const hpaResults = [];
   for (const chk of HPA_CHECKS) {
     process.stdout.write(`    ${C.b}*${C.n} ${chk.name}...`);
     try {
       await chk.setup();
-      await sleep(3000); // let the HPA object settle before reading it back
+      await sleep(3000);
       const v = await chk.verify();
       console.log(v.pass ? ` ${C.g}PASS${C.n} ${C.d}${v.detail}${C.n}` : ` ${C.r}FAIL${C.n} ${C.d}${v.detail}${C.n}`);
       hpaResults.push({ name: chk.name, pass: v.pass, detail: v.detail });
@@ -1504,8 +1278,6 @@ async function main() {
   console.log(`\n  ${C.d}hpa-demo left running in namespace "${AUTOSCALE_NS}" — open the Autoscaling tab to see it.${C.n}`);
   console.log(`  ${C.d}Remove it yourself when done: kubectl --context=${CTX} delete namespace ${AUTOSCALE_NS}${C.n}`);
 
-  // Cleanup — note this only wipes NS and the other test namespaces below; AUTOSCALE_NS
-  // is deliberately NOT in this list, so hpa-demo survives for manual inspection.
   console.log(`\n${C.b}[cleanup]${C.n} Removing test namespaces...`);
   for (const n of [NS, 'bench-ns-alpha', 'bench-ns-beta', 'bench-policy']) {
     try { execFileSync('kubectl', [`--context=${CTX}`, 'delete', 'namespace', n, '--ignore-not-found', '--wait=false'],

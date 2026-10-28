@@ -1,18 +1,12 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 
-// escalationStore.js transitively requires services/notifications/crypto.js, which
-// throws at import time if NOTIFICATION_SECRET is unset — set it before the module
-// graph loads. A dynamic import() (not hoisted, unlike a static import) lets this run
-// first instead of racing a hoisted static import.
 let escalate;
 beforeAll(async () => {
   process.env.NOTIFICATION_SECRET ??= 'test-only-secret-not-a-real-value-0123456789';
   ({ escalate } = await import('./escalationStore.js'));
 });
 
-// Fake EscalationHistory model — enough shape for the "new escalation" path
-// (.create()) used by every test below; dedup/re-escalation path (.findByIdAndUpdate)
-// isn't exercised here so it's a no-op stub.
+// Fake EscalationHistory model
 function fakeEscalationHistoryModel() {
   let n = 0;
   return {
@@ -21,9 +15,7 @@ function fakeEscalationHistoryModel() {
   };
 }
 
-// Fake notifEngine whose emit() resolves a promise the test can await — escalate()
-// fires the notification asynchronously via a detached `.then()` chain, so we need
-// a hook to know when it actually happened rather than guessing with a timer.
+// Fake notification engine
 function fakeNotifEngine() {
   let resolveEmitted;
   const emitted = new Promise(resolve => { resolveEmitted = resolve; });
@@ -39,9 +31,7 @@ describe('escalationStore.escalate — notification targeting', () => {
     const deps = {
       EscalationHistoryModel: fakeEscalationHistoryModel(),
       notifEngine,
-      // Simulates permissionService.getEligibleRecipients narrowing down to exactly
-      // one specific user (an admin plus one developer scoped to this namespace) —
-      // NOT every registered user.
+      // Mock eligible recipients
       getEligibleRecipients: async () => ['admin-1', 'dev-with-access'],
     };
 

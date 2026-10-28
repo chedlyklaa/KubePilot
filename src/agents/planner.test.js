@@ -1,21 +1,16 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 
-// planner.js transitively requires ../config (OPENAI_API_KEY/OPENAI_MODEL) and constructs
-// a ChatOpenAI client at module load — same pattern as graph.test.js/investigator.test.js.
 process.env.OPENAI_API_KEY ??= 'test-only-key';
 process.env.OPENAI_MODEL   ??= 'test-model';
 
-let planner, _lowConfidencePlan, _isConfidenceTooLowToPlan, LOW_CONFIDENCE_THRESHOLD, _cpuToMillicores, _memToMi;
+let planner, _lowConfidencePlan, _isConfidenceTooLowToPlan, LOW_CONFIDENCE_THRESHOLD, _cpuToMillicores, _memToMi, _slimInvestigation;
 
 beforeAll(async () => {
-  ({ default: planner, _lowConfidencePlan, _isConfidenceTooLowToPlan, LOW_CONFIDENCE_THRESHOLD, _cpuToMillicores, _memToMi } =
+  ({ default: planner, _lowConfidencePlan, _isConfidenceTooLowToPlan, LOW_CONFIDENCE_THRESHOLD, _cpuToMillicores, _memToMi, _slimInvestigation } =
     await import('./planner.js'));
 });
 
 describe('_isConfidenceTooLowToPlan (§Fix-PlannerConfidenceGate)', () => {
-  // Match case — confirmed live: the Investigator's own fallback shape reports
-  // confidence: 0 with rootCause "investigation unavailable, unable to determine
-  // specific root cause". The Planner used to propose a confident-looking action anyway.
   it('is true at confidence 0 (investigation unavailable)', () => {
     expect(_isConfidenceTooLowToPlan(0)).toBe(true);
   });
@@ -28,9 +23,6 @@ describe('_isConfidenceTooLowToPlan (§Fix-PlannerConfidenceGate)', () => {
     expect(_isConfidenceTooLowToPlan(undefined)).toBe(true);
   });
 
-  // Control case — a genuine high-confidence diagnosis (every real successful
-  // investigation observed in test runs reports 0.9-0.95) must NOT be gated, or the
-  // Planner would never be allowed to propose anything.
   it('control case: is false at a real investigation confidence (0.95)', () => {
     expect(_isConfidenceTooLowToPlan(0.95)).toBe(false);
   });
@@ -52,11 +44,6 @@ describe('_lowConfidencePlan', () => {
     expect(plan.steps[0].reason).toMatch(/confidence/i);
   });
 
-  // Regression test — found live 2026-09-04: a scope:"cluster" issue (or any issue
-  // genuinely missing nodeName/deployment/podName) produced target.name: null, which
-  // fails PlanStepSchema validation and crashes the whole workflow before it ever
-  // reaches escalation. PlanSchema.parse() inside _lowConfidencePlan throws synchronously
-  // if this regresses, so simply not throwing is the assertion that matters here.
   it('never produces a null target.name, even for an issue with no identifying field at all', () => {
     const namelessIssues = [
       { clusterName: 'staging-cluster', namespace: null, podName: null, deployment: null, nodeName: null },
@@ -91,7 +78,6 @@ describe('_cpuToMillicores / _memToMi (§Fix-CapacityEvidence)', () => {
   });
 
   it('parses decimal memory suffixes (M/G) distinctly from binary ones', () => {
-    // 1 decimal GB = 1000^3 bytes = 1000^3 / (1024*1024) MiB ≈ 953.67 MiB, not 1024.
     expect(_memToMi('1G')).toBeCloseTo(953.674, 2);
   });
 
@@ -102,10 +88,6 @@ describe('_cpuToMillicores / _memToMi (§Fix-CapacityEvidence)', () => {
 });
 
 describe('Planner.plan — end-to-end gate wiring', () => {
-  // No LLM mocking needed here: at confidence 0 the gate returns before
-  // _runPlanningLoop() ever runs, so this exercises the real Planner.plan() entry point
-  // without a network call — this is the exact "investigation unavailable" shape
-  // confirmed live across many CrashLoopBackOff cycles in test-output/20-incidents/.
   it('returns a command-less plan without calling the LLM when confidence is 0', async () => {
     const issues = [
       { type: 'CrashLoopBackOff', clusterName: 'minikube', namespace: 'shop', podName: 'api-minikube-7f8', deployment: 'api', nodeName: null },
@@ -113,5 +95,44 @@ describe('Planner.plan — end-to-end gate wiring', () => {
     const rca = { rootCause: 'CrashLoopBackOff — investigation unavailable, unable to determine specific root cause', confidence: 0 };
     const plan = await planner.plan(issues, rca, {});
     expect(plan.steps.every(s => s.command === '')).toBe(true);
+  });
+});
+
+describe('_slimInvestigation — the Planner gets what it plans from, not the audit trail', () => {
+  const rca = {
+    rootCause: 'bad image tag', layer: 'image', symptom: 'ImagePullBackOff', severity: 'high', riskLevel: 'medium',
+    confidence: 0.9, evidenceSufficiency: 0.9, reachedConfidenceTarget: true, componentsInvolved: ['web'],
+    evidence: ['Failed to pull image "web:1.9.9": not found'], recommendedFocus: 'roll back the image',
+    perLayerFindings: [
+      { layer: 'image', status: 'critical', summary: 'tag missing', commandsRun: ['describe pod web'] },
+      { layer: 'node',  status: 'healthy',  summary: 'fine',        commandsRun: ['top nodes'] },
+      { layer: 'network', status: 'warning', summary: 'slow DNS',   commandsRun: [] },
+    ],
+    commandsExecuted: [{ command: 'describe pod web', reasoning: 'r', result: 'z'.repeat(500) }],
+    suspected_cause: 'bad image tag', recommended_focus: 'roll back', risk_level: 'medium',
+    stoppingOutcome: 'DIAGNOSIS_READY', investigationTurns: 6,
+  };
+
+  it('keeps diagnosis fields and only critical/warning findings', () => {
+    const slim = _slimInvestigation(rca);
+    expect(slim.rootCause).toBe('bad image tag');
+    expect(slim.evidence).toEqual(rca.evidence);
+    expect(slim.confidence).toBe(0.9);
+    expect(slim.findings).toEqual([
+      { layer: 'image', status: 'critical', summary: 'tag missing' },
+      { layer: 'network', status: 'warning', summary: 'slow DNS' },
+    ]);
+  });
+
+  it('drops the command audit trail, legacy duplicates and dashboard metrics', () => {
+    const slim = _slimInvestigation(rca);
+    for (const k of ['commandsExecuted', 'suspected_cause', 'recommended_focus', 'risk_level', 'stoppingOutcome', 'investigationTurns', 'perLayerFindings']) {
+      expect(slim).not.toHaveProperty(k);
+    }
+    expect(JSON.stringify(slim).length).toBeLessThan(JSON.stringify(rca).length / 2);
+  });
+
+  it('passes a missing report through unchanged', () => {
+    expect(_slimInvestigation(null)).toBeNull();
   });
 });

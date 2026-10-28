@@ -5,10 +5,9 @@ const { createPubSub }          = require('./pubsub');
 const { restoreActiveRecords }  = require('./restoreActiveRecords');
 
 let seq = 0;
-const silences = new Map(); // id → { id, key, until, reason, createdBy, createdAt }
+const silences = new Map();
 const { notify, subscribe } = createPubSub();
 
-// Auto-cleanup expired entries every minute
 setInterval(() => {
   const now = Date.now();
   for (const [id, s] of silences) {
@@ -19,9 +18,8 @@ setInterval(() => {
   }
 }, 60_000);
 
-// ── Add or replace a silence for a key ────────────────────────────────────────
+// Add or replace a silence
 async function add(key, durationMs, reason, createdBy) {
-  // Replace any existing silence for the same key so there's always at most one
   for (const [existingId, s] of silences) {
     if (s.key === key) { silences.delete(existingId); break; }
   }
@@ -50,7 +48,7 @@ async function add(key, durationMs, reason, createdBy) {
   return entry;
 }
 
-// ── Check if a key is currently silenced ──────────────────────────────────────
+// Check if a key is silenced
 function isSilenced(key) {
   const now = Date.now();
   for (const s of silences.values()) {
@@ -59,7 +57,7 @@ function isSilenced(key) {
   return false;
 }
 
-// ── Lift a silence early by id ────────────────────────────────────────────────
+// Remove a silence
 async function remove(id) {
   const entry = silences.get(id);
   if (!entry) return false;
@@ -80,7 +78,7 @@ function getAll() {
   return [...silences.values()].filter(s => s.until > now);
 }
 
-// ── Restore active silences from MongoDB on startup ───────────────────────────
+// Restore active silences from MongoDB
 async function init() {
   try {
     const restored = await restoreActiveRecords(

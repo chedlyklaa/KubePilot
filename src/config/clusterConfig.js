@@ -3,14 +3,6 @@ const fs   = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
 
-// Single cached source of clusters.yaml — shared by both the API layer (server.js routes)
-// and the orchestrator, replacing what used to be ~8 separate `yaml.load(fs.readFileSync(...))`
-// calls in server.js plus a second, independent fs.watch in src/orchestrator/index.js.
-// Cache is refreshed on file change instead of on every read; on a transient parse error
-// the last known-good value is kept rather than silently falling back to [].
-//
-// onChange() lets the orchestrator react to a reload (to reconcile live ClusterAgent
-// instances) without maintaining its own separate watcher on the same file.
 const CONFIG_PATH = path.join(__dirname, '../../config/clusters.yaml');
 
 let _cache = null;
@@ -39,8 +31,7 @@ function getClusters() {
   return _cache ?? _load();
 }
 
-// Subscribe to reloads triggered by a real file change (not the initial load).
-// Returns an unsubscribe function.
+// Subscribe to config reloads
 function onChange(fn) {
   _changeListeners.add(fn);
   return () => _changeListeners.delete(fn);

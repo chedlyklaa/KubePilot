@@ -1,22 +1,4 @@
 'use strict';
-// Plain Node script, not a Vitest test — executor.js constructs its own internal
-// `policyEngine = new PolicyEngine()` singleton at module load time, keyed off
-// ALLOW_LIVE_KUBECTL_EXECUTION at THAT moment; Vitest's per-file module cache makes
-// exercising two different env states for the same module awkward, and this repo's
-// established pattern for exactly this class of problem (module-level state fixed at
-// require() time) is a plain script, run once per state, invoked twice by the caller —
-// see scripts/verify-guardian-failclosed.js's header for the same reasoning.
-//
-// §Fix-DryRunDefault (2026-09-18) — proves, for real, whether one Executor call path
-// (a mutating pod command, a mutating node command, and the always-real dry_run_step
-// validation path) actually reaches kubectl.runCommand() or not, under both the default
-// (safe) and ALLOW_LIVE_KUBECTL_EXECUTION=true (real) states. kubectl.runCommand itself
-// is monkey-patched to a recorder — never touches a real cluster regardless of which
-// scenario is running.
-//
-// Usage:
-//   node scripts/verify-dryrun-execution.js              → expects SIMULATE behavior
-//   ALLOW_LIVE_KUBECTL_EXECUTION=true node scripts/verify-dryrun-execution.js  → expects REAL behavior
 
 process.env.OPENAI_API_KEY      ??= 'test-only-key';
 process.env.OPENAI_MODEL        ??= 'test-model';
@@ -35,7 +17,6 @@ const expectingLive = process.env.ALLOW_LIVE_KUBECTL_EXECUTION === 'true';
 async function main() {
   console.log(`Mode under test: ${expectingLive ? 'ALLOW_LIVE_KUBECTL_EXECUTION=true (expect REAL execution)' : 'default (expect SIMULATE)'}`);
 
-  // ── Scenario 1: a mutating pod-scoped command ──────────────────────────────────
   calls.length = 0;
   await executor.execute(
     { command: 'rollout restart deployment/app -n default', target: { kind: 'Deployment', name: 'app', namespace: 'default' } },
@@ -50,7 +31,6 @@ async function main() {
     console.log('PASS pod-scoped mutating command → SIMULATED, kubectl.runCommand never called');
   }
 
-  // ── Scenario 2: a mutating node-scoped command ─────────────────────────────────
   calls.length = 0;
   await executor.execute(
     { command: 'cordon node-1', target: { kind: 'Node', name: 'node-1' } },
@@ -65,10 +45,6 @@ async function main() {
     console.log('PASS node-scoped mutating command → SIMULATED, kubectl.runCommand never called');
   }
 
-  // ── Scenario 3: dryRun() (the --dry-run=server validation path) always hits the
-  // real API server regardless of dryRunMode — this is the one path that must NOT
-  // change behavior between the two scenarios (see executor.js's own comment on why:
-  // --dry-run=server never mutates regardless, so it should always get a real answer).
   calls.length = 0;
   await executor.dryRun(
     { command: 'rollout restart deployment/app -n default', target: { kind: 'Deployment', name: 'app', namespace: 'default' } },

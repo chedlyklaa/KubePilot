@@ -1,69 +1,53 @@
 'use strict';
 
-// Scans Deployment/StatefulSet/DaemonSet pod templates for container-hardening
-// gaps and reports them as standing SecurityFinding documents — same shape as
-// rbacPostureEngine.js: feature-flagged, cycle-throttled, fire-and-forget,
-// notify-only. Never touches the pod/node remediation pipeline.
-//
-// Scans controller pod *templates* rather than live Pods so a finding's identity
-// (findingKey) stays stable across restarts — a live Pod's name changes every
-// time its controller recreates it, which would otherwise make every restart
-// look like the old finding vanished and a new one appeared.
-
 let _SecurityFinding = null;
 let _notifEngine     = null;
 
 function _initModels() {
   if (_SecurityFinding) return;
-  try { ({ SecurityFinding: _SecurityFinding } = require('../db/models')); } catch { /* MongoDB unavailable */ }
+  try { ({ SecurityFinding: _SecurityFinding } = require('../db/models')); } catch { }
 }
 
 function _getNotifEngine() {
   if (!_notifEngine) {
-    try { _notifEngine = require('../services/notifications/engine'); } catch { /* not available */ }
+    try { _notifEngine = require('../services/notifications/engine'); } catch { }
   }
   return _notifEngine;
 }
 
 const SCAN_INTERVAL_CYCLES = parseInt(process.env.WORKLOAD_HARDENING_INTERVAL_CYCLES ?? '10', 10);
 
-// System-managed namespaces produce a lot of noise (CNI/kube-proxy DaemonSets
-// legitimately need host access) and aren't what an operator is auditing for —
-// same exclusion PoliciesPage.jsx already applies to its Pod Security section.
 const SKIP_NAMESPACES = new Set(['kube-system', 'kube-public', 'kube-node-lease']);
 
 const UNPINNED_IMAGE_RE = /:latest$/;
 function _hasNoTag(image) {
-  // "repo/image" with no ":" at all defaults to :latest just as much as an explicit one.
-  // A registry host with a port (e.g. "registry:5000/image") has a ':' that isn't a tag
-  // separator, so only check for ':' after the last '/'.
   const afterSlash = image.slice(image.lastIndexOf('/') + 1);
   return !afterSlash.includes(':');
 }
 
 class WorkloadHardeningEngine {
   constructor() {
-    this._cycleCount = 0;
-    this._running    = false;
+    this._cycleCount = new Map();
+    this._running = new Set();
   }
 
   async check({ cluster, context }) {
-    this._cycleCount++;
-    if (this._cycleCount % SCAN_INTERVAL_CYCLES !== 0) return;
+    const cycle = (this._cycleCount.get(cluster) ?? 0) + 1;
+    this._cycleCount.set(cluster, cycle);
+    if (cycle % SCAN_INTERVAL_CYCLES !== 0) return;
     await this.rescanNow({ cluster, context });
   }
 
-  // Runs the scan immediately, bypassing the cycle throttle — used by the
-  // "Re-scan now" button as well as by check() once its interval has elapsed.
+  // Run the hardening scan now
   async rescanNow({ cluster, context }) {
     _initModels();
     if (!_SecurityFinding) return { scanned: false, reason: 'MongoDB unavailable' };
 
-    if (this._running) {
+    if (this._running.has(cluster)) {
       console.log('[WORKLOAD-HARDENING] Previous scan still running — skipping');
       return { scanned: false, reason: 'already running' };
     }
-    this._running = true;
+    this._running.add(cluster);
 
     try {
       const kubectl = require('../tools/kubectl');
@@ -98,13 +82,12 @@ class WorkloadHardeningEngine {
       console.warn(`[WORKLOAD-HARDENING] ${cluster}: scan failed (non-blocking): ${err.message}`);
       return { scanned: false, reason: err.message };
     } finally {
-      this._running = false;
+      this._running.delete(cluster);
     }
   }
 }
 
-// ── Detection rules (deterministic, no LLM) ───────────────────────────────────
-
+// Scan workloads for hardening issues
 function _scanWorkloads(items, ownerKind) {
   const findings = [];
   for (const item of items ?? []) {
@@ -235,8 +218,7 @@ function _evaluatePodSpec(podSpec, owner) {
   return findings;
 }
 
-// ── Upsert findings, resolve ones no longer seen ─────────────────────────────
-
+// Save findings and resolve old ones
 async function _reconcile(cluster, detected) {
   const now = new Date();
   const seenKeys = new Set();

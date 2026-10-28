@@ -1,4 +1,3 @@
-// src/tools/helm.js
 'use strict';
 
 const { execFile } = require('child_process');
@@ -20,8 +19,7 @@ function runHelm(args, { timeoutMs = 30_000 } = {}) {
   });
 }
 
-// Cheap probe — helm may simply not be installed on the KubePilot host, which should
-// degrade to "unavailable" in the UI, not a hard error.
+// Check if helm is installed
 async function isHelmAvailable() {
   try {
     await runHelm(['version', '--short'], { timeoutMs: 5_000 });
@@ -36,13 +34,8 @@ async function listReleases(context) {
   return JSON.parse(out || '[]');
 }
 
-async function getReleaseStatus(release, namespace, context) {
-  const out = await runHelm(['status', release, '-n', namespace, '--kube-context', context, '-o', 'json']);
-  return JSON.parse(out);
-}
-
 async function rollbackRelease(release, namespace, context) {
   return runHelm(['rollback', release, '-n', namespace, '--kube-context', context]);
 }
 
-module.exports = { isHelmAvailable, listReleases, getReleaseStatus, rollbackRelease };
+module.exports = { isHelmAvailable, listReleases, rollbackRelease };

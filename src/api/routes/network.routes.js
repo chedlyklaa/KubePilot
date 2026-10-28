@@ -9,8 +9,7 @@ const { asyncHandler } = require('../middleware/asyncHandler');
 
 const router = express.Router();
 
-// Context allow-list: only clusters configured in clusters.yaml can be targeted —
-// same guard rbac.routes.js applies before touching kubectl.
+// Make sure the context is a monitored cluster
 function requireMonitoredContext(context, res) {
   const monitored = new Set(getClusters().map(c => c.context));
   if (!monitored.has(context)) {
@@ -20,8 +19,6 @@ function requireMonitoredContext(context, res) {
   return true;
 }
 
-// GET /api/network/overview?context=CTX&namespace=NS
-// namespace=_all fetches across all namespaces (client filters)
 router.get('/api/network/overview', requireAuth, asyncHandler(async (req, res) => {
   const { context, namespace = '_all' } = req.query;
   if (!context) return res.status(400).json({ error: 'context required' });
@@ -34,8 +31,6 @@ router.get('/api/network/overview', requireAuth, asyncHandler(async (req, res) =
     kubectl.getIngresses(ns, context),
   ]);
 
-  // Annotate server-side so the client doesn't need its own copy of the logic —
-  // same reasoning as rbac.routes.js's `dangerous` flag on bindings.
   res.json({
     networkPolicies,
     services:  services.map(s => ({ ...s, exposed: ['NodePort', 'LoadBalancer'].includes(s.spec?.type) })),
@@ -45,7 +40,6 @@ router.get('/api/network/overview', requireAuth, asyncHandler(async (req, res) =
 
 const NETWORK_APPLY_KINDS = new Set(['NetworkPolicy', 'Service', 'Ingress']);
 
-// POST /api/network/apply — apply one or more YAML documents (admin only)
 router.post('/api/network/apply', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
   const { yaml: yamlContent, context } = req.body;
   if (!yamlContent || !context)
@@ -91,7 +85,6 @@ router.post('/api/network/apply', requireAuth, requireAdmin, asyncHandler(async 
   res.json({ output, dryRunOutput, appliedCount: docs.length });
 }));
 
-// DELETE /api/network/resource — delete a network resource (admin only)
 router.delete('/api/network/resource', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
   const { kind, name, namespace, context } = req.body;
   if (!kind || !name || !context)

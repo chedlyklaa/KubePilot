@@ -1,15 +1,4 @@
 #!/usr/bin/env node
-// =============================================================================
-// scripts/prune-history.js — delete the N oldest Escalation / Approval records
-//
-// Deletes from the oldest record forward, up to the count you specify for each
-// collection independently. Nothing is deleted unless you explicitly pass a count.
-//
-// Usage:
-//   node scripts/prune-history.js --escalations=50 --approvals=20
-//   node scripts/prune-history.js --escalations=10
-//   node scripts/prune-history.js --escalations=50 --dry-run   (preview, deletes nothing)
-// =============================================================================
 'use strict';
 
 require('dotenv').config();
@@ -35,7 +24,6 @@ async function pruneOldest(Model, label, count) {
     return;
   }
 
-  // Oldest-first, capped at `count` — naturally never deletes more than exists.
   const oldest = await Model.find().sort({ createdAt: 1 }).limit(count).select('_id createdAt issueKey');
   if (oldest.length === 0) {
     console.log(`[prune] ${label}: nothing to delete (collection is empty) — total: ${totalBefore}`);

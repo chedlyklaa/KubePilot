@@ -1,21 +1,9 @@
-// PDF report rendering — opens a new window, writes a styled HTML document, and
-// triggers print(). Extracted from ChatPage.jsx, which previously mixed this with the
-// intent classifier and the chat UI itself in one 771-line file.
-//
-// Security note: renderMarkdownPdf() runs LLM-generated markdown through `marked`, which
-// converts markdown to HTML but does NOT strip raw HTML tags embedded in the source — if
-// the LLM's output (via prompt injection or an unusual response) contained `<script>` or
-// an `onerror` handler, it would execute in the new window's origin. The result is run
-// through DOMPurify before being written into the document. renderStructuredReport()
-// doesn't need this: every field it interpolates already goes through esc() below, which
-// HTML-escapes before any markdown-like substitution.
-
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 
 function escHtml(s) { return (s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
 
-// ── Severity detection from markdown text ─────────────────────────────────
+// Detect severity from markdown text
 function detectSeverity(text) {
   const t = text.toLowerCase()
   if (/critical|crashloop|oomkill|evict|not ready|down\b|unavailable/.test(t)) return 'critical'
@@ -30,7 +18,7 @@ function extractTitle(text) {
   return s ? s[0].trim().slice(0, 100) : 'Cluster Status Report'
 }
 
-// ── Structured report renderer — takes JSON from /api/chat/pdf-report ──────
+// Render a structured report as PDF
 export function renderStructuredReport(report) {
   const win = window.open('', '_blank', 'width=980,height=800')
   if (!win) return
@@ -145,7 +133,7 @@ export function renderStructuredReport(report) {
   setTimeout(() => win.print(), 500)
 }
 
-// ── Fallback: render raw markdown as PDF (used when structured API fails) ───
+// Render raw markdown as PDF
 export function renderMarkdownPdf(markdown) {
   const win = window.open('', '_blank', 'width=980,height=800')
   if (!win) return
@@ -157,12 +145,7 @@ export function renderMarkdownPdf(markdown) {
   const sc  = SEV_COLOR[severity]
   const sbg = SEV_BG[severity]
   const slb = SEV_LABEL[severity]
-  // extractTitle() pulls this from LLM-generated markdown — escape before embedding in
-  // the document (a raw </title><script> in the source would otherwise break out of the
-  // <title> tag and inject into <head>).
   const title     = escHtml(extractTitle(markdown))
-  // marked converts markdown to HTML but passes any raw HTML in the source straight
-  // through — sanitize before this LLM-generated content gets written into the window.
   const bodyHtml  = DOMPurify.sanitize(marked.parse(markdown))
 
   win.document.write(`<!DOCTYPE html>

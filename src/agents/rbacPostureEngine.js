@@ -1,23 +1,16 @@
 'use strict';
 
-// Scans live RBAC (ClusterRoles, Roles, ClusterRoleBindings, RoleBindings,
-// ServiceAccounts) for over-permissioning and reports the result as standing
-// SecurityFinding documents — never touches the pod/node remediation pipeline
-// (no PolicyEngine, no GuardianAgent, no episodic memory). Same shape as
-// rbacDriftEngine.js: feature-flagged, cycle-throttled, fire-and-forget,
-// notify-only.
-
 let _SecurityFinding = null;
 let _notifEngine     = null;
 
 function _initModels() {
   if (_SecurityFinding) return;
-  try { ({ SecurityFinding: _SecurityFinding } = require('../db/models')); } catch { /* MongoDB unavailable */ }
+  try { ({ SecurityFinding: _SecurityFinding } = require('../db/models')); } catch { }
 }
 
 function _getNotifEngine() {
   if (!_notifEngine) {
-    try { _notifEngine = require('../services/notifications/engine'); } catch { /* not available */ }
+    try { _notifEngine = require('../services/notifications/engine'); } catch { }
   }
   return _notifEngine;
 }
@@ -35,9 +28,7 @@ function _isDangerousRoleName(name) {
   return DANGEROUS_ROLE_NAMES.has(name) || (name ?? '').includes('cluster-admin');
 }
 
-// A rule is a "full wildcard" if both its verbs and resources include '*'
-// (e.g. the built-in cluster-admin rule) — strictly more dangerous than a
-// narrower wildcard on just one axis (e.g. verbs:['get','list'], resources:['*']).
+// Severity of a wildcard rule
 function _wildcardSeverity(rules) {
   let sawResourceWildcard = false;
   let sawVerbWildcard     = false;
@@ -68,30 +59,28 @@ function _grantsPodExec(rules) {
 
 class RbacPostureEngine {
   constructor() {
-    this._cycleCount = 0;
-    this._running    = false;
+    this._cycleCount = new Map();
+    this._running = new Set();
   }
 
-  // Called from ClusterAgent.run() — non-blocking, fire-and-forget, feature-flagged,
-  // throttled to once every SCAN_INTERVAL_CYCLES cluster cycles.
+  // Run the RBAC scan if it is due
   async check({ cluster, context }) {
-    this._cycleCount++;
-    if (this._cycleCount % SCAN_INTERVAL_CYCLES !== 0) return;
+    const cycle = (this._cycleCount.get(cluster) ?? 0) + 1;
+    this._cycleCount.set(cluster, cycle);
+    if (cycle % SCAN_INTERVAL_CYCLES !== 0) return;
     await this.rescanNow({ cluster, context });
   }
 
-  // Runs the scan immediately, bypassing the cycle throttle — used by the
-  // "Re-scan now" button (POST /api/security/findings/:id/rescan) as well as by
-  // check() above once its throttle interval has elapsed.
+  // Run the RBAC scan now
   async rescanNow({ cluster, context }) {
     _initModels();
     if (!_SecurityFinding) return { scanned: false, reason: 'MongoDB unavailable' };
 
-    if (this._running) {
+    if (this._running.has(cluster)) {
       console.log('[RBAC-POSTURE] Previous scan still running — skipping');
       return { scanned: false, reason: 'already running' };
     }
-    this._running = true;
+    this._running.add(cluster);
 
     try {
       const kubectl = require('../tools/kubectl');
@@ -127,20 +116,16 @@ class RbacPostureEngine {
       console.warn(`[RBAC-POSTURE] ${cluster}: scan failed (non-blocking): ${err.message}`);
       return { scanned: false, reason: err.message };
     } finally {
-      this._running = false;
+      this._running.delete(cluster);
     }
   }
 }
 
-// ── Detection rules (deterministic, no LLM) ───────────────────────────────────
-
+// Scan bindings for risky permissions
 function _scanBindings(clusterRoles, roles, clusterRoleBindings, roleBindings) {
   const findings = [];
 
-  // Build a roleKey → wildcard-severity lookup so bindings can be judged by what
-  // their role actually grants, not just its name. system: roles are excluded —
-  // they're built-in Kubernetes internals, not something an operator configured.
-  const wildcardByRole = new Map(); // `${kind}/${name}` -> severity|null
+  const wildcardByRole = new Map();
   for (const cr of clusterRoles ?? []) {
     if (cr.metadata?.name?.startsWith('system:')) continue;
     wildcardByRole.set(`ClusterRole/${cr.metadata.name}`, _wildcardSeverity(cr.rules));
@@ -162,7 +147,7 @@ function _scanBindings(clusterRoles, roles, clusterRoleBindings, roleBindings) {
   }
 
   function _evaluate(binding, scope, namespace) {
-    if (_isManagedByKubepilot(binding)) return; // expected — kubepilot's own kp-* sync bindings
+    if (_isManagedByKubepilot(binding)) return;
 
     const roleName = binding.roleRef?.name;
     const roleKind = binding.roleRef?.kind;
@@ -223,7 +208,7 @@ function _scanDefaultServiceAccounts(serviceAccounts) {
   const findings = [];
   for (const sa of serviceAccounts ?? []) {
     if (sa.metadata?.name !== 'default') continue;
-    if (sa.automountServiceAccountToken === false) continue; // already hardened
+    if (sa.automountServiceAccountToken === false) continue;
     const ns = sa.metadata?.namespace;
     findings.push({
       namespace: ns,
@@ -237,8 +222,7 @@ function _scanDefaultServiceAccounts(serviceAccounts) {
   return findings;
 }
 
-// ── Upsert findings, resolve ones no longer seen ─────────────────────────────
-
+// Save findings and resolve old ones
 async function _reconcile(cluster, detected) {
   const now = new Date();
   const seenKeys = new Set();
@@ -251,7 +235,7 @@ async function _reconcile(cluster, detected) {
       existing.lastSeenAt = now;
       existing.severity   = f.severity;
       existing.description = f.description;
-      if (existing.status === 'resolved') existing.status = 'open'; // reappeared after being fixed
+      if (existing.status === 'resolved') existing.status = 'open';
       await existing.save();
     } else {
       await _SecurityFinding.create({
@@ -264,8 +248,6 @@ async function _reconcile(cluster, detected) {
     }
   }
 
-  // Findings that were open but weren't detected this scan look fixed — but never
-  // silently override a human's 'accepted'/'silenced' decision.
   await _SecurityFinding.updateMany(
     { cluster, kind: 'RbacPosture', status: 'open', findingKey: { $nin: [...seenKeys] } },
     { $set: { status: 'resolved' } }

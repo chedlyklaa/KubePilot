@@ -10,9 +10,6 @@ const { z }                  = require('zod');
 const kubectl                = require('../tools/kubectl');
 const { loadConfig }         = require('../config');
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Zod output schema — shared by both LLM1 and LLM2
-// ─────────────────────────────────────────────────────────────────────────────
 const CompleteSchema = z.object({
   complete:    z.literal(true),
   command:     z.string().min(1),
@@ -46,11 +43,7 @@ const InterpretOutputSchema = z.discriminatedUnion('complete', [
   IncompleteSchema,
 ]);
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Shared LLM instance factory
-// Both LLM1 and LLM2 use the same model — only the system prompt differs.
-// maxRetries: 0 because we handle retries ourselves via withRetry().
-// ─────────────────────────────────────────────────────────────────────────────
+// Create the LLM instance
 function makeLLM() {
   const config = loadConfig();
   return new ChatOpenAI({
@@ -62,10 +55,7 @@ function makeLLM() {
   });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Retry helper (replaces p-retry — avoids ESM-only constraint of p-retry v4+)
-// Retries only on JSON parse errors and Zod validation failures.
-// ─────────────────────────────────────────────────────────────────────────────
+// Retry on parse or validation errors
 async function withRetry(fn, { retries = 3, label = 'LLM' } = {}) {
   let lastErr;
   for (let attempt = 1; attempt <= retries + 1; attempt++) {
@@ -81,18 +71,11 @@ async function withRetry(fn, { retries = 3, label = 'LLM' } = {}) {
   throw lastErr;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Parse raw LLM string → validated object
-// Strips markdown fences, extracts JSON block, validates against Zod schema.
-// ─────────────────────────────────────────────────────────────────────────────
+// Parse and validate the LLM output
 function parseAndValidate(raw, label) {
   const stripped = raw.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
   const jsonStr  = stripped.match(/\{[\s\S]*\}/)?.[0] ?? stripped;
   const parsed   = JSON.parse(jsonStr);
-  // LLM2 accumulates params in `request` throughout the conversation and
-  // sometimes keeps it non-null even when complete=true. Force null so
-  // CompleteSchema validates correctly (the server doesn't use these fields
-  // once a command is ready).
   if (parsed.complete === true) {
     parsed.request       = null;
     parsed.missingFields = null;
@@ -101,11 +84,6 @@ function parseAndValidate(raw, label) {
   return InterpretOutputSchema.parse(parsed);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// LLM1 SYSTEM PROMPT
-// Audience: raw natural-language string from the operator.
-// Technique: CRAFT + Chain-of-Thought + Structured Output + One-Shot.
-// ─────────────────────────────────────────────────────────────────────────────
 const LLM1_SYSTEM = `\
 [CONTEXT]
 You are operating inside KubePilot, an autonomous Kubernetes operations platform.
@@ -274,11 +252,6 @@ Output:
   "question": "What replica count and namespace should auth-service be scaled to?"
 }`;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// LLM2 SYSTEM PROMPT
-// Audience: JSON object with { previousRequest, userAnswer }.
-// Technique: CRAFT + Chain-of-Thought + Structured Output + One-Shot.
-// ─────────────────────────────────────────────────────────────────────────────
 const LLM2_SYSTEM = `\
 [CONTEXT]
 You are operating inside KubePilot, an autonomous Kubernetes operations platform.
@@ -411,12 +384,7 @@ Output:
   "question": "Which namespace should auth-service be scaled in?"
 }`;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Live resource context — fetched BEFORE the LLM runs
-// Extracts resource identifiers from the order + pendingRequest,
-// runs targeted kubectl commands, returns a formatted text block.
-// ─────────────────────────────────────────────────────────────────────────────
-
+// Extract resource ids from the request
 function extractIds(order, pendingRequest) {
   const pr = pendingRequest ?? {};
   const o  = order ?? '';
@@ -515,7 +483,6 @@ async function fetchResourceContext(order, pendingRequest, clusters) {
   if (!ids.pod && !ids.deployment && !ids.statefulset && !ids.daemonset &&
       !ids.service && !ids.node && !ids.configmap && !ids.namespace) return '';
 
-  // Target the specific cluster if named, else all clusters
   let targets = clusters;
   if (ids.cluster) {
     const m = clusters.find(c => c.name === ids.cluster || c.context === ids.cluster);
@@ -528,7 +495,6 @@ async function fetchResourceContext(order, pendingRequest, clusters) {
     const ctx = cluster.context;
     const ns  = ids.namespace ?? null;
 
-    // ── Pod ─────────────────────────────────────────────────────────────────
     if (ids.pod) {
       try {
         let pod = null;
@@ -536,7 +502,6 @@ async function fetchResourceContext(order, pendingRequest, clusters) {
           const raw = await kubectl.runCommand(`kubectl --context=${ctx} get pod ${ids.pod} -n ${ns} -o json`);
           pod = JSON.parse(raw);
         } else {
-          // Search across all namespaces — reuse getPods which already does -A
           const all = await kubectl.getPods('*', ctx, true);
           pod = (all.items ?? []).find(p => p.metadata?.name === ids.pod) ?? null;
         }
@@ -544,7 +509,6 @@ async function fetchResourceContext(order, pendingRequest, clusters) {
       } catch (_e) { lines.push(`\n  (pod "${ids.pod}" fetch error: ${_e.message})`); }
     }
 
-    // ── Deployment ──────────────────────────────────────────────────────────
     if (ids.deployment) {
       try {
         const nsFlag = ns ? `-n ${ns}` : '--all-namespaces';
@@ -553,7 +517,6 @@ async function fetchResourceContext(order, pendingRequest, clusters) {
       } catch (_e) { lines.push(`\n  (deployment "${ids.deployment}" fetch error: ${_e.message})`); }
     }
 
-    // ── StatefulSet ─────────────────────────────────────────────────────────
     if (ids.statefulset) {
       try {
         const nsFlag = ns ? `-n ${ns}` : '--all-namespaces';
@@ -575,7 +538,6 @@ async function fetchResourceContext(order, pendingRequest, clusters) {
       } catch (_e) { lines.push(`\n  (statefulset "${ids.statefulset}" fetch error: ${_e.message})`); }
     }
 
-    // ── Service ─────────────────────────────────────────────────────────────
     if (ids.service) {
       try {
         const nsFlag = ns ? `-n ${ns}` : '--all-namespaces';
@@ -584,7 +546,6 @@ async function fetchResourceContext(order, pendingRequest, clusters) {
       } catch (_e) { lines.push(`\n  (service "${ids.service}" fetch error: ${_e.message})`); }
     }
 
-    // ── Node ────────────────────────────────────────────────────────────────
     if (ids.node) {
       try {
         const raw = await kubectl.runCommand(`kubectl --context=${ctx} get node ${ids.node} -o json`);
@@ -592,7 +553,6 @@ async function fetchResourceContext(order, pendingRequest, clusters) {
       } catch (_e) { lines.push(`\n  (node "${ids.node}" fetch error: ${_e.message})`); }
     }
 
-    // ── ConfigMap ───────────────────────────────────────────────────────────
     if (ids.configmap) {
       try {
         const nsFlag = ns ? `-n ${ns}` : '--all-namespaces';
@@ -604,7 +564,6 @@ async function fetchResourceContext(order, pendingRequest, clusters) {
       } catch (_e) { lines.push(`\n  (configmap "${ids.configmap}" fetch error: ${_e.message})`); }
     }
 
-    // ── Namespace quota (only when no specific resource was named) ───────────
     if (ids.namespace && !ids.pod && !ids.deployment && !ids.statefulset && !ids.service) {
       try {
         const raw    = await kubectl.runCommand(`kubectl --context=${ctx} get resourcequota -n ${ids.namespace} -o json`);
@@ -618,16 +577,14 @@ async function fetchResourceContext(order, pendingRequest, clusters) {
             }
           }
         }
-      } catch {} // namespace may have no quotas — fine
+      } catch {}
     }
   }
 
   return lines.length > 1 ? lines.join('\n') : '';
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// LLM1 — handles raw string input
-// ─────────────────────────────────────────────────────────────────────────────
+// Run LLM1 on raw input
 async function runLLM1(order, clusterList, clusterState, attempt) {
   const label = 'LLM1';
   console.log(`[${label}] Invoking (attempt ${attempt}) — order: "${order.slice(0, 120)}"`);
@@ -648,9 +605,7 @@ async function runLLM1(order, clusterList, clusterState, attempt) {
   return result;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// LLM2 — handles JSON input (partial request + new user answer)
-// ─────────────────────────────────────────────────────────────────────────────
+// Run LLM2 on a partial request
 async function runLLM2(pendingRequest, userAnswer, clusterList, clusterState, conversationHistory, attempt) {
   const label = 'LLM2';
   console.log(`[${label}] Invoking (attempt ${attempt}) — action: ${pendingRequest.action ?? 'unknown'}, answer: "${String(userAnswer).slice(0, 120)}"`);
@@ -682,21 +637,6 @@ async function runLLM2(pendingRequest, userAnswer, clusterList, clusterState, co
   console.log(`[${label}] Parsed — complete: ${result.complete}, action: ${result.action ?? 'unknown'}${result.complete ? ', risk: ' + result.risk : ', missing: [' + (result.missingFields ?? []).join(', ') + ']'}`);
   return result;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Main entry point
-//
-// Routing rule (determined server-side — frontend does not choose):
-//   pendingRequest == null  →  string input  →  LLM1
-//   pendingRequest != null  →  JSON input    →  LLM2
-//
-// Retry: up to 3 attempts on JSON parse errors or Zod validation failures.
-// ─────────────────────────────────────────────────────────────────────────────
-// ─────────────────────────────────────────────────────────────────────────────
-// Kubernetes documentation via kubectl explain
-// Maps order keywords → specific field paths, runs explain, returns text.
-// Uses only one cluster (target or first) since schema is cluster-version-specific.
-// ─────────────────────────────────────────────────────────────────────────────
 
 const EXPLAIN_MAP = [
   { re: /\b(memory|cpu|resources?|limit|request|Mi|Gi|Ki|millicores?)\b/i,
@@ -754,15 +694,13 @@ async function fetchKubeExplain(order, ids, clusters) {
       const raw = await kubectl.runCommand(`kubectl explain ${path} --context=${ctx}`, { timeoutMs: 8000 });
       lines.push(`\n--- kubectl explain ${path} ---`);
       lines.push(raw.slice(0, 1200));
-    } catch (_e) { /* path may not exist in this k8s version — skip */ }
+    } catch (_e) { }
   }
 
   return lines.length > 1 ? lines.join('\n') : '';
 }
 
 async function runInterpret({ order, pendingRequest, clusterList, clusterState = '', conversationHistory = [], clusters = [], scopeBlock = '' }) {
-  // Fetch live kubectl data for any resource the operator identified (pod, deployment, service, node…)
-  // This runs BEFORE either LLM so both LLM1 and LLM2 see the actual current state of the resource.
   let resourceContext = '';
   try {
     resourceContext = await fetchResourceContext(order, pendingRequest, clusters);
@@ -771,7 +709,6 @@ async function runInterpret({ order, pendingRequest, clusterList, clusterState =
     console.warn('[INTERPRET] fetchResourceContext failed:', _e.message);
   }
 
-  // Fetch k8s API docs via kubectl explain for fields/operations mentioned in the order
   let docsContext = '';
   try {
     const ids = extractIds(order, pendingRequest);

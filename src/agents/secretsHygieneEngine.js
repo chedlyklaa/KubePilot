@@ -1,61 +1,47 @@
 'use strict';
 
-// Scans Deployment/StatefulSet/DaemonSet pod templates for risky Secret *usage
-// patterns* and reports them as standing SecurityFinding documents — same shape
-// as workloadHardeningEngine.js: feature-flagged, cycle-throttled,
-// fire-and-forget, notify-only. Never touches the pod/node remediation pipeline.
-//
-// Scoped deliberately to what's readable from pod specs alone (env/envFrom/
-// volumes) — everything here needs no permission beyond what KubePilot already
-// has (Deployments/StatefulSets/DaemonSets are already read for Workload
-// Hardening). It never calls `kubectl get secrets` and never reads a Secret's
-// values — only whether/how a pod *references* one. The "unrotated secret" age
-// check from the original plan needs a new getSecretsMetadata() kubectl read and
-// is deliberately deferred pending sign-off on that broader permission.
-
 let _SecurityFinding = null;
 let _notifEngine     = null;
 
 function _initModels() {
   if (_SecurityFinding) return;
-  try { ({ SecurityFinding: _SecurityFinding } = require('../db/models')); } catch { /* MongoDB unavailable */ }
+  try { ({ SecurityFinding: _SecurityFinding } = require('../db/models')); } catch { }
 }
 
 function _getNotifEngine() {
   if (!_notifEngine) {
-    try { _notifEngine = require('../services/notifications/engine'); } catch { /* not available */ }
+    try { _notifEngine = require('../services/notifications/engine'); } catch { }
   }
   return _notifEngine;
 }
 
 const SCAN_INTERVAL_CYCLES = parseInt(process.env.SECRETS_HYGIENE_INTERVAL_CYCLES ?? '10', 10);
 
-// Same exclusion the other posture engines already apply.
 const SKIP_NAMESPACES = new Set(['kube-system', 'kube-public', 'kube-node-lease']);
 
 class SecretsHygieneEngine {
   constructor() {
-    this._cycleCount = 0;
-    this._running    = false;
+    this._cycleCount = new Map();
+    this._running = new Set();
   }
 
   async check({ cluster, context }) {
-    this._cycleCount++;
-    if (this._cycleCount % SCAN_INTERVAL_CYCLES !== 0) return;
+    const cycle = (this._cycleCount.get(cluster) ?? 0) + 1;
+    this._cycleCount.set(cluster, cycle);
+    if (cycle % SCAN_INTERVAL_CYCLES !== 0) return;
     await this.rescanNow({ cluster, context });
   }
 
-  // Runs the scan immediately, bypassing the cycle throttle — used by the
-  // "Re-scan now" button as well as by check() once its interval has elapsed.
+  // Run the secrets scan now
   async rescanNow({ cluster, context }) {
     _initModels();
     if (!_SecurityFinding) return { scanned: false, reason: 'MongoDB unavailable' };
 
-    if (this._running) {
+    if (this._running.has(cluster)) {
       console.log('[SECRETS-HYGIENE] Previous scan still running — skipping');
       return { scanned: false, reason: 'already running' };
     }
-    this._running = true;
+    this._running.add(cluster);
 
     try {
       const kubectl = require('../tools/kubectl');
@@ -90,13 +76,12 @@ class SecretsHygieneEngine {
       console.warn(`[SECRETS-HYGIENE] ${cluster}: scan failed (non-blocking): ${err.message}`);
       return { scanned: false, reason: err.message };
     } finally {
-      this._running = false;
+      this._running.delete(cluster);
     }
   }
 }
 
-// ── Detection rules (deterministic, no LLM, no Secret reads) ─────────────────
-
+// Scan workloads for secret issues
 function _scanWorkloads(items, ownerKind) {
   const findings = [];
   for (const item of items ?? []) {
@@ -116,12 +101,9 @@ function _evaluatePodSpec(podSpec, owner) {
   const findings = [];
   const resourceTag = `${owner.ownerKind}/${owner.namespace}/${owner.name}`;
 
-  // Secret volumes with no `items:` list mount every key in the Secret, even if
-  // the pod only ever reads one of them — narrowing via `items:` limits blast
-  // radius if the container is ever compromised.
   for (const vol of podSpec.volumes ?? []) {
     if (!vol.secret) continue;
-    if (Array.isArray(vol.secret.items) && vol.secret.items.length > 0) continue; // already narrowed
+    if (Array.isArray(vol.secret.items) && vol.secret.items.length > 0) continue;
     findings.push({
       namespace: owner.namespace,
       resource:  { kind: owner.ownerKind, name: owner.name, namespace: owner.namespace },
@@ -135,7 +117,6 @@ function _evaluatePodSpec(podSpec, owner) {
   for (const container of podSpec.containers ?? []) {
     const containerTag = `${resourceTag}:${container.name}`;
 
-    // envFrom.secretRef dumps every key in the Secret as an environment variable.
     for (const ef of container.envFrom ?? []) {
       if (!ef.secretRef?.name) continue;
       findings.push({
@@ -148,7 +129,6 @@ function _evaluatePodSpec(podSpec, owner) {
       });
     }
 
-    // env[].valueFrom.secretKeyRef selects one key but still as an env var.
     for (const e of container.env ?? []) {
       const ref = e.valueFrom?.secretKeyRef;
       if (!ref?.name) continue;
@@ -166,8 +146,7 @@ function _evaluatePodSpec(podSpec, owner) {
   return findings;
 }
 
-// ── Upsert findings, resolve ones no longer seen ─────────────────────────────
-
+// Save findings and resolve old ones
 async function _reconcile(cluster, detected) {
   const now = new Date();
   const seenKeys = new Set();

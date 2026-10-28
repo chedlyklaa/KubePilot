@@ -33,7 +33,7 @@ export default function RbacPage() {
   const [clusters,   setClusters]   = useState([])
   const [context,    setContext]    = useState('')
   const [namespaces, setNamespaces] = useState([])
-  const [nsFilter,   setNsFilter]  = useState('_all')  // '_all' = show everything
+  const [nsFilter,   setNsFilter]  = useState('_all')
   const [tab,        setTab]        = useState(0)
   const [loading,    setLoading]    = useState(false)
   const [error,      setError]      = useState('')
@@ -41,30 +41,23 @@ export default function RbacPage() {
   const [overview,   setOverview]   = useState(null)
   const [audit,      setAudit]      = useState(null)
 
-  // Fleet-wide RBAC sync summary (the actual sync button + result panels now live on
-  // the dedicated /rbac/sync page — this is just enough to show a live count here).
   const [syncPendingCount, setSyncPendingCount] = useState(0)
   const [syncReviewCount,  setSyncReviewCount]  = useState(0)
 
-  // Apply YAML modal
   const [showApply,  setShowApply]  = useState(false)
   const [yamlDraft,  setYamlDraft]  = useState('')
   const [applyBusy,  setApplyBusy]  = useState(false)
   const [applyOut,   setApplyOut]   = useState('')
   const [applyErr,   setApplyErr]   = useState('')
 
-  // Delete confirm
   const [delTarget,  setDelTarget]  = useState(null)
   const [delBusy,    setDelBusy]    = useState(false)
 
-  // Team delete confirm
   const [confirmDeleteGroup, setConfirmDeleteGroup] = useState(null)
 
-  // Audit filter
   const [auditSearch, setAuditSearch] = useState('')
   const [showDangerOnly, setShowDangerOnly] = useState(false)
 
-  // Platform teams + user permissions management
   const notify = useNotify()
   const [pGroups, setPGroups] = useState([])
   const [pUsers, setPUsers]   = useState([])
@@ -80,11 +73,6 @@ export default function RbacPage() {
   const [uCanProvision, setUCanProvision] = useState(false)
   const [uErr, setUErr]                  = useState('')
 
-  // ScopeEditor's cluster field feeds User.permissions[].cluster, which rbacSync,
-  // filterClusters, and certIssuer all key by the clusters.yaml friendly name — not
-  // the raw kubectl context (c.name here). Using c.name silently broke K8s sync
-  // whenever a cluster's context differs from its friendly name (e.g. name "ubuntu",
-  // context "kp-ubuntu"): permissions saved fine, but no RoleBinding was ever created.
   const clusterNames = useMemo(() => clusters.map(c => c.config?.name ?? c.name), [clusters])
 
   function loadTeams() {
@@ -95,10 +83,6 @@ export default function RbacPage() {
   }
   useEffect(() => { loadTeams() }, [isAdmin])
 
-  // Load clusters from the kube/contexts endpoint — only ones KubePilot actually
-  // monitors (an unmanaged context has no RBAC data reachable through these routes
-  // anyway), defaulting to whichever context is currently active in kubectl rather
-  // than just the first one in the list.
   useEffect(() => {
     apiFetch('/api/kube/contexts')
       .then(r => r.json())
@@ -111,7 +95,6 @@ export default function RbacPage() {
       .catch(() => {})
   }, [])
 
-  // Load namespace list for the filter dropdown
   useEffect(() => {
     if (!context) return
     setNsFilter('_all')
@@ -121,8 +104,7 @@ export default function RbacPage() {
       .catch(() => {})
   }, [context])
 
-  // Fleet-wide counts (across every monitored cluster, not just the one selected
-  // above) — same endpoints the /rbac/sync page uses, just summed here for the banner.
+  // Load RBAC sync counts for all clusters
   const loadSyncSummary = useCallback(async () => {
     if (!isAdmin) return
     try {
@@ -133,7 +115,7 @@ export default function RbacPage() {
       const [pd, ad] = await Promise.all([pr.json(), ar.json()])
       setSyncPendingCount((pd.clusters ?? []).reduce((s, c) => s + (c.pending?.length ?? 0), 0))
       setSyncReviewCount((ad.advisories ?? []).length)
-    } catch { /* leave the last known counts rather than clearing them on a transient error */ }
+    } catch { }
   }, [isAdmin])
 
   useEffect(() => { loadSyncSummary() }, [loadSyncSummary])
@@ -167,18 +149,13 @@ export default function RbacPage() {
     if (context) load()
   }, [load])
 
-  // ── Security findings (RBAC posture) ──────────────────────────────────────
-  // security.routes.js keys findings by the cluster's friendly name (from
-  // clusters.yaml), not the raw kubectl context this page otherwise uses — so
-  // derive it from the already-fetched, already-monitored-only `clusters` list.
   const clusterFriendlyName = useMemo(
     () => clusters.find(c => c.name === context)?.config?.name ?? context,
     [clusters, context]
   )
   const rbacFindings = useSecurityFindings(clusterFriendlyName, 'RbacPosture')
 
-  // ── Apply YAML ────────────────────────────────────────────────────────────
-
+  // Apply the YAML manifest
   async function submitApply() {
     setApplyBusy(true); setApplyErr(''); setApplyOut('')
     try {
@@ -197,8 +174,7 @@ export default function RbacPage() {
     finally { setApplyBusy(false) }
   }
 
-  // ── Delete resource ───────────────────────────────────────────────────────
-
+  // Delete the selected resource
   async function confirmDelete() {
     if (!delTarget) return
     setDelBusy(true)
@@ -213,8 +189,6 @@ export default function RbacPage() {
     } catch (err) { notify('error', err.message) }
     finally { setDelBusy(false) }
   }
-
-  // ── Audit filtered list ───────────────────────────────────────────────────
 
   const filteredAudit = useMemo(() => {
     if (!audit) return []
@@ -234,8 +208,7 @@ export default function RbacPage() {
 
   const dangerCount = useMemo(() => (audit ?? []).filter(e => e.dangerous).length, [audit])
 
-  // ── Role rules summary ────────────────────────────────────────────────────
-
+  // Summarize a role's rules
   function rulesSummary(rules) {
     if (!rules?.length) return '—'
     const verbs = new Set()
@@ -247,8 +220,7 @@ export default function RbacPage() {
     return `${[...verbs].join(', ')} → ${[...res].join(', ')}`
   }
 
-  // ── Renderers ─────────────────────────────────────────────────────────────
-
+  // Render the bindings table
   function renderBindings() {
     const rbs  = overview?.roleBindings        ?? []
     const crbs = overview?.clusterRoleBindings ?? []
@@ -474,7 +446,7 @@ export default function RbacPage() {
     )
   }
 
-  // ── Team CRUD helpers ─────────────────────────────────────────────────────
+  // Open the create team form
   function openCreateGroup() {
     setEditGroup(null); setGForm({ name: '', description: '', permissions: [], members: [] })
     setGErr(''); setMemberSearch(''); setShowGroupForm(true)
@@ -524,7 +496,7 @@ export default function RbacPage() {
     setSelUser(null); loadTeams()
   }
 
-  // ── Client certificate (direct kubectl access) for the currently selected cluster ─
+  // Issue a client certificate for the selected cluster
   async function issueCertificate(u) {
     if (!context) { notify('error', 'Select a cluster first'); return }
     try {
@@ -621,7 +593,6 @@ export default function RbacPage() {
 
   return (
     <div className="rbac-page">
-      {/* ── Header ─────────────────────────────────────────────────────── */}
       <div className="page-header">
         <div>
           <h2>RBAC</h2>
@@ -639,7 +610,6 @@ export default function RbacPage() {
         </div>
       </div>
 
-      {/* ── Cluster + namespace selectors ──────────────────────────────── */}
       <div className="rbac-selectors">
         <div className="rbac-selector-group">
           <label className="rbac-selector-label">Cluster</label>
@@ -667,7 +637,6 @@ export default function RbacPage() {
         )}
       </div>
 
-      {/* ── RBAC watch summary — fleet-wide, drills into the dedicated sync page ── */}
       {isAdmin && (
         <div className="rbac-sync-banner">
           <div className="rbac-sync-banner-info">
@@ -692,7 +661,6 @@ export default function RbacPage() {
 
       {error && <div className="health-error">{error}</div>}
 
-      {/* ── Tabs ───────────────────────────────────────────────────────── */}
       <div className="tab-bar-flat">
         {(isAdmin ? ADMIN_TABS : VIEWER_TABS).map((t, i) => (
           <button key={t} className={`tab-flat${tab === i ? ' active' : ''}`} onClick={() => setTab(i)}>
@@ -701,13 +669,6 @@ export default function RbacPage() {
         ))}
       </div>
 
-      {/* ── Content ────────────────────────────────────────────────────── */}
-      {/* key={tab}: every tab's render function returns the same top-level shape
-          (div.table-wrap > table.data-table) with a different row-key scheme, so
-          without a key change here React tries to diff/reuse that DOM across tab
-          switches instead of fully replacing it — which is what let content from
-          one tab visually linger into another. Forcing a fresh subtree per tab
-          eliminates that regardless of the two row-key fixes above. */}
       {loading
         ? <div className="page-loading">Loading RBAC data…</div>
         : (overview || audit)
@@ -715,7 +676,6 @@ export default function RbacPage() {
           : !error && <div className="empty-state">Select a cluster to view RBAC data</div>
       }
 
-      {/* ── Apply YAML modal ────────────────────────────────────────────── */}
       {showApply && (
         <div className="modal-backdrop" onClick={() => setShowApply(false)}>
           <div className="modal-box rbac-apply-modal" onClick={e => e.stopPropagation()}>
@@ -745,7 +705,6 @@ export default function RbacPage() {
         </div>
       )}
 
-      {/* ── Delete confirm modal ───────────────────────────────────────── */}
       {delTarget && (
         <ConfirmDialog
           title="Confirm delete"
@@ -757,7 +716,6 @@ export default function RbacPage() {
         />
       )}
 
-      {/* ── Team delete confirm ─────────────────────────────────────────── */}
       {confirmDeleteGroup && (
         <ConfirmDialog
           title="Delete team?"
@@ -768,7 +726,6 @@ export default function RbacPage() {
         />
       )}
 
-      {/* ── Group form modal ────────────────────────────────────────── */}
       {showGroupForm && (
         <div className="modal-overlay" onClick={e => e.target === e.currentTarget && setShowGroupForm(false)}>
           <div className="tm-modal">
@@ -859,7 +816,6 @@ export default function RbacPage() {
         </div>
       )}
 
-      {/* ── User permission modal ───────────────────────────────────── */}
       {selUser && (
         <div className="modal-overlay" onClick={e => e.target === e.currentTarget && setSelUser(null)}>
           <div className="tm-modal">

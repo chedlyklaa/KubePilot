@@ -1,81 +1,4 @@
 #!/usr/bin/env node
-// =============================================================================
-// dual-cluster-must-fix-demo-v2.js — 10 broken pods, split across the two live
-// dev clusters (cluster3 + minikube), EVERY ONE deliberately chosen to be
-// something the pipeline CAN and SHOULD fix with a real, well-defined
-// kubectl-only action (expectedFixable is always true here — unlike
-// dual-cluster-fix-rate-demo.js, which the v1 of this file replaced, there is
-// no escalate-only control group). The same 5 issue types are reproduced on
-// BOTH clusters (oom / bad-rollout / bad-node-selector / oversized-request /
-// over-provisioned-replicas) so a result also answers "is the pipeline
-// consistent across clusters for the same fault", not just "did it fix pod X".
-//
-// Why these 5 issue types specifically: each one is either a scenario the
-// pipeline has DIRECTLY been observed fixing in prior live runs (oom limit
-// raise, rollback to a real prior-good revision), or a scenario this session
-// added evidence/verification support for (bad-nodeSelector — was blocked by a
-// policy-sanitizer false positive on the quoted JSON patch, fixed in
-// src/policy/policyEngine.js; oversized-request / over-provisioned-replicas —
-// the Planner previously had no real node-capacity evidence to size these
-// correctly, fixed in src/agents/planner.js's _gatherNodeCapacity /
-// _capacityAdvisoryForScale). Running all 5 here is a direct regression check
-// on that work, not just a general capability demo.
-//
-// §Fix-SilentSetupFailure (2026-09-16) — the predecessor script's kubeApply()/
-// kube() helpers swallowed every kubectl error and returned stdout ('') instead
-// of throwing. On 2026-09-16 this produced a run where 3 pods that were supposed
-// to stay broken showed up "healthy" with zero investigation trace — the most
-// likely explanation, confirmed by re-reading that code, is that applying the
-// broken fixture silently failed and the check then read whatever (unrelated,
-// already-healthy) state was already there. This file's kubectl helpers THROW on
-// a real failure, and every test's create() is wrapped so a setup failure is
-// recorded as its own explicit `setupFailed` outcome — never silently
-// indistinguishable from "the agent already fixed it".
-//
-// §Fix-SiblingStarvation (2026-09-21, v2) — v1's over-provisioned-replicas
-// scenario (25 replicas x 500m cpu on a 12-core node) always ended up
-// consuming ~100% of the node while broken, not just "too much": 500m evenly
-// divides the node's ~12000m allocatable, so the scheduler bin-packs exactly
-// 24 of them (12000m) with near-zero waste, leaving nothing for the other 4
-// scenarios sharing the same node concurrently. Confirmed live: a correctly
-// diagnosed, correctly-sized fix for c3-oversizedrequest (500m) got blocked on
-// "rollout status" twice and escalated purely because the node had no free CPU
-// — not because the fix was wrong. v2 fixes this by sizing each replica LARGE
-// relative to node capacity (5 cores) instead of many small ones: 12000m / 5000m
-// leaves a genuine, un-bin-packable remainder (2 replicas fit = 10000m, ~2000m
-// permanently free) regardless of how many replicas are requested — so this
-// scenario stays just as genuinely "over-provisioned" (still Pending, still
-// needs a real scale-down fix) without starving its siblings. Nothing else
-// changed from v1.
-//
-// Every test is scored on THREE independent signals, all stored/rendered so a
-// surprising result can be explained instead of guessed at:
-//   1. Detection      — did the pipeline open an incident for THIS EXACT pod?
-//   2. Pipeline's own verdict — the executor's own `ready` field from its last
-//      per-issue summary trace (src/orchestrator/graph.js's _issueResolution/
-//      verifyResourceHealthy) — what the AGENT believes happened.
-//   3. Live re-check   — this script's own kubectl re-read of the Deployment's
-//      status.readyReplicas/updatedReplicas vs spec.replicas, rechecked again
-//      ~20s later for stability — independent ground truth, not the agent's word.
-//   Plus the FULL pipeline trace (every investigator/planner/guardian/policy/
-//   executor/reflector step, every retry attempt) is saved per pod.
-//
-// Exact-pod detection safety:
-//   1. Every deployment name is globally unique (c3-/mk- prefixed).
-//   2. Each test lives in its own per-cluster namespace (demo-fix-c3 /
-//      demo-fix-mk) — FRESH names never used by any earlier benchmark, so a
-//      previous run's leftover state can never be mistaken for this run's.
-//   3. matchIncident() filters on incident.resource.clusterName too, so a
-//      decision is only ever credited to a test if clusterName+namespace+name
-//      all line up, not just name.
-//   4. A benchmark-start timestamp excludes any leftover incident from a
-//      previous run (liveWorkflowStore keeps a finished incident visible for
-//      30 min).
-//
-// Usage:
-//   node benchmark/dual-cluster-must-fix-demo-v2.js
-//   node benchmark/dual-cluster-must-fix-demo-v2.js --api=http://localhost:3001 --timeout=3600
-// =============================================================================
 'use strict';
 
 const { execFileSync, execSync } = require('child_process');
@@ -89,22 +12,11 @@ const ARGS = process.argv.slice(2).reduce((o, a) => {
 }, {});
 
 const API = ARGS.api ?? 'http://localhost:3001';
-// Safety cap only — the real stop condition is Short Memory going idle (see the
-// poll loop in main()), same reasoning as agent-benchmark-advanced1.js.
 const TIMEOUT            = parseInt(ARGS.timeout   ?? '3600', 10);
 const POLL               = parseInt(ARGS.poll      ?? '10', 10);
 const IDLE_CONFIRM_TICKS = parseInt(ARGS.idleTicks ?? '3', 10);
-// How long to wait between the two "still healthy" stability reads on a
-// Deployment that reached readyReplicas===replicas, so a flapping workload
-// that's briefly ready then crashes again isn't miscounted as a real fix.
 const STABILITY_GAP_MS = parseInt(ARGS.stabilityGap ?? '20000', 10);
-// checkReallyFixed() polls for up to this long rather than checking live state
-// once — detection fires as soon as the investigator step lands, long before the
-// executor finishes, so a real fix that just takes a while must not be
-// misreported as a miss (this was confirmed live on the predecessor script,
-// 2026-09-14: a pod that genuinely got fixed still read "not fixed" under a
-// one-shot check taken too early).
-const FIX_CHECK_TIMEOUT_MS = parseInt(ARGS.fixCheckTimeout ?? '300000', 10); // 5 min per pod
+const FIX_CHECK_TIMEOUT_MS = parseInt(ARGS.fixCheckTimeout ?? '300000', 10);
 const FIX_CHECK_POLL_MS    = parseInt(ARGS.fixCheckPoll    ?? '15000', 10);
 
 const RESULTS_DIR = path.join(__dirname, 'results');
@@ -114,15 +26,7 @@ const C = {
   c: '\x1b[36m', d: '\x1b[2m', B: '\x1b[1m', n: '\x1b[0m',
 };
 
-// =============================================================================
-// KUBECTL HELPERS — every call is explicitly context+namespace scoped, since
-// this script talks to two clusters at once. §Fix-SilentSetupFailure (see file
-// header): kube()/kubeApply() THROW on a real kubectl failure instead of
-// swallowing it — a fixture that fails to apply must never be silently
-// mistaken for "the agent already fixed it". waitRollout() alone stays
-// best-effort: it is only ever a courtesy pause before applying a second,
-// deliberately-broken revision, never something a test's correctness depends on.
-// =============================================================================
+// Run kubectl against a given context and namespace
 function kube(context, ns, ...args) {
   try {
     return execFileSync('kubectl', [`--context=${context}`, '-n', ns, ...args],
@@ -136,9 +40,6 @@ function kubeGlobal(context, ...args) {
     return execFileSync('kubectl', [`--context=${context}`, ...args],
       { encoding: 'utf8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
   } catch (e) {
-    // Cluster-scoped calls in this script are namespace create/delete only —
-    // "already exists" / "not found" on those are expected on a re-run and safe
-    // to ignore; anything else still surfaces loudly rather than vanishing.
     const msg = e.stderr?.toString().trim() || e.message;
     if (/already exists|not found/i.test(msg)) return '';
     throw new Error(`kubectl --context=${context} ${args.join(' ')} failed: ${msg}`);
@@ -156,7 +57,7 @@ function waitRollout(context, ns, name, timeoutSec = 90) {
   try {
     execFileSync('kubectl', [`--context=${context}`, '-n', ns, 'rollout', 'status', `deployment/${name}`, `--timeout=${timeoutSec}s`],
       { encoding: 'utf8', timeout: (timeoutSec + 5) * 1000, stdio: 'pipe' });
-  } catch { /* best-effort — only a courtesy pause before the second (broken) apply */ }
+  } catch { }
 }
 function kubeJson(context, ns, ...args) {
   const out = kube(context, ns, ...args, '-o', 'json');
@@ -180,15 +81,6 @@ async function login() {
 }
 function sleep(ms) { return new Promise(res => setTimeout(res, ms)); }
 
-// =============================================================================
-// TEST DEFINITIONS — 10 distinct broken pods, 5 per cluster, EVERY ONE with a
-// real, defensible, evidence-backed kubectl fix. Both clusters here are a
-// single node with ~12 CPU / ~7.6Gi allocatable (confirmed live, 2026-09-16) —
-// resource values below are sized against that real capacity, not guessed:
-// the "oversized" scenarios request far more than the node has (impossible to
-// schedule), and the intended fix sizes down to something that comfortably
-// fits alongside the other 4 tests running on the same node at once.
-// =============================================================================
 const NS_C3 = 'demo-fix-c3';
 const NS_MK = 'demo-fix-mk';
 
@@ -199,8 +91,6 @@ function oomTest(cluster, ns, id) {
     expectedFixable: true,
     fixCommand: `kubectl -n ${ns} set resources deployment/${id} -c oom --limits=memory=256Mi`,
     why: 'The limit (4Mi) is simply too low for a 128Mi workload — raising it is the actual intended remediation, not a guess.',
-    // §Fix-ReasoningScore (v2) — see the "REASONING / COMMAND CORRECTNESS" section
-    // below for what these are and why they're scored independently of liveFixed.
     expectedRootCause: [/memory/i, /oom/i],
     expectedCommand: /(set resources|patch|edit).*memory/i,
     create() {
@@ -341,13 +231,11 @@ spec:
 }
 
 const TESTS = [
-  // ── cluster3 ─────────────────────────────────────────────────────────────
   oomTest('cluster3', NS_C3, 'c3-oom'),
   badRolloutTest('cluster3', NS_C3, 'c3-badrollout'),
   badNodeSelectorTest('cluster3', NS_C3, 'c3-badnodeselector'),
   oversizedRequestTest('cluster3', NS_C3, 'c3-oversizedrequest'),
   overProvisionedReplicasTest('cluster3', NS_C3, 'c3-badreplicas'),
-  // ── minikube ─────────────────────────────────────────────────────────────
   oomTest('minikube', NS_MK, 'mk-oom'),
   badRolloutTest('minikube', NS_MK, 'mk-badrollout'),
   badNodeSelectorTest('minikube', NS_MK, 'mk-badnodeselector'),
@@ -355,14 +243,7 @@ const TESTS = [
   overProvisionedReplicasTest('minikube', NS_MK, 'mk-badreplicas'),
 ];
 
-// =============================================================================
-// DECISION / PIPELINE EXTRACTION — reads the SAME structured, per-component
-// decision events IncidentTracer.step() feeds at every graph.js node (see
-// src/monitoring/liveWorkflowStore.js), i.e. exactly what the dashboard's Live
-// Pipeline page renders. The full `pipeline` array is kept (not collapsed to
-// "last write wins" per component) since an incident can carry several attempts
-// and squashing hides which attempt actually fixed something.
-// =============================================================================
+// Fetch live workflow incidents from the API
 async function fetchLiveWorkflows() {
   try {
     const d = await api('/api/live-workflows');
@@ -373,8 +254,7 @@ async function fetchShortMemoryState() {
   try { return await api('/api/live-workflows/short-memory'); } catch { return null; }
 }
 
-// Exact-pod match: clusterName AND namespace AND name(.includes) AND started
-// at/after this run's start. All three identity fields must agree.
+// Find the incident for an exact pod in this run
 function matchIncident(items, test, afterMs) {
   const candidates = items.filter(it => {
     const r = it.resource ?? {};
@@ -414,29 +294,7 @@ function decisionFromIncident(incident) {
   };
 }
 
-// =============================================================================
-// REASONING / COMMAND CORRECTNESS (v2) — liveFixed only tells you whether the
-// cluster eventually converged to healthy; it can't tell you WHY. A correct
-// diagnosis with the right fix can still fail to verify for reasons that have
-// nothing to do with the agent's reasoning (§Fix-SiblingStarvation in the file
-// header is a real example: two correctly-diagnosed, correctly-sized attempts
-// both got blocked purely by a sibling scenario eating the node's CPU). The
-// reverse is also possible — a wrong or shallow diagnosis that happens to
-// stumble onto a command that works. This section scores the REASONING and the
-// CHOSEN COMMAND independently of the live-fixed outcome, against each test's
-// own expectedRootCause/expectedCommand patterns declared above.
-//
-// Data source: the SAME `planner_input.investigation` payload already
-// persisted on every planner step (graph.js's plannerNode passes its whole
-// diagnostics.plannerInput through to IncidentTracer) — nothing new has to be
-// added to the pipeline itself to make this measurable, it's already there.
-// Inherits the same limitation decisionFromIncident/matchIncident already
-// have: /api/live-workflows only reflects the MOST RECENT workflow's step
-// history for a given resource (liveWorkflowStore replaces on a new
-// workflowId — see benchmark/noop-repro.js's header for the full explanation),
-// so a reasoning/command judged here is whatever the LATEST attempt shows, not
-// necessarily the very first one.
-// =============================================================================
+// Extract reasoning and command details from an incident
 function reasoningFromIncident(incident) {
   const steps = incident.steps ?? [];
   const plannerSteps  = steps.filter(s => s.component === 'planner');
@@ -446,20 +304,9 @@ function reasoningFromIncident(incident) {
   const investigation = lastPlannerOutput?.planner_input?.investigation ?? null;
   const rootCauseText = investigation?.rootCause ?? investigation?.suspected_cause ?? null;
 
-  // The command that actually ran (or was last attempted) is a stronger signal
-  // of "what the pipeline chose to do" than plan_summary alone — Guardian's
-  // MODIFY verdict can substitute a different command than what the Planner
-  // first proposed (see graph.js's §Fix-ExecutorHonesty), so the FINAL executed
-  // command is what should be judged, not the Planner's opening guess.
   const lastExecutorOutput = executorSteps[executorSteps.length - 1]?.output ?? null;
   const actualCommand = lastExecutorOutput?.action ?? lastPlannerOutput?.plan_summary ?? null;
 
-  // Evidence-gathering tally — investigation.commandsExecuted is the
-  // Investigator's own read-only tool-call log (command + why it ran that
-  // command), already captured verbatim in the trace; a diagnosis reached with
-  // ZERO evidence gathered is a real smell worth surfacing even if the
-  // rootCause text happens to match, so this is reported alongside, not folded
-  // into reasoningCorrect itself.
   const investigatorEvidenceCount = plannerSteps.reduce(
     (sum, s) => sum + (s.output?.planner_input?.investigation?.commandsExecuted?.length ?? 0), 0
   );
@@ -473,13 +320,7 @@ function _matchesAny(text, patterns) {
   return patterns.some(p => p.test(text));
 }
 
-// =============================================================================
-// REAL-FIX CHECK — independent live kubectl re-verification, not "the agent said
-// it acted". Reads the Deployment's own status (readyReplicas/updatedReplicas
-// vs spec.replicas) rather than scanning pods by label, so a partially-scaled
-// fix is never miscounted as fully fixed. Rechecked once more ~STABILITY_GAP_MS
-// later to rule out flapping.
-// =============================================================================
+// Read deployment health directly from the cluster
 function readDeploymentHealth(test) {
   const dep = kubeJson(test.cluster, test.ns, 'get', 'deployment', test.name);
   if (!dep) return { healthy: false, detail: 'deployment not found' };
@@ -506,20 +347,6 @@ async function checkReallyFixed(test) {
   return { fixed: true, detail: second.detail };
 }
 
-// =============================================================================
-// GRACEFUL STOP (v2) — a plain Ctrl+C used to just kill the process outright:
-// the JSON/HTML report is only written at the very end of main(), so an
-// interrupted run left nothing behind (confirmed live, 2026-09-21 — a run
-// interrupted mid-poll had to be reconstructed after the fact via a separate
-// read-only snapshot tool instead). First SIGINT sets INTERRUPTED — the
-// detection-polling loop below checks it and breaks out with whatever's been
-// detected so far, then falls through to the SAME verify-fixes / save-JSON+
-// HTML / cleanup steps a normal completion runs, just with stopReason:
-// 'interrupted' and fewer detected tests. A second SIGINT force-exits
-// immediately (e.g. if verify-fixes' per-pod polling is taking too long and
-// you'd rather not wait at all) — same two-stage pattern
-// scripts/create-single-issue.sh already uses for the same reason.
-// =============================================================================
 let INTERRUPTED = false;
 process.on('SIGINT', () => {
   if (INTERRUPTED) {
@@ -531,9 +358,7 @@ process.on('SIGINT', () => {
     `(verify → save JSON/HTML → cleanup). Press Ctrl+C again to force-exit immediately instead.`);
 });
 
-// =============================================================================
-// MAIN
-// =============================================================================
+// Run the demo
 async function main() {
   console.log(`\n${C.B}${C.b}━━━ Dual-Cluster Must-Fix Demo v2 ━━━${C.n}`);
   console.log(`${C.d}10 distinct broken pods — 5 on cluster3, 5 on minikube — ALL expected fixable — api=${API}${C.n}\n`);
@@ -546,9 +371,6 @@ async function main() {
 
   const benchStartMs = Date.now();
   const startTimes = {};
-  // §Fix-SilentSetupFailure — tests whose create() threw are excluded from the
-  // detection/fix-check loop entirely and reported as their own outcome, never
-  // silently conflated with "the pipeline already fixed it".
   const setupFailed = {};
 
   console.log(`${C.b}[create]${C.n} Deploying ${TESTS.length} broken workloads...`);
@@ -557,10 +379,6 @@ async function main() {
     startTimes[t.id] = Date.now();
     try {
       t.create();
-      // Confirm the resource actually landed before trusting this test is live —
-      // an apply that silently no-ops (e.g. a transient API error swallowed
-      // somewhere upstream of this script) must not be mistaken for a real,
-      // freshly-broken pod.
       const dep = kubeJson(t.cluster, t.ns, 'get', 'deployment', t.name);
       if (!dep) throw new Error('deployment not found immediately after create()');
       console.log(` ${C.g}created${C.n}`);
@@ -575,7 +393,6 @@ async function main() {
     console.log(`\n  ${C.y}${C.B}${TESTS.length - liveTests.length} test(s) failed to set up${C.n} — excluded from detection/fix-check below, reported separately.`);
   }
 
-  // ── Poll for detection (idle-confirmed, same signal as agent-benchmark-advanced1.js) ──
   console.log(`\n${C.b}[poll]${C.n} Waiting for detection of all ${liveTests.length} pods (idle-detection, ${TIMEOUT}s hard cap)...\n`);
 
   const decisions = {};
@@ -590,16 +407,6 @@ async function main() {
     elapsed += POLL;
     if (INTERRUPTED) { stopReason = 'interrupted'; break; }
 
-    // §Fix-StaleDecisionSnapshot (2026-09-22) — used to skip a test entirely once ANY
-    // incident had been matched for it (`if (decisions[t.id]) continue`), which froze
-    // `decisions[t.id]` at whatever the incident looked like at FIRST detection — often
-    // before the investigator/planner/guardian/policy/executor had run at all (confirmed
-    // live: 9 of 10 pods in a run showed "0 attempts", empty pipeline, rootCauseText/
-    // actualCommand null — even ones that went on to verify FIXED). Now always re-matches
-    // and overwrites with the latest snapshot every tick, so a decision keeps tracking the
-    // incident's real progress instead of freezing at its earliest, often-empty state.
-    // detectionTimes is still set only once — FIRST detection is the right latency metric,
-    // even though the decision snapshot itself keeps being refreshed after that.
     const liveItems = await fetchLiveWorkflows();
     for (const t of liveTests) {
       const incident = matchIncident(liveItems, t, benchStartMs);
@@ -638,9 +445,6 @@ async function main() {
     console.log(`\n\n  ${C.y}${C.B}Stopped early by Ctrl+C${C.n} after ${elapsed}s — proceeding to verify/save/cleanup with whatever's been detected so far; undetected pods are genuinely unknown, not confirmed misses.`);
   }
 
-  // Final authoritative fetch — catches anything that landed in the gap since the last
-  // tick, AND (§Fix-StaleDecisionSnapshot) refreshes every already-matched test too,
-  // same reasoning as the polling loop above.
   const finalItems = await fetchLiveWorkflows();
   for (const t of liveTests) {
     const incident = matchIncident(finalItems, t, benchStartMs);
@@ -651,7 +455,6 @@ async function main() {
   }
   console.log('\n');
 
-  // ── Real-fix check — live kubectl re-verification per detected pod ──
   console.log(`${C.B}${C.b}━━━ Verifying real fixes (live kubectl, ${STABILITY_GAP_MS / 1000}s stability window) ━━━${C.n}\n`);
 
   const results = [];
@@ -677,13 +480,6 @@ async function main() {
     if (dec) {
       process.stdout.write(' checking...');
       fixResult = await checkReallyFixed(t);
-      // §Fix-StaleDecisionSnapshot — checkReallyFixed() just spent up to
-      // FIX_CHECK_TIMEOUT_MS (5 min) patiently polling live cluster state, which is
-      // plenty of time for the real workflow (investigator → planner → guardian →
-      // policy → executor) to have actually progressed past wherever `dec` was
-      // snapshotted when this pod was first detected. Re-fetch and re-match ONE more
-      // time so the reasoning/command scoring below reflects the pipeline's ACTUAL
-      // final trace, not an early, possibly-empty snapshot from minutes/hours earlier.
       const refreshedItems = await fetchLiveWorkflows();
       const refreshedIncident = matchIncident(refreshedItems, t, benchStartMs);
       if (refreshedIncident) dec = decisionFromIncident(refreshedIncident);
@@ -692,8 +488,6 @@ async function main() {
     const matchesExpectation = !!dec && fixResult.fixed === t.expectedFixable;
     const agree = dec && dec.pipelineReady !== null ? dec.pipelineReady === fixResult.fixed : null;
 
-    // §Fix-ReasoningScore (v2) — independent of fixResult: was the DIAGNOSIS and
-    // CHOSEN COMMAND actually right, not just "did the cluster end up healthy".
     const reasoning = dec ? reasoningFromIncident(dec.incident) : null;
     const reasoningCorrect = dec ? _matchesAny(reasoning.rootCauseText, t.expectedRootCause) : null;
     const commandCorrect   = dec ? !!(reasoning.actualCommand && t.expectedCommand.test(reasoning.actualCommand)) : null;
@@ -728,7 +522,6 @@ async function main() {
     });
   }
 
-  // ── Metrics ── (no fixable/unfixable split here — every test is expectedFixable)
   const scoredResults = results.filter(r => !r.setupFailed);
   const detectedCount = scoredResults.filter(r => r.detected).length;
   const fixedCount = scoredResults.filter(r => r.liveFixed).length;
@@ -739,19 +532,11 @@ async function main() {
   const disagreements = scoredResults.filter(r => r.agree === false);
   const setupFailedCount = results.filter(r => r.setupFailed).length;
 
-  // §Fix-ReasoningScore (v2) — scored only among DETECTED tests (nothing to judge
-  // the reasoning of if the pipeline never even opened an incident).
   const detectedResults = scoredResults.filter(r => r.detected);
   const reasoningCorrectCount = detectedResults.filter(r => r.reasoningCorrect).length;
   const commandCorrectCount   = detectedResults.filter(r => r.commandCorrect).length;
   const reasoningCorrectRate  = detectedResults.length ? reasoningCorrectCount / detectedResults.length : null;
   const commandCorrectRate    = detectedResults.length ? commandCorrectCount / detectedResults.length : null;
-  // The interesting split fixRate alone can't show: right reasoning/command that
-  // still didn't verify live (e.g. blocked by something unrelated, see
-  // §Fix-SiblingStarvation), vs. a live "fix" that happened despite wrong/
-  // unmatched reasoning (got lucky, or matched on a different valid phrasing
-  // this script's patterns didn't anticipate — see each test's expectedCommand
-  // for how narrow/broad the match is).
   const rightReasoningButNotFixed = detectedResults.filter(r => r.reasoningCorrect && r.commandCorrect && !r.liveFixed).length;
   const fixedDespiteWrongReasoning = detectedResults.filter(r => (!r.reasoningCorrect || !r.commandCorrect) && r.liveFixed).length;
 
@@ -788,7 +573,6 @@ async function main() {
     }
   }
 
-  // ── Save JSON + HTML ──
   if (!fs.existsSync(RESULTS_DIR)) fs.mkdirSync(RESULTS_DIR, { recursive: true });
   let commit = 'unknown';
   try { commit = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim(); } catch {}
@@ -801,7 +585,6 @@ async function main() {
       detectionRate, detectedCount, fixRate, fixedCount,
       avgLatencyMs: latencies.length ? latencies.reduce((a, b) => a + b, 0) / latencies.length : null,
       disagreementCount: disagreements.length,
-      // §Fix-ReasoningScore (v2)
       reasoningScored: detectedResults.length, reasoningCorrectCount, reasoningCorrectRate,
       commandCorrectCount, commandCorrectRate,
       rightReasoningButNotFixed, fixedDespiteWrongReasoning,
@@ -826,10 +609,6 @@ async function main() {
   if (process.platform === 'win32') await new Promise(() => {});
 }
 
-// =============================================================================
-// HTML REPORT — same dark palette / <details> pipeline-trail pattern as the
-// other benchmark reports in this repo.
-// =============================================================================
 const WORKFLOW_STEP = {
   investigator: { icon: '🔎', label: 'Investigator' },
   planner:      { icon: '🧩', label: 'Planner' },
@@ -875,7 +654,6 @@ function buildHtmlReport(report) {
       : badge(r.liveFixed, r.liveFixed ? 'FIXED' : 'NOT FIXED');
     const latency = r.latencyMs != null ? `${(r.latencyMs / 1000).toFixed(1)}s` : '—';
     const agreeNote = r.agree === false ? '<div class="mono" style="color:var(--warn)">pipeline/live-check disagree</div>' : '';
-    // §Fix-ReasoningScore (v2)
     const reasoningCell = !r.detected ? '—'
       : `${badge(r.reasoningCorrect, r.reasoningCorrect ? 'correct' : 'unmatched')}<div class="mono">${esc(r.rootCauseText ?? '(no rootCause text captured)')}</div>`;
     const commandCell = !r.detected ? '—'

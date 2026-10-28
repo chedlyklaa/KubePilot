@@ -2,9 +2,6 @@
 
 const crypto = require('crypto');
 
-// NOTIFICATION_SECRET protects Slack/Teams/SMTP credentials stored in NotificationChannelConfig.
-// It must be set explicitly — falling back to a fixed value would mean every deployment
-// that forgets to set it encrypts its channel secrets with the same publicly-known key.
 if (!process.env.NOTIFICATION_SECRET) {
   throw new Error(
     'NOTIFICATION_SECRET environment variable is required (protects encrypted Slack/Teams/SMTP ' +
@@ -14,7 +11,7 @@ if (!process.env.NOTIFICATION_SECRET) {
 
 const KEY = crypto.createHash('sha256')
   .update(process.env.NOTIFICATION_SECRET)
-  .digest(); // 32 bytes for AES-256
+  .digest();
 
 function encrypt(obj) {
   const text   = JSON.stringify(obj);
@@ -41,7 +38,7 @@ function decrypt(str) {
   }
 }
 
-// Return a copy of config with secret fields replaced by '••••••••'
+// Mask secret fields in a config
 function mask(config) {
   const SECRET_FIELDS = ['webhookUrl', 'password', 'token', 'botToken', 'apiKey', 'smtpPass'];
   return Object.fromEntries(

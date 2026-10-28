@@ -33,7 +33,7 @@ const PHASE_OPTS = [
 ]
 const EMPTY_FILTERS = { phases: [], hasRestarts: false, hasGpu: false }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// Format an age as a short string
 function fmtAge(t) {
   if (!t) return '—'
   const s = Math.floor((Date.now() - new Date(t)) / 1000)
@@ -47,8 +47,7 @@ function effectivePhase(pod) {
   return pod.phase === 'Running' && !pod.isReady ? 'Degraded' : pod.phase
 }
 
-// ── Sub-components ────────────────────────────────────────────────────────────
-
+// Colored status dot for a pod
 function StatusDot({ phase, isReady }) {
   const ep = phase === 'Running' && !isReady ? 'Degraded' : phase
   const cls = {
@@ -210,12 +209,12 @@ function PrometheusNotice({ onDismiss }) {
   )
 }
 
-// ── Page ──────────────────────────────────────────────────────────────────────
+// Cluster health page
 export default function ClusterHealthPage() {
   const [data,              setData]              = useState(null)
   const [loading,           setLoading]           = useState(true)
   const [error,             setError]             = useState(null)
-  const [refreshSeconds,    setRefreshSeconds]    = useState(0) // 0 = auto-refresh off by default
+  const [refreshSeconds,    setRefreshSeconds]    = useState(0)
   const [countdown,         setCountdown]         = useState(refreshSeconds)
   const [lastSync,          setLastSync]          = useState(null)
   const [search,            setSearch]            = useState('')
@@ -230,17 +229,11 @@ export default function ClusterHealthPage() {
   const [nodesLoading,      setNodesLoading]      = useState(false)
   const [activeView,        setActiveView]        = useState('pods')
   const [expandedClusters,  setExpandedClusters]  = useState({})
-  const [expandedNs,        setExpandedNs]        = useState({}) // key: "cluster/namespace"
+  const [expandedNs,        setExpandedNs]        = useState({})
   const [showClusterMgr,    setShowClusterMgr]    = useState(false)
   const { user } = useAuth()
 
-  // Streams each cluster's namespace list (NDJSON over a plain fetch) instead of
-  // waiting for every cluster to respond — a slow/unreachable cluster no longer
-  // blocks the ones that are already ready from showing up. Pods are NOT fetched
-  // here: namespaces are cheap to list, so they load eagerly, but pods are the
-  // expensive part and only load once a namespace is actually expanded — see
-  // loadNamespacePods below. On refresh, previously loaded namespace pod data is
-  // preserved (keyed by name) rather than being wiped back to a skeleton.
+  // Stream namespaces for every cluster
   const fetchData = useCallback(async () => {
     setError(null)
     try {
@@ -298,9 +291,7 @@ export default function ClusterHealthPage() {
     finally { setLoading(false); setCountdown(refreshSeconds) }
   }, [refreshSeconds])
 
-  // Fetches pods for a single namespace — only called when that namespace's row is
-  // expanded for the first time. This is the actual "expensive" call; everything
-  // above (cluster list, namespace list) is metadata-only and loads eagerly.
+  // Load pods for one namespace
   const loadNamespacePods = useCallback(async (clusterName, ns) => {
     const setNs = updater => setData(prev => prev && {
       ...prev,
@@ -329,9 +320,6 @@ export default function ClusterHealthPage() {
         const nsObj = data?.clusters.find(c => c.name === clusterName)?.namespaces.find(n => n.name === ns)
         if (nsObj && !nsObj.loaded && !nsObj.loading) loadNamespacePods(clusterName, ns)
       } else {
-        // Closing discards whatever was loaded rather than just hiding it — reopening
-        // this namespace later must always pull live state from Kubernetes again, not
-        // show however stale the last-seen pod list has become in the meantime.
         setData(prevData => prevData && {
           ...prevData,
           clusters: prevData.clusters.map(c => c.name !== clusterName ? c : {
@@ -351,12 +339,6 @@ export default function ClusterHealthPage() {
     return () => clearInterval(iv)
   }, [fetchData, refreshSeconds])
 
-  // Every completed fetchData() run (manual "↻ Refresh" click or an auto-refresh
-  // tick — both funnel through fetchData, both end by bumping lastSync) also
-  // re-fetches pods for every namespace currently OPEN, not just the namespace list
-  // itself — so an expanded namespace stays live on the same refresh you already
-  // triggered, instead of needing to be closed and reopened to see current state.
-  // Namespaces that aren't expanded are left alone (still lazy).
   useEffect(() => {
     if (!lastSync) return
     Object.entries(expandedNs)
@@ -365,9 +347,6 @@ export default function ClusterHealthPage() {
         const slash = key.indexOf('/')
         loadNamespacePods(key.slice(0, slash), key.slice(slash + 1))
       })
-    // Deliberately keyed on lastSync alone — expandedNs/loadNamespacePods are read
-    // fresh via closure each time this fires, not tracked as reactive deps, so
-    // toggling a namespace between refresh ticks doesn't tear down/rebuild this effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lastSync])
 
@@ -377,9 +356,6 @@ export default function ClusterHealthPage() {
     return () => clearInterval(t)
   }, [refreshSeconds])
 
-  // Fetch Prometheus error alerts + all-pods metrics — only while the Alerts tab is
-  // active. (Pod polling above stays unconditional: it feeds the status summary bar,
-  // which is visible on every tab, not just the Pods view.)
   useEffect(() => {
     if (activeView !== 'alerts') return
     const fetchErrors = async () => {
@@ -387,7 +363,7 @@ export default function ClusterHealthPage() {
         const res = await apiFetch('/api/metrics/errors')
         const json = await res.json()
         setErrors(json.errors ?? [])
-      } catch { /* Prometheus unavailable — silently skip */ }
+      } catch { }
     }
     fetchErrors()
     const iv = setInterval(fetchErrors, ERRORS_REFRESH_MS)
@@ -402,7 +378,7 @@ export default function ClusterHealthPage() {
         const res  = await apiFetch('/api/metrics/pods')
         const json = await res.json()
         setPromPods(json.pods ?? [])
-      } catch { /* Prometheus unavailable */ }
+      } catch { }
       finally { setPromPodsLoading(false) }
     }
     fetchPromPods()
@@ -410,7 +386,6 @@ export default function ClusterHealthPage() {
     return () => clearInterval(iv)
   }, [activeView])
 
-  // Fetch node health — only while the Nodes tab is active.
   useEffect(() => {
     if (activeView !== 'nodes') return
     const fetchNodes = async () => {
@@ -419,7 +394,7 @@ export default function ClusterHealthPage() {
         const res  = await apiFetch('/api/nodes')
         const json = await res.json()
         setNodeClusters(Array.isArray(json) ? json : [])
-      } catch { /* kubectl unavailable */ }
+      } catch { }
       finally { setNodesLoading(false) }
     }
     fetchNodes()
@@ -427,9 +402,6 @@ export default function ClusterHealthPage() {
     return () => clearInterval(iv)
   }, [activeView])
 
-  // derived — pods are only known for namespaces that have actually been opened
-  // (see loadNamespacePods), so nothing here can claim to represent cluster- or
-  // fleet-wide totals; it only reflects whatever's been loaded so far.
   const loadedPods = useMemo(
     () => data?.clusters.flatMap(c => c.namespaces?.flatMap(n => n.pods ?? []) ?? []) ?? [],
     [data]
@@ -438,7 +410,6 @@ export default function ClusterHealthPage() {
   const hasPrometheusMetrics = loadedPods.some(p => p.metricsSource === 'prometheus')
   const anyGpu               = loadedPods.some(p => p.totalGpu > 0)
 
-  // filtering — applies within a single already-loaded namespace's pod list
   const q = search.trim().toLowerCase()
   function applyFilters(pods) {
     return pods.filter(p => {
@@ -457,7 +428,6 @@ export default function ClusterHealthPage() {
   return (
     <div className="health-page">
 
-      {/* ── Header ── */}
       <div className="page-header">
         <div>
           <h2>Cluster Health</h2>
@@ -497,7 +467,6 @@ export default function ClusterHealthPage() {
         </div>
       </div>
 
-      {/* ── View switcher tabs ── */}
       <div className="health-view-tabs">
         <button className={`hvtab${activeView === 'pods' ? ' hvtab-active' : ''}`}
           onClick={() => setActiveView('pods')}>
@@ -529,7 +498,6 @@ export default function ClusterHealthPage() {
         </button>
       </div>
 
-      {/* ── Pods view ── */}
       {activeView === 'pods' && (<>
 
         {loadedPods.length > 0 && !hasMetrics && !noticeDismiss && (
@@ -579,12 +547,11 @@ export default function ClusterHealthPage() {
 
         {(data?.clusters ?? []).map(cluster => {
           const isOpen    = !!expandedClusters[cluster.name]
-          const isPending = cluster.connected == null // namespace stream hasn't reported this cluster yet
+          const isPending = cluster.connected == null
           return (
             <div key={cluster.name}
               className={`hc-block${isOpen ? ' hc-block-open' : ''}${cluster.loading && !isPending ? ' hc-refreshing' : ''}`}>
 
-              {/* Clickable header — always visible */}
               <div
                 className="hc-header hc-header-clickable"
                 role="button"
@@ -614,7 +581,6 @@ export default function ClusterHealthPage() {
                 </div>
               </div>
 
-              {/* Collapsible body — lists namespaces; pods are fetched lazily per namespace below */}
               {isOpen && (<>
                 {isPending && <div className="hc-empty">◌ Connecting to cluster…</div>}
 
@@ -674,7 +640,6 @@ export default function ClusterHealthPage() {
         })}
       </>)}
 
-      {/* ── Cluster Manager modal ── */}
       {showClusterMgr && (
         <ClusterManager
           onClose={() => setShowClusterMgr(false)}
@@ -682,7 +647,6 @@ export default function ClusterHealthPage() {
         />
       )}
 
-      {/* ── Alerts view ── */}
       {activeView === 'alerts' && (
         <>
           {data && hasPrometheusMetrics && !promNoticeDismiss && (
@@ -729,13 +693,10 @@ export default function ClusterHealthPage() {
         </>
       )}
 
-      {/* ── Nodes view ── */}
       {activeView === 'nodes' && (
         <NodeHealthView nodeClusters={nodeClusters} loading={nodesLoading} />
       )}
 
-      {/* ── Autoscaling / Extensions views — full pages embedded as tabs, each owns its
-          own cluster selector and data fetching (only fetches while its tab is active) ── */}
       {activeView === 'autoscaling' && <AutoscalingPage embedded />}
       {activeView === 'extensions'  && <ExtensionsPage embedded />}
 

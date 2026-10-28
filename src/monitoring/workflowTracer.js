@@ -1,24 +1,6 @@
 'use strict';
 
-// ── WorkflowTracer ───────────────────────────────────────────────────────────────
-// Request-scoped observability accumulator for one runWorkflow() invocation
-// (src/orchestrator/graph.js). Passed through LangGraph's `config.configurable`, NOT
-// a WorkflowState/Annotation channel — this keeps it out of the reducer-managed state
-// a node might spread into a prompt (see e.g. investigator.js's HumanMessage built
-// from raw issues/context), and gives every concurrent workflow its own instance:
-// graph.js's runWorkflow() constructs a fresh WorkflowTracer per call, so the
-// ISSUE_CONCURRENCY-bounded concurrent workflows (orchestratorAgent.js) never share
-// mutable tracer state.
-//
-// Most of what this class records is already computed inside investigator.js's ring
-// loop and planner.js's tool-calling loop as a side effect of their existing control
-// flow (hypothesis/confidence history, ring/layer coverage, tool-call logs) — this
-// class mostly HARVESTS and reshapes that via attachInvestigatorResult/
-// attachPlannerResult, rather than re-instrumenting those loops from scratch.
-//
-// Never throws — a bug in tracing must not be able to break a remediation workflow.
-// Every public method is defensive against missing/partial input for that reason.
-
+// Collects metrics for one workflow run
 class WorkflowTracer {
   constructor({
     workflowId, clusters = [], namespace = null, incidentType = null,
@@ -35,8 +17,8 @@ class WorkflowTracer {
     this.startedAt = new Date();
     this.endedAt   = null;
 
-    this.nodes        = {}; // nodeName -> { durationMs, llmCalls, toolCalls }
-    this._nodeStarts  = {}; // nodeName -> Date.now() while in progress
+    this.nodes        = {};
+    this._nodeStarts  = {};
 
     this.investigationTurns      = 0;
     this.ringsVisited            = [];
@@ -45,18 +27,17 @@ class WorkflowTracer {
     this.confidenceHistory       = [];
     this.reachedConfidenceTarget = null;
 
-    // §Convergence (Phase 3)
     this.bestHypothesis        = null;
     this.nonImprovingRounds    = 0;
     this.stoppingOutcome       = null;
     this.informationGainHistory = [];
 
     this.plannerTurns                  = 0;
-    this.plannerToInvestigatorRequests = 0; // gather_more_evidence tool calls
-    this.plannerDryRunCalls            = 0; // dry_run_step tool calls
+    this.plannerToInvestigatorRequests = 0;
+    this.plannerDryRunCalls            = 0;
 
     this.fastPathUsed      = false;
-    this.fastPathEscalated = null; // null = fast path never ran this workflow
+    this.fastPathEscalated = null;
 
     this.guardianRejections    = 0;
     this.policyRejections      = 0;
@@ -64,18 +45,18 @@ class WorkflowTracer {
     this.humanEscalations      = 0;
 
     this.finalOutcome = null;
+
+    this.tokenUsage = null;
   }
+
+  attachTokenUsage(usage) { this.tokenUsage = usage ?? null; }
 
   _ensureNode(name) {
     if (!this.nodes[name]) this.nodes[name] = { durationMs: 0, llmCalls: 0, toolCalls: 0 };
     return this.nodes[name];
   }
 
-  // ── Per-node timing ──────────────────────────────────────────────────────────
-  // A node can legitimately run more than once per workflow (the investigator<->policy
-  // re-diagnose loop, graph.js's routeAfterPolicy) — durationMs accumulates across
-  // every visit rather than being overwritten, so latency_per_node reflects total time
-  // spent in that node across the whole workflow, not just its last visit.
+  // Start timing a node
   startNode(name) { this._nodeStarts[name] = Date.now(); }
 
   endNode(name) {
@@ -85,9 +66,7 @@ class WorkflowTracer {
     delete this._nodeStarts[name];
   }
 
-  // Harvests investigator.investigate()'s return value (src/agents/investigator.js) —
-  // investigationTurns/ringsVisited/layersInvestigated/ringAssessmentLog are already
-  // computed there; this just reshapes them for persistence.
+  // Save the investigator result
   attachInvestigatorResult(rca) {
     if (!rca) return;
     const node = this._ensureNode('investigator');
@@ -106,17 +85,13 @@ class WorkflowTracer {
     }));
     this.confidenceHistory = log.map(a => a.confidence);
 
-    // §Convergence (Phase 3) — bestHypothesis/nonImprovingRounds/stoppingOutcome are
-    // already computed inside investigator.js's loop; informationGainHistory is
-    // reshaped from the same ringAssessmentLog entries this method already reads.
     this.bestHypothesis     = rca.bestHypothesis ?? null;
     this.nonImprovingRounds = rca.nonImprovingRounds ?? 0;
     this.stoppingOutcome    = rca.stoppingOutcome ?? null;
     this.informationGainHistory = log.map(a => a.informationGain ?? 'NONE');
   }
 
-  // Harvests planner.plan()'s return value — see the `_meta` field added in
-  // src/agents/planner.js's _runPlanningLoop.
+  // Save the planner result
   attachPlannerResult(plan) {
     if (!plan?._meta) return;
     const node = this._ensureNode('planner');
@@ -129,9 +104,7 @@ class WorkflowTracer {
     this.plannerDryRunCalls            = toolCallLog.filter(c => c.name === 'dry_run_step').length;
   }
 
-  // Harvests fastPath.diagnose()'s return value (src/agents/fastPath.js). A "1 LLM
-  // call" only actually happened if a diagnosis was produced — a gather-phase or
-  // unknown-cluster failure escalates without ever reaching the diagnosis call.
+  // Save the fast path result
   attachFastPathResult(result) {
     if (!result) return;
     this.fastPathUsed = true;
@@ -158,8 +131,7 @@ class WorkflowTracer {
     this.finalOutcome = outcome ?? null;
   }
 
-  // Plain object matching WorkflowTraceSchema (src/db/models/history.js) — the only
-  // place this shape needs to line up with the Mongoose schema.
+  // Convert the trace to a document
   toDocument() {
     const totalLlmCalls  = Object.values(this.nodes).reduce((s, n) => s + n.llmCalls, 0);
     const totalToolCalls = Object.values(this.nodes).reduce((s, n) => s + n.toolCalls, 0);
@@ -196,6 +168,7 @@ class WorkflowTracer {
       policyRejections:      this.policyRejections,
       humanApprovalRequests: this.humanApprovalRequests,
       humanEscalations:      this.humanEscalations,
+      tokenUsage:            this.tokenUsage,
       finalOutcome: this.finalOutcome,
     };
   }

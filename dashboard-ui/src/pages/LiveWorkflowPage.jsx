@@ -3,18 +3,14 @@ import { apiFetch, openSSE } from '../lib/api'
 import { fmtDT } from '../utils/format'
 import { WORKFLOW_STEP, WORKFLOW_STEP_ORDER } from '../constants'
 
-// ── Outcome badge — mirrors StatusBadge in IssuesPage.jsx, just for the smaller
-// finished/outcome vocabulary this in-memory view actually has ──────────────────
+// Outcome badge
 function OutcomeBadge({ finishedAt, outcome }) {
   if (!finishedAt) return <span className="issue-badge issue-badge-info">In progress</span>
   const color = outcome === 'fixed' ? 'success' : outcome === 'escalated' ? 'danger' : outcome === 'blocked' ? 'warn' : 'dim'
   return <span className={`issue-badge issue-badge-${color}`}>{outcome ?? 'finished'}</span>
 }
 
-// A step's `output` is whatever free-form fields that component's graph.js call site
-// filled in (see IncidentTracer.step() call sites) — render generically rather than
-// hard-coding one shape per component, since that's exactly what makes this view keep
-// working as those payloads evolve.
+// Render a step's output fields
 function StepOutput({ output }) {
   const entries = Object.entries(output ?? {}).filter(([, v]) => v !== null && v !== undefined && v !== '')
   if (entries.length === 0) return <span className="hcell-dim">(no additional output)</span>
@@ -30,15 +26,12 @@ function StepOutput({ output }) {
   )
 }
 
-// The orchestrator's own dispatch step (always the first step recorded for an incident
-// — see orchestratorAgent.js) carries the dispatchKey the whole workflow was launched
-// under; pulled back out here purely for display, not re-derived.
+// Get the dispatch key of an incident
 function dispatchKeyOf(incident) {
   return incident.steps.find(s => s.component === 'orchestrator')?.output?.dispatchKey ?? null
 }
 
-// ── One incident's full step trail — same content the old flat table's expanded row
-// showed, now nested inside its owning workflow instead of being the top-level unit ──
+// Step trail of one incident
 function IncidentDetail({ incident }) {
   const r = incident.resource ?? {}
   const meta = WORKFLOW_STEP[incident.currentStep] ?? { icon: '•', label: incident.currentStep ?? '—' }
@@ -85,10 +78,7 @@ function IncidentDetail({ incident }) {
   )
 }
 
-// ── One workflow — a group of one or more incidents dispatched together (a namespace-
-// wide group can bundle several pods/deployments across clusters into a single
-// runWorkflow() call, see graph.js). Expanding shows every incident in it, each with
-// its own full step trail. ────────────────────────────────────────────────────────
+// One workflow row
 function WorkflowRow({ workflow, expanded, onToggle }) {
   const clusters = [...new Set(workflow.incidents.map(i => i.resource?.clusterName).filter(Boolean))]
   return (
@@ -120,9 +110,7 @@ function WorkflowRow({ workflow, expanded, onToggle }) {
   )
 }
 
-// TTL helpers — Short Memory stores some TTLs in seconds (ttl), some in ms (pTTL); both
-// come back as -1 (no expiry set) or -2 (key already gone, race with the poll) from
-// node-redis when not applicable.
+// Format a TTL in seconds
 function fmtTTLsec(sec) {
   if (sec == null || sec === -2) return 'expired'
   if (sec === -1) return 'no expiry'
@@ -132,11 +120,7 @@ function fmtTTLsec(sec) {
 }
 function fmtTTLms(ms) { return ms == null ? '—' : fmtTTLsec(Math.round(ms / 1000)) }
 
-// ── Short Memory (Redis) — the dispatch-side state feeding the workflows above: what's
-// queued to become a workflow next, what's locked/in-cooldown/counted-as-a-retry right
-// now. Polled on an interval (Redis has no push hook wired up here, unlike the SSE feed
-// above) since TTLs constantly tick down and this is meant to be read as "right now",
-// not upserted incrementally. ────────────────────────────────────────────────────────
+// Short Memory state section
 function ShortMemorySection() {
   const [state, setState]     = useState(null)
   const [error, setError]     = useState(null)
@@ -278,20 +262,13 @@ function ShortMemorySection() {
   )
 }
 
-// ── Page ──────────────────────────────────────────────────────────────────────
-// Live, in-memory-only view of what the pipeline is doing right now, grouped by
-// WORKFLOW (one runWorkflow() call — see src/orchestrator/graph.js — can bundle
-// several incidents dispatched together) so you can see exactly what a given workflow
-// actually contains, not just a flat list of incidents with no sense of which ones
-// were investigated/planned/executed together. Each incident inside a workflow keeps
-// its own full per-step trail (same data IncidentTracer.step() already computes at
-// every graph.js node). Nothing here is persisted anywhere; a server restart clears it.
+// Live workflow page
 export default function LiveWorkflowPage() {
   const [incidents, setIncidents] = useState([])
   const [loading, setLoading]     = useState(true)
   const [error, setError]         = useState(null)
   const [search, setSearch]       = useState('')
-  const [expanded, setExpanded]   = useState(null) // workflowId of the open row
+  const [expanded, setExpanded]   = useState(null)
 
   useEffect(() => {
     let cancelled = false
@@ -327,8 +304,6 @@ export default function LiveWorkflowPage() {
       .some(s => s?.toLowerCase().includes(q))
   ), [incidents, q])
 
-  // Group incidents into their owning workflow — the actual "what does this workflow
-  // contain" view the flat per-incident table couldn't show.
   const workflows = useMemo(() => {
     const byId = new Map()
     for (const incident of filteredIncidents) {
@@ -339,9 +314,6 @@ export default function LiveWorkflowPage() {
       }
       if (new Date(incident.startedAt) < new Date(wf.startedAt)) wf.startedAt = incident.startedAt
       if (new Date(incident.updatedAt) > new Date(wf.updatedAt)) wf.updatedAt = incident.updatedAt
-      // finishedAt/outcome land identically on every incident in a workflow — set together
-      // by liveWorkflowStore.finish() at the moment runWorkflow() resolves — so the first
-      // one seen is representative of the whole group.
       if (incident.finishedAt && !wf.finishedAt) { wf.finishedAt = incident.finishedAt; wf.outcome = incident.outcome }
       wf.incidents.push(incident)
     }

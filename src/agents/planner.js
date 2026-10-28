@@ -13,20 +13,8 @@ const { loadConfig }  = require('../config');
 const { runStructuredLLMCall } = require('../resilience/llmCircuitBreaker');
 const { PlanSchema, PlanStepSchema } = require('../orchestrator/schemas');
 const { issueKey: _issueKey } = require('../orchestrator/issueKey');
-
-// ── Planner ──────────────────────────────────────────────────────────────────
-// Standalone, like investigator.js — its external dependencies are executor.js
-// (dry-run), investigator.js (read-only evidence gathering, already exported for
-// exactly this kind of reuse), ChangeCorrelationEngine/CapacityForecastEngine
-// (deterministic per-issue context — recent-deployment correlation, capacity trend —
-// both already degrade to null on their own when disabled/unavailable), config, and
-// the shared schemas — all plain function calls today, so this can become its own
-// process later too.
-//
-// The legacy src/agents/plannerAgent.js is untouched — it still serves ClusterAgent's
-// pipeline (no longer reachable from the main entrypoint), and produces one action per
-// call (single-step). This file replaces it in the v5 graph with real multi-step planning
-// (architecture-doc §3.3): "a sequence of commands, not a single command."
+const tokenStore      = require('../api/tokenStore');
+const { compactToolHistory } = require('./contextBudget');
 
 const _config = loadConfig();
 const PLANNER_API_KEY  = _config.PLANNER_API_KEY  || _config.OPENAI_API_KEY;
@@ -43,9 +31,7 @@ const baseLlm = new ChatOpenAI({
 const usingDedicated = !!(_config.PLANNER_API_KEY && _config.PLANNER_MODEL);
 console.log(`[PLANNER] LLM: ${usingDedicated ? `dedicated (${PLANNER_MODEL})` : `shared fallback (${PLANNER_MODEL})`}`);
 
-const MAX_TOOL_ITERATIONS = 15; // bounded, smaller than Investigator's 40 — planning a
-                                 // known set of resources needs fewer rounds than
-                                 // open-ended evidence gathering.
+const MAX_TOOL_ITERATIONS = 15;
 const SUBMIT_TOOL_NAME = 'submit_plan';
 
 const SYSTEM_PROMPT = `You are a Kubernetes remediation Planner.
@@ -102,7 +88,8 @@ You have two tools before you finalize:
   request more read-only evidence yourself (same execution layer the Investigator has —
   get/describe/logs/top/explain/api-resources/api-versions/version/cluster-info only;
   write commands are always rejected) — pass "clusterName" saying which cluster to
-  inspect.
+  inspect. Keep requests targeted (-o jsonpath, logs --tail=100, one named resource) —
+  results are capped in size, and older ones may later be shortened.
 
 ━━━ ISSUE-SPECIFIC GUIDANCE (there is no deterministic layer enforcing these anymore —
 Guardian and you are the safety net, so apply this yourself) ━━━
@@ -115,6 +102,10 @@ Guardian and you are the safety net, so apply this yourself) ━━━
     action to something like "no automated fix available", and explain why in "reason";
     an empty command is how you signal "nothing safe to run" and lets it fall to
     escalation instead of running a command that can't actually fix it.
+    Exception: if an earlier revision or ReplicaSet of the controller was running a
+    working image (check rollout history / the deployment's revision annotation / other
+    ReplicaSets' pods), "rollout undo" back to it is acceptable. Never substitute a
+    guessed image (e.g. "set image ... nginx:latest").
   Bare pod (no owning controller) → deleting it is real and permanent; only do it if the
     investigation clearly supports it.
   Deployment/StatefulSet/DaemonSet-managed pod → never target the pod directly with a
@@ -153,27 +144,7 @@ command EMPTY rather than repeating a guess that already didn't work.
 
 When ready, call ${SUBMIT_TOOL_NAME} with your full ordered step list.`;
 
-// `clusterConfigs` is the fleet map { [clusterName]: { context, tier, ... } }. Same
-// safety property as investigator.js's read-only tool: the model picks a clusterName
-// from a z.enum of REAL, known clusters, never a raw context/kubeconfig value — context
-// resolution happens entirely server-side. The dry-run tool's exposed "clusterName" is
-// a SEPARATE, REQUIRED parameter from PlanStepSchema's own (optional, code-derived-only)
-// clusterName field — this one is mid-loop, model-supplied, and used only to pick which
-// cluster's API server validates the dry-run; the final plan step's clusterName is
-// attached later by graph.js's plannerNode from the resolved issue, never trusted from
-// here (see the comment on PlanStepSchema.clusterName in schemas.js for why).
-// §Fix-CapacityEvidence (2026-09-16) — `kubectl --dry-run=server` (what dry_run_step
-// actually runs) only asks the API server whether it would ADMIT the object; admission
-// never invokes the scheduler, so it happily "passes" a replica count or resource
-// request the cluster has no room for. Confirmed live (2026-09-14, mk-overscaled):
-// the Planner scaled to --replicas=24 — the deployment's own already-broken current
-// value — three runs in a row, never the right-sized --replicas=2, because nothing it
-// had access to could tell it whether either number would actually schedule. This is a
-// real, deterministic capacity CALCULATION appended to the dry-run result as advisory
-// information — it never blocks or rewrites the step itself, it just gives the model
-// the arithmetic so its own free-form choice of replica count can be evidence-based
-// instead of a guess. Best-effort only: any fetch/parse failure just omits the advisory,
-// the underlying dry-run result is still returned.
+// Get capacity advice for a scale step
 async function _capacityAdvisoryForScale(step, cfg) {
   const replicasMatch = /--replicas[= ](\d+)/.exec(step.command ?? '');
   if (!replicasMatch || step.target?.kind === 'Node') return null;
@@ -185,11 +156,11 @@ async function _capacityAdvisoryForScale(step, cfg) {
   ]);
   const deployment = deployments.find(d => d.metadata?.name === step.target.name);
   const containers = deployment?.spec?.template?.spec?.containers ?? [];
-  if (containers.length === 0) return null; // target not found or has no containers to size from
+  if (containers.length === 0) return null;
 
   const perReplicaCpuM  = containers.reduce((sum, c) => sum + _cpuToMillicores(c.resources?.requests?.cpu), 0);
   const perReplicaMemMi = containers.reduce((sum, c) => sum + _memToMi(c.resources?.requests?.memory), 0);
-  if (perReplicaCpuM === 0 && perReplicaMemMi === 0) return null; // no requests set — nothing to compute against
+  if (perReplicaCpuM === 0 && perReplicaMemMi === 0) return null;
 
   const schedulable = (nodesJson.items ?? []).filter(n => n.spec?.unschedulable !== true);
   const totalCpuM  = schedulable.reduce((sum, n) => sum + _cpuToMillicores(n.status?.allocatable?.cpu), 0);
@@ -258,9 +229,7 @@ function _buildEvidenceTool(clusterConfigs) {
   );
 }
 
-// The "finish" tool — its arguments ARE the plan. No real side effect; the loop below
-// intercepts the call, validates it against PlanSchema, and either accepts it or
-// rejects it back to the model with an explanation, via the normal tool-result channel.
+// Build the submit plan tool
 function _buildSubmitTool() {
   return tool(
     async (args) => JSON.stringify(args),
@@ -272,10 +241,7 @@ function _buildSubmitTool() {
   );
 }
 
-// §Fix-CapacityEvidence (2026-09-16) — Kubernetes resource-quantity parsing, minimal but
-// correct for the suffixes kubectl actually emits (binary Ki/Mi/Gi/Ti, decimal K/M/G/T,
-// bare millicores "500m", bare cores "2", bare bytes). Returns millicores / mebibytes so
-// the two are directly comparable/summable regardless of which suffix the source used.
+// Convert a CPU quantity to millicores
 function _cpuToMillicores(q) {
   if (q == null) return 0;
   const s = String(q).trim();
@@ -291,19 +257,11 @@ function _memToMi(q) {
   const m = String(q).trim().match(/^(\d+(?:\.\d+)?)([EPTGMK]i?)?$/);
   if (!m) return 0;
   const value = parseFloat(m[1]);
-  if (!m[2]) return value / (1024 * 1024); // bare bytes
+  if (!m[2]) return value / (1024 * 1024);
   return (_MEM_UNIT_TO_MI[m[2]] ?? 0) * value;
 }
 
-// Real, current scheduling capacity for one cluster — gathered once per CLUSTER present
-// in this planning batch (not per issue: it's the same fact for every issue in that
-// cluster), so the model has actual numbers instead of guessing or echoing back a value
-// already present in the issue's own (broken) spec. Deliberately NOT gated on issue
-// type — same reasoning as changeCorrelation/capacityForecast below: always attach the
-// real evidence and let the model's own judgment (see SYSTEM_PROMPT's capacity
-// paragraph) decide when it's relevant, rather than hardcoding a list of "capacity-
-// relevant" issue types that will inevitably miss some future case. Best-effort: a fetch
-// failure degrades to null for that cluster, same as changeCorrelation/capacityForecast.
+// Gather node capacity for a cluster
 async function _gatherNodeCapacity(clusterConfigs, clusterNames) {
   const entries = await Promise.all(clusterNames.map(async clusterName => {
     const cfg = clusterConfigs[clusterName];
@@ -327,12 +285,7 @@ async function _gatherNodeCapacity(clusterConfigs, clusterNames) {
   return new Map(entries);
 }
 
-// Deterministic per-issue context — recent-deployment correlation, capacity trend, and
-// real cluster capacity — the old (legacy) per-incident Planner wiring fetched and
-// consumed some of this; it's gathered once here (this file is now the single call
-// site) instead of once per incident in graph.js's old loop. All three sources already
-// degrade to null on their own (disabled feature flag, fetch failure), so failures here
-// are non-fatal.
+// Gather planning context for an issue
 async function _gatherPlanningContext(issues, clusterConfigs) {
   const clusterNames = [...new Set(issues.map(i => i.clusterName).filter(Boolean))];
   const nodeCapacityByCluster = await _gatherNodeCapacity(clusterConfigs, clusterNames);
@@ -343,8 +296,6 @@ async function _gatherPlanningContext(issues, clusterConfigs) {
       semanticMatches: [], nodeIssues: [], rolloutHistory: null,
     }).catch(() => null);
 
-    // Each issue's own cluster now, not one shared clusterConfig.name — issues in the
-    // same planning batch can come from different clusters.
     const capacityForecast = issue.podName
       ? await CapacityForecastEngine.getPodForecast(issue.clusterName, issue.podName).catch(() => null)
       : null;
@@ -356,16 +307,7 @@ async function _gatherPlanningContext(issues, clusterConfigs) {
   }));
 }
 
-// A scope:"cluster" issue (or any issue genuinely missing every identifying field) has
-// no nodeName/deployment/podName to build a target name from — `?? null` here used to
-// reach PlanStepSchema as a literal null, which fails schema validation (target.name
-// requires a string) and crashes the whole workflow before it ever reaches Guardian/
-// Policy/escalation. Confirmed live (2026-09-04): a scope:"cluster" incident with no
-// identity at all hit exactly this, every cycle, forever, invisible except for one ERROR
-// log line. issueKey() always returns a stable, non-null string (worst case
-// "<cluster>/default/unknown") — not a real kubectl target, but a safe placeholder that
-// still uniquely identifies the issue and lets the plan validate, route to escalation
-// like any other command-less step, and stop crashing.
+// Build the target for an issue
 function _targetFor(issue) {
   return {
     kind: issue.nodeName && !issue.podName ? 'Node' : issue.deployment ? 'Deployment' : 'Pod',
@@ -388,22 +330,9 @@ function _fallbackPlan(issues) {
   return PlanSchema.parse({ steps, nonReversible: false });
 }
 
-// §Fix-PlannerConfidenceGate (2026-08-31) — deterministic check, not a prompt rule: this
-// pipeline has repeatedly found that a prompt-level instruction alone doesn't reliably
-// hold once a model is willing to write a plausible-sounding plan anyway (see graph.js's
-// guardianNode §Fix-P8 for the identical lesson on Guardian). Confirmed live: the Planner
-// proposed a confident, specific-sounding action even when `rca.confidence` was 0
-// ("CrashLoopBackOff — investigation unavailable, unable to determine specific root
-// cause") — nothing was stopping it from inventing a fix for a diagnosis it didn't
-// actually have, and the invented fix sometimes happened to work by luck (the persona's
-// generic remedy) and sometimes didn't. Below the threshold, skip the LLM planning loop
-// entirely — there's no real diagnosis to plan against — and return a command-less plan
-// so it routes straight to escalation instead of guessing.
 const LOW_CONFIDENCE_THRESHOLD = 0.5;
 
-// Pure predicate, split out from Planner.plan() so both the "should skip" and "should NOT
-// skip" behavior are unit-testable without an LLM call — Planner.plan()'s non-gated path
-// goes straight to a real network call, which isn't something to exercise from a unit test.
+// Check if confidence is too low to plan
 function _isConfidenceTooLowToPlan(confidence) {
   return (confidence ?? 0) < LOW_CONFIDENCE_THRESHOLD;
 }
@@ -422,15 +351,26 @@ function _lowConfidencePlan(issues, confidence) {
   return PlanSchema.parse({ steps, nonReversible: false });
 }
 
-// `diagnostics` (DIAGNOSTIC, noop-repro investigation 2026-09-11 — easy to remove: just
-// delete every line/param marked DIAGNOSTIC in this file and the noop_origin/
-// planner_input/tools_available fields in graph.js's plannerNode) is an optional,
-// caller-owned object this function only ever WRITES to at points that already exist —
-// it does not read from it, branch on it, or change any existing condition/return
-// value. Lets an external caller (Planner.plan() below) recover WHICH of several
-// same-shaped code paths actually ran (e.g. "hit the iteration cap" and "an LLM call
-// errored" both fall through to the identical return-null path today, indistinguishable
-// from the outside) without altering the paths themselves.
+// Trim the investigation for the prompt
+function _slimInvestigation(rca) {
+  if (!rca) return rca;
+  return {
+    rootCause:               rca.rootCause,
+    layer:                   rca.layer,
+    symptom:                 rca.symptom,
+    severity:                rca.severity,
+    riskLevel:               rca.riskLevel,
+    confidence:              rca.confidence,
+    reachedConfidenceTarget: rca.reachedConfidenceTarget,
+    componentsInvolved:      rca.componentsInvolved,
+    evidence:                rca.evidence,
+    recommendedFocus:        rca.recommendedFocus,
+    findings: (rca.perLayerFindings ?? [])
+      .filter(f => f?.status === 'critical' || f?.status === 'warning')
+      .map(({ layer, status, summary }) => ({ layer, status, summary })),
+  };
+}
+
 async function _runPlanningLoop({ issues, rca, clusterConfigs, previousAttemptFailure = null }, diagnostics = {}) {
   const clusterNames = [...new Set(issues.map(i => i.clusterName))];
   const modelWithTools = baseLlm.bindTools([
@@ -438,12 +378,8 @@ async function _runPlanningLoop({ issues, rca, clusterConfigs, previousAttemptFa
   ]);
 
   const planningContext = await _gatherPlanningContext(issues, clusterConfigs);
-  // §Fix-RetryContext (2026-09-14) — only present on a retry (graph.js's plannerNode
-  // reads it off WorkflowState.lastAttemptFailure), so a first attempt's payload is
-  // byte-for-byte unchanged. See SYSTEM_PROMPT's paragraph on "previousAttempt" for how
-  // the model is told to use it.
   const plannerInputPayload = {
-    issues, clusters: clusterNames, investigation: rca, planningContext,
+    issues, clusters: clusterNames, investigation: _slimInvestigation(rca), planningContext,
     ...(previousAttemptFailure ? { previousAttempt: previousAttemptFailure } : {}),
   };
 
@@ -452,32 +388,30 @@ async function _runPlanningLoop({ issues, rca, clusterConfigs, previousAttemptFa
     new HumanMessage(JSON.stringify(plannerInputPayload)),
   ];
 
-  // DIAGNOSTIC — the literal payload the LLM receives, and the fixed tool vocabulary
-  // available for this call (not case-dependent, but recorded per-call for a caller that
-  // has no other way to know it without reading this file).
   diagnostics.plannerInput = plannerInputPayload;
   diagnostics.toolsAvailable = ['dry_run_step', 'gather_more_evidence', SUBMIT_TOOL_NAME];
 
-  // Measurement (Phase 1) — same pattern as investigator.js's commandLog/turnsUsed:
-  // toolCallLog records what actually ran (not model self-report), turnsUsed counts
-  // LLM calls (one per loop turn) so callers don't need to re-derive it from the cap.
   let turnsUsed = 0;
   const toolCallLog = [];
 
   for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
     turnsUsed = i + 1;
+    const compacted = compactToolHistory(messages);
+    if (compacted) console.log(`[PLANNER] [CONTEXT] compacted ${compacted} older tool result(s) before turn ${i + 1}`);
+
     let response;
     try {
       response = await runStructuredLLMCall(() => modelWithTools.invoke(messages));
     } catch (err) {
       console.warn(`[PLANNER][${clusterNames.join(',')}] loop call failed (iteration ${i + 1}): ${err.message}`);
-      // DIAGNOSTIC — distinguishes this from the "exhausted all iterations" case below,
-      // which falls through to the same `return null` otherwise.
       diagnostics.stopReason = err.name === 'CircuitOpenError' ? 'llm_circuit_open' : 'llm_error';
       diagnostics.lastError  = err.message;
       break;
     }
     messages.push(response);
+    const usage = tokenStore.usageFrom(response);
+    tokenStore.record('planner', usage);
+    if (usage) console.log(`[PLANNER] [TOKENS] turn ${i + 1}: input=${usage.prompt_tokens} (cached=${usage.cached_tokens}) output=${usage.completion_tokens}`);
 
     const toolCalls = response.tool_calls ?? [];
     if (toolCalls.length === 0) {
@@ -487,24 +421,12 @@ async function _runPlanningLoop({ issues, rca, clusterConfigs, previousAttemptFa
       continue;
     }
 
-    // §7.1 — same reasoning as investigator.js: run every tool call from one LLM turn
-    // concurrently (e.g. dry-running two independent steps at once) rather than one at a
-    // time. Still one LLM call per turn — only the tool execution overlaps.
     let submission = null;
     const dryRunTool = _buildDryRunTool(clusterConfigs);
     const toolMessages = [];
     await Promise.all(toolCalls.map(async call => {
       if (call.name === SUBMIT_TOOL_NAME) { submission = call; return; }
 
-      // §Fix-PlannerToolCrash (2026-09-11) — dry_run_step's `.invoke()` validates
-      // call.args against its zod schema (including the clusterName enum) BEFORE
-      // entering the function body; a failure there throws synchronously, uncaught,
-      // straight out of this Promise.all and past _runPlanningLoop entirely, landing in
-      // Planner.plan()'s outer catch — which discards every iteration already spent and
-      // falls back to a noop plan. Confirmed live (noop-repro, 2026-09-11): crashloop-dep
-      // and exit127-dep both lost their first attempt this way. Mirrors the recovery
-      // pattern already used for a bad submit_plan below — catch, tell the model what was
-      // wrong via a normal ToolMessage, let the loop continue instead of aborting.
       if (call.name === 'dry_run_step') {
         try {
           const result = await dryRunTool.invoke(call.args);
@@ -540,17 +462,9 @@ async function _runPlanningLoop({ issues, rca, clusterConfigs, previousAttemptFa
       const steps = submission.args.steps.map(s => PlanStepSchema.parse(s));
       const plan  = PlanSchema.parse({ steps, nonReversible: steps.some(s => !s.reversible) });
       console.log(`[PLANNER][${clusterNames.join(',')}] plan accepted — ${plan.steps.length} step(s): ${plan.steps.map(s => s.action).join(' → ')}`);
-      // DIAGNOSTIC — a normal, deliberate completion (the model itself decided this
-      // plan, including any step with an intentionally empty command — see the
-      // SYSTEM_PROMPT's "leave command EMPTY" instruction).
       diagnostics.stopReason = 'submitted';
-      // Measurement (Phase 1) — additive, non-schema field; PlanSchema.parse() calls
-      // elsewhere (graph.js's policyNode builds its own fresh plan object) never see or
-      // round-trip this, so it can't leak into anything re-validated against PlanSchema.
       return { ...plan, _meta: { turnsUsed, toolCallLog, diagnostics } };
     } catch (err) {
-      // DIAGNOSTIC — doesn't stop the loop (existing `continue` is unchanged), just
-      // records the last schema failure in case the loop never recovers from it.
       diagnostics.lastSchemaError = err.message;
       messages.push(new ToolMessage({ content: `ERROR: plan did not match the required schema: ${err.message}`, tool_call_id: submission.id }));
       continue;
@@ -558,44 +472,25 @@ async function _runPlanningLoop({ issues, rca, clusterConfigs, previousAttemptFa
   }
 
   console.warn(`[PLANNER][${clusterNames.join(',')}] hit the ${MAX_TOOL_ITERATIONS}-iteration safety cap without a valid submission`);
-  // DIAGNOSTIC — only set if an earlier branch (llm_error/llm_circuit_open above) hasn't
-  // already claimed this run; that break() falls through to this exact same line, so
-  // without this guard a real llm_error would get mislabeled as max_iterations.
   diagnostics.stopReason = diagnostics.stopReason ?? 'max_iterations';
   return null;
 }
 
 class Planner {
-  // `previousAttemptFailure` (§Fix-RetryContext, 2026-09-14, optional) — a plain string
-  // describing what the last attempt for this exact issue tried and why it didn't work
-  // (graph.js's plannerNode passes WorkflowState.lastAttemptFailure straight through).
-  // Folded into the LLM payload so a retry can adjust instead of re-deriving the same
-  // guess blind — see _runPlanningLoop.
-  //
-  // §Fix-PlannerConfidenceGateABTest (Phase 5, 2026-09-18) — `opts.forceCall` (default
-  // false) exists ONLY for scripts/ab-test-planner-confidence-gate.js's comparison
-  // harness: it bypasses the low-confidence gate below so arm B ("always call the
-  // Planner") can be measured against arm A (this method's normal, unchanged default
-  // behavior) on the same fixtures. graph.js's plannerNode never passes this — the
-  // production gate stays exactly as it was, unless/until real comparative evidence
-  // from that harness justifies changing the DEFAULT (see the architecture review's
-  // Phase 5 section: your own benchmark data already shows a false-positive-action
-  // failure mode this gate exists to prevent, so the default is not changed here).
+  // Plan the fix for a group of issues
   async plan(issues, rca, clusterConfigs, previousAttemptFailure = null, opts = {}) {
     const confidence = rca?.confidence ?? 0;
-    // DIAGNOSTIC — see _runPlanningLoop's own comment; passed through and attached to
-    // whichever plan object actually gets returned below, regardless of which branch.
     const diagnostics = {};
     if (_isConfidenceTooLowToPlan(confidence) && !opts.forceCall) {
       console.warn(`[PLANNER] investigation confidence ${confidence} below ${LOW_CONFIDENCE_THRESHOLD} — skipping planning, no automated fix without a real diagnosis`);
-      diagnostics.stopReason = 'low_confidence'; // DIAGNOSTIC
+      diagnostics.stopReason = 'low_confidence';
       const plan = _lowConfidencePlan(issues, confidence);
       return { ...plan, _meta: { turnsUsed: 0, toolCallLog: [], diagnostics } };
     }
     const plan = await _runPlanningLoop({ issues, rca, clusterConfigs, previousAttemptFailure }, diagnostics).catch(err => {
       console.warn(`[PLANNER] planning failed: ${err.message}`);
-      diagnostics.stopReason = 'planning_exception'; // DIAGNOSTIC
-      diagnostics.lastError  = err.message;           // DIAGNOSTIC
+      diagnostics.stopReason = 'planning_exception';
+      diagnostics.lastError  = err.message;
       return null;
     });
     if (plan) return { ...plan, _meta: { ...plan._meta, diagnostics } };
@@ -604,12 +499,9 @@ class Planner {
 }
 
 module.exports = new Planner();
-// Exported for unit testing §Fix-PlannerConfidenceGate in isolation, without needing a
-// live LLM call — same pattern as investigator.js's _isReadOnlyCommand export.
 module.exports._lowConfidencePlan = _lowConfidencePlan;
 module.exports._isConfidenceTooLowToPlan = _isConfidenceTooLowToPlan;
-// Exported for unit testing §Fix-CapacityEvidence's resource-quantity parsing in
-// isolation — pure functions, no LLM/kubectl call needed to exercise them.
+module.exports._slimInvestigation = _slimInvestigation;
 module.exports._cpuToMillicores = _cpuToMillicores;
 module.exports._memToMi = _memToMi;
 module.exports.LOW_CONFIDENCE_THRESHOLD = LOW_CONFIDENCE_THRESHOLD;

@@ -22,9 +22,6 @@ class UserService {
     } catch (err) {
       console.warn('[UserService] Welcome email failed:', err.message);
     }
-    // Backfill any RBAC grants the live K8s watch saw for this email before the
-    // account existed (see rbacWatcher's unmatched backlog) — so an admin who was
-    // told "add this user" doesn't also have to remember to click Sync from K8s.
     try {
       const rbacSync = require('./rbacSync');
       await rbacSync.applyBacklogToNewUser(u);

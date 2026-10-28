@@ -20,9 +20,6 @@ export default function NetworkPage() {
   const { findings, loading, error, busyId, reload, accept, rescan, escalate } =
     useSecurityFindings(selected, 'NetworkExposure')
 
-  // useMonitoredClusters() resolves `selected` to the cluster's friendly name
-  // (what /api/security/findings expects), but /api/network/apply needs the
-  // underlying kubectl context — recover it from the same list.
   const context = useMemo(
     () => clusters.find(c => (c.config?.name ?? c.name) === selected)?.name ?? selected,
     [clusters, selected]

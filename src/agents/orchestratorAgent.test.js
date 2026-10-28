@@ -1,8 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 
-// orchestratorAgent.js pulls in ../config (OPENAI_API_KEY/OPENAI_MODEL/
-// NOTIFICATION_SECRET) transitively — same pattern as graph.test.js/shortMemory.test.js:
-// set required env vars before the module graph loads, via a dynamic (non-hoisted) import.
 process.env.OPENAI_API_KEY      ??= 'test-only-key';
 process.env.OPENAI_MODEL        ??= 'test-model';
 process.env.NOTIFICATION_SECRET ??= 'test-only-secret-not-a-real-value-0123456789';
@@ -25,11 +22,6 @@ describe('_dispatchKey', () => {
     expect(a).not.toBe(b);
   });
 
-  // §Fix-CorrelationGrouping (2026-09-04) — an incident with no correlationTag (the
-  // common case) no longer groups by namespace alone; it dispatches on its own, keyed by
-  // its own identity. Namespace name is too coarse a proxy for "actually related" (found
-  // live: kube-system's 8+ unrelated components all bundled into one 16-incident
-  // investigation that never converged).
   it('dispatches an uncorrelated pod-scoped incident on its own, keyed by its own identity', () => {
     const key = OrchestratorAgent._dispatchKey({ scope: 'pod', clusterName: 'prod-eks', namespace: 'payments', podName: 'api-1' });
     expect(key).toBe('solo:prod-eks/payments/api-1');
@@ -46,11 +38,6 @@ describe('_dispatchKey', () => {
     expect(a).not.toBe(b);
   });
 
-  // The mechanism this REPLACES blind namespace-merging with: only incidents the
-  // classifier explicitly tied together via a shared correlationTag dispatch together —
-  // this is what preserves the real cross-cluster correlation case ("same bad image
-  // rolled out to cluster A and cluster B") on purpose, without also bundling every
-  // unrelated same-namespace incident.
   it('groups incidents sharing the SAME correlationTag under the SAME key, even across different clusters', () => {
     const a = OrchestratorAgent._dispatchKey({ scope: 'pod', clusterName: 'cluster-a', namespace: 'payments', podName: 'api-1', correlationTag: 'shared-image-rollout-v2.3' });
     const b = OrchestratorAgent._dispatchKey({ scope: 'pod', clusterName: 'cluster-b', namespace: 'payments', podName: 'api-1', correlationTag: 'shared-image-rollout-v2.3' });
@@ -63,10 +50,6 @@ describe('_dispatchKey', () => {
     expect(a).not.toBe(b);
   });
 
-  // Regression test: found in review 2026-08-26 — scope:"cluster" incidents have no
-  // namespace field at all (see ClusterIncidentSchema), so before this fix they fell
-  // through to the pod branch's `ns:default` fallback and got merged with genuinely
-  // unrelated default-namespace pod incidents from ANY cluster.
   it('keeps a cluster-scoped incident out of the "ns:default" bucket, scoped per cluster', () => {
     const key = OrchestratorAgent._dispatchKey({ scope: 'cluster', clusterName: 'cluster-a', type: 'HPAFailure' });
     expect(key).toBe('cluster:cluster-a');
@@ -79,11 +62,6 @@ describe('_dispatchKey', () => {
     expect(a).not.toBe(b);
   });
 
-  // §Fix-ClusterKeyFragmentation (2026-09-04) — `type` is freeform LLM text, not a
-  // stable identifier: the same recurring cluster-wide problem was regularly getting a
-  // DIFFERENT dispatch key almost every cycle (control_plane_unhealthy vs
-  // control_plane_degraded vs apiserver_failure, etc.), so cooldown/dedup never caught
-  // it and the queue kept accumulating near-duplicate entries for one real issue.
   it('groups DIFFERENT types on the SAME cluster under the SAME key — the fix for type-wording fragmentation', () => {
     const a = OrchestratorAgent._dispatchKey({ scope: 'cluster', clusterName: 'cluster-a', type: 'control_plane_unhealthy' });
     const b = OrchestratorAgent._dispatchKey({ scope: 'cluster', clusterName: 'cluster-a', type: 'control_plane_degraded' });
@@ -120,14 +98,56 @@ describe('_findClusterMismatches', () => {
   it('falls back to matching a deployment-owned pod when podName is absent', () => {
     const incidents = [{ scope: 'pod', namespace: 'payments', deployment: 'api', clusterName: 'cluster-b' }];
     const problems = OrchestratorAgent._findClusterMismatches(incidents, signals);
-    // ambiguous by deployment alone (two clusters both own "api") — first match wins,
-    // so this only asserts it doesn't crash and returns a well-formed result.
     expect(Array.isArray(problems)).toBe(true);
   });
 
   it('leaves scope "cluster" incidents alone — no ground truth to check them against', () => {
     const incidents = [{ scope: 'cluster', clusterName: 'cluster-b', evidenceSummary: 'HPA controller down' }];
     expect(OrchestratorAgent._findClusterMismatches(incidents, signals)).toEqual([]);
+  });
+});
+
+describe('_findMisscopedNodeIncidents (§Fix-MisscopedNodeIncident)', () => {
+  const healthyNode = { name: 'minikube', clusterName: 'minikube', unschedulable: false, conditions: [{ type: 'Ready', status: 'True' }] };
+  const crashPod = (name, restartCount, nodeName = 'minikube') => ({
+    name, namespace: 'default', nodeName, clusterName: 'minikube', containers: [{ name: 'app', restartCount }],
+  });
+  const podShapedNodeIncident = { scope: 'node', type: 'pod', nodeName: 'minikube', clusterName: 'minikube', restartCount: 85, exitCode: 255, evidenceSummary: 'a pod is crashing with 85 restarts' };
+
+  it('drops it when the node is healthy and no unhealthy pod is on it (the live 85-restarts case)', () => {
+    const signals = { nodes: [healthyNode], pods: [] };
+    expect(OrchestratorAgent._findMisscopedNodeIncidents([podShapedNodeIncident], signals)).toEqual([{ index: 0, drop: true }]);
+  });
+
+  it('re-scopes to the pod named in evidenceSummary', () => {
+    const signals = { nodes: [healthyNode], pods: [crashPod('worker-abc', 3), crashPod('api-xyz', 85)] };
+    const incident = { ...podShapedNodeIncident, evidenceSummary: 'api-xyz keeps crashing (exit 255)' };
+    expect(OrchestratorAgent._findMisscopedNodeIncidents([incident], signals)).toEqual([{ index: 0, podName: 'api-xyz', namespace: 'default' }]);
+  });
+
+  it('re-scopes to the single pod on that node whose restartCount matches', () => {
+    const signals = { nodes: [healthyNode], pods: [crashPod('worker-abc', 3), crashPod('api-xyz', 85)] };
+    expect(OrchestratorAgent._findMisscopedNodeIncidents([podShapedNodeIncident], signals)).toEqual([{ index: 0, podName: 'api-xyz', namespace: 'default' }]);
+  });
+
+  it('leaves it alone when several pods could match and nothing tells them apart', () => {
+    const signals = { nodes: [healthyNode], pods: [crashPod('a-1', 2), crashPod('b-1', 4)] };
+    expect(OrchestratorAgent._findMisscopedNodeIncidents([podShapedNodeIncident], signals)).toEqual([]);
+  });
+
+  it('leaves a real node problem alone even if it carries pod-style evidence', () => {
+    const pressured = { ...healthyNode, conditions: [{ type: 'Ready', status: 'True' }, { type: 'MemoryPressure', status: 'True' }] };
+    expect(OrchestratorAgent._findMisscopedNodeIncidents([podShapedNodeIncident], { nodes: [pressured], pods: [] })).toEqual([]);
+  });
+
+  it('leaves a node incident with no pod-shaped evidence alone', () => {
+    const incident = { scope: 'node', type: 'KubeletCertificateExpiring', nodeName: 'minikube', clusterName: 'minikube', evidenceSummary: 'cert expires in 2d' };
+    expect(OrchestratorAgent._findMisscopedNodeIncidents([incident], { nodes: [healthyNode], pods: [] })).toEqual([]);
+  });
+
+  it('only considers pods on the same node and cluster', () => {
+    const signals = { nodes: [healthyNode], pods: [crashPod('api-xyz', 85, 'other-node')] };
+    expect(OrchestratorAgent._findMisscopedNodeIncidents([podShapedNodeIncident], signals)).toEqual([{ index: 0, drop: true }]);
   });
 });
 
@@ -139,10 +159,6 @@ describe('_findMissingDeployments (§Fix-DeploymentBackfill)', () => {
     ],
   };
 
-  // Regression test — found live 2026-09-04: the classifier satisfied PodIncidentSchema's
-  // "podName OR deployment" requirement with podName alone, so the SAME Deployment ended
-  // up tracked under five different resource identities (one per pod recreation) because
-  // issueKey/resource fall back to podName whenever deployment is null.
   it('backfills deployment from a ReplicaSet-owned pod, stripping the pod-template-hash suffix', () => {
     const incidents = [{ scope: 'pod', namespace: 'kubepilot-bench', podName: 'p2-oom-8fdcc66f6-rw59m', clusterName: 'minikube', deployment: null }];
     const fixes = OrchestratorAgent._findMissingDeployments(incidents, signals);
@@ -337,8 +353,8 @@ describe('_summarizeNodes', () => {
       status: {
         conditions: [
           { type: 'Ready',          status: 'True'  },
-          { type: 'DiskPressure',   status: 'False' }, // healthy — dropped
-          { type: 'MemoryPressure', status: 'True'  }, // abnormal — kept
+          { type: 'DiskPressure',   status: 'False' },
+          { type: 'MemoryPressure', status: 'True'  },
         ],
       },
     };

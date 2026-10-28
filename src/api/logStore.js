@@ -1,6 +1,3 @@
-// Patches console.* and keeps a 1000-entry ring buffer.
-// Must be required before any other module in index.js.
-
 const MAX = 1000;
 const logs = [];
 let seq = 0;

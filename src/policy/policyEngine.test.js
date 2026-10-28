@@ -111,14 +111,7 @@ describe('PolicyEngine.sanitizeCommand', () => {
     'kubectl --context=minikube rollout history deployment/mydep -n default',
     'kubectl --context=minikube get deployment/mydep -n default -o jsonpath={.spec.template.spec.containers[0].resources.limits.memory}',
     'kubectl --context=minikube get events -n default --field-selector involvedObject.name=mypod',
-    // Regression (§Fix-SanitizerFalsePositive, 2026-09-14 live failure): a correctly
-    // formed JSON-patch removing a bad nodeSelector — the real fix for c2-badnodeselector
-    // — was rejected by the old raw-string blacklist because its quoted payload
-    // contained '"[]{}:' characters. kubectl.js's execFile never hands this to a shell,
-    // so everything inside the matched quotes is inert regardless of content.
     `kubectl --context=cluster2 patch deployment c2-badnodeselector -n demo10-c2 --type='json' -p='[{"op": "remove", "path": "/spec/template/spec/nodeSelector"}]'`,
-    // A simple quoted value with no unquoted metacharacters anywhere — also previously
-    // a false positive under the old raw "no quotes at all" rule.
     'kubectl --context=minikube logs "x" -n default',
   ])('allows legitimate command: %s', cmd => {
     const r = pe.sanitizeCommand(cmd);
@@ -132,11 +125,7 @@ describe('PolicyEngine.sanitizeCommand', () => {
     ['pipe to a shell',          'kubectl --context=minikube get pods -n default | sh'],
     ['newline injection',        'kubectl --context=minikube get pods -n default\nrm -rf /'],
     ['missing namespace on a write', 'kubectl --context=minikube scale deployment/x --replicas=3'],
-    // Metacharacter hidden OUTSIDE the quoted segment — must still be caught even
-    // though the command also contains a legitimate quoted value.
     ['unquoted metachar alongside a legit quoted value', `kubectl --context=minikube logs "x" -n default; rm -rf /`],
-    // An unterminated quote could otherwise hide everything after it from the
-    // unquoted-metachar scan — must be rejected outright, not silently swallowed.
     ['unterminated quote hiding a chained command', `kubectl --context=minikube logs x' ; rm -rf / -n default`],
   ])('blocks: %s', (_label, cmd) => {
     const r = pe.sanitizeCommand(cmd);
@@ -150,18 +139,11 @@ describe('PolicyEngine.sanitizeCommand', () => {
   });
 
   it('rejects an invalid resource name embedded after a type/ prefix', () => {
-    // A trailing hyphen fails the k8s name pattern (must end alphanumeric).
     const r = pe.sanitizeCommand('kubectl --context=minikube rollout restart deployment/my-deploy- -n default');
     expect(r.safe).toBe(false);
   });
 });
 
-// §Fix-DryRunDefault (2026-09-18) — a prior uncommitted edit hardcoded dryRunMode to
-// `false` (real execution) while its own comment/log claimed the opposite. These tests
-// pin the corrected default and both override paths so this can't silently regress
-// again without a test failing. Each test constructs its OWN PolicyEngine — the
-// module-level `pe` above is constructed at import time with no override and would not
-// observe an env var set later in a test.
 describe('PolicyEngine — dryRunMode default and overrides (§Fix-DryRunDefault)', () => {
   const ENV_KEY = 'ALLOW_LIVE_KUBECTL_EXECUTION';
   const originalEnv = process.env[ENV_KEY];
@@ -195,20 +177,11 @@ describe('PolicyEngine — dryRunMode default and overrides (§Fix-DryRunDefault
   });
 
   it('every real call site (new PolicyEngine() with no arguments) is safe by default', () => {
-    // Documents the actual invariant this whole fix exists for: graph.js, executor.js,
-    // clusterAgent.js, and investigator.js all call `new PolicyEngine()` with zero
-    // arguments — none of them should ever end up live-executing by accident.
     delete process.env[ENV_KEY];
     expect(new PolicyEngine().dryRunMode).toBe(true);
   });
 });
 
-// §Fix-RiskEngineRetirement (2026-09-18) — graph.js no longer runs an approved v5
-// command through RiskEngine.calculateRisk() as a second, independent risk score; the
-// one case that formula was ever actually load-bearing for (a node drain Guardian did
-// not classify RISKY/DANGEROUS and the Planner marked reversible) is now this explicit,
-// named floor instead. These tests pin evaluateRiskOverridesForCommand's floors so the
-// retirement can't silently regress into "nothing floors a drain's risk anymore".
 describe('PolicyEngine.evaluateRiskOverridesForCommand — floors (§Fix-RiskEngineRetirement)', () => {
   function step(overrides = {}) {
     return { command: 'cordon node-1', risk: 'low', reversible: true, target: { kind: 'Node', name: 'node-1' }, ...overrides };

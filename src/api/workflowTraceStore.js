@@ -1,10 +1,3 @@
-// Workflow trace store — persists one WorkflowTracer.toDocument() per runWorkflow()
-// invocation for observability/comparison (current graph vs old workflow), never read
-// back to make a remediation decision. Same conventions as issueTrackerStore.js: no
-// in-memory "active" map (nothing needs it mid-run), writes are fire-and-forget from
-// the caller's perspective and never throw — a slow/unavailable DB must not affect the
-// remediation loop.
-
 'use strict';
 
 const { WorkflowTrace } = require('../db/models');

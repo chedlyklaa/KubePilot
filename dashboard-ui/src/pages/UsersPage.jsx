@@ -16,13 +16,13 @@ export default function UsersPage() {
   const [loading, setLoading]     = useState(true)
   const [showForm, setShowForm]   = useState(false)
   const [editing, setEditing]     = useState(null)
-  const [viewUser, setViewUser]   = useState(null)   // userId being viewed in profile modal
+  const [viewUser, setViewUser]   = useState(null)
   const [form, setForm]           = useState({ name: '', email: '', password: '', role: 'developer' })
   const [formErr, setFormErr]     = useState('')
   const [clusters, setClusters]   = useState([])
   const [issueCert, setIssueCert] = useState(false)
   const [certContext, setCertContext] = useState('')
-  const [confirmDelete, setConfirmDelete] = useState(null) // user pending delete confirmation
+  const [confirmDelete, setConfirmDelete] = useState(null)
 
   const load = () => apiFetch('/api/users').then(r => r.json()).then(d => { setUsers(d); setLoading(false) })
   useEffect(() => { load() }, [])
@@ -32,9 +32,6 @@ export default function UsersPage() {
       .catch(() => {})
   }, [])
 
-  // Handoff from RbacSyncPage's "new users detected" panel — open straight into the
-  // create form with the email already filled in. Clear the state afterward so
-  // navigating back here later (or refreshing) doesn't keep reopening it.
   useEffect(() => {
     const prefillEmail = location.state?.prefillEmail
     if (!prefillEmail) return
@@ -47,8 +44,6 @@ export default function UsersPage() {
 
   function openCreate() {
     setEditing(null); setForm({ name: '', email: '', password: '', role: 'developer' }); setFormErr('')
-    // Default to whichever cluster is currently active in kubectl, not just the first
-    // one in the list — falls back to the first monitored cluster if none is current.
     const current = clusters.find(c => c.isCurrent)
     setIssueCert(false); setCertContext((current ?? clusters[0])?.name ?? '')
     setShowForm(true)

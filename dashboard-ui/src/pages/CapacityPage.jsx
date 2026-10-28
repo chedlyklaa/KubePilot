@@ -193,7 +193,6 @@ export default function CapacityPage() {
           })
         }
       }))
-      // Add the current live point from kubectl top
       const now = Date.now()
       for (const n of nodesArr) {
         if (n.cpuPct != null || n.memPct != null) {
@@ -254,7 +253,6 @@ export default function CapacityPage() {
   const nodes = data?.nodes ?? []
   const pods = data?.pods ?? []
 
-  // Pod filtering
   const filteredPods = useMemo(() => {
     let list = pods
     if (podFilter === 'running')  list = list.filter(p => p.phase === 'Running' && p.isReady)
@@ -267,7 +265,6 @@ export default function CapacityPage() {
     return list
   }, [pods, podFilter, podSearch])
 
-  // Forecast items
   const forecastItems = useMemo(() => {
     if (!data?.forecast) return []
     const all = []
@@ -282,7 +279,6 @@ export default function CapacityPage() {
 
   return (
     <div className="cp-page">
-      {/* ── Header ──────────────────────────────────────────────────── */}
       <div className="page-header">
         <div>
           <h2>Capacity</h2>
@@ -305,7 +301,6 @@ export default function CapacityPage() {
       {!data && !loading && <div className="cp-empty">Select a cluster to view capacity data</div>}
 
       {data && (<>
-        {/* ── Summary cards ──────────────────────────────────────────── */}
         <div className="cp-summary">
           <div className="cp-card cp-card-accent">
             <div className="cp-card-value">{s.totalPods}</div>
@@ -329,7 +324,6 @@ export default function CapacityPage() {
           </div>
         </div>
 
-        {/* ── Nodes ─────────────────────────────────────────────────── */}
         <div className="cp-section">
           <h3 className="cp-section-title">Nodes</h3>
           <div className="cp-nodes-grid">
@@ -360,7 +354,6 @@ export default function CapacityPage() {
           </div>
         </div>
 
-        {/* ── Usage Charts ──────────────────────────────────────────── */}
         <div className="cp-section">
           <div className="cp-section-header">
             <h3 className="cp-section-title">Resource Usage Over Time</h3>
@@ -392,7 +385,6 @@ export default function CapacityPage() {
               </div>
             : (
               <div className="cp-charts-grid">
-                {/* CPU Chart */}
                 <div className="cp-chart-card">
                   <div className="cp-chart-title">CPU Usage (%)</div>
                   <ResponsiveContainer width="100%" height={260}>
@@ -441,7 +433,6 @@ export default function CapacityPage() {
                   </ResponsiveContainer>
                 </div>
 
-                {/* Memory Chart */}
                 <div className="cp-chart-card">
                   <div className="cp-chart-title">Memory Usage (%)</div>
                   <ResponsiveContainer width="100%" height={260}>
@@ -494,7 +485,6 @@ export default function CapacityPage() {
           }
         </div>
 
-        {/* ── Pods ──────────────────────────────────────────────────── */}
         <div className="cp-section">
           <div className="cp-section-header">
             <h3 className="cp-section-title">Pods ({filteredPods.length})</h3>
@@ -539,7 +529,6 @@ export default function CapacityPage() {
           }
         </div>
 
-        {/* ── Forecast alerts ───────────────────────────────────────── */}
         <div className="cp-section">
           <div className="cp-section-header">
             <h3 className="cp-section-title">Forecast & Projections</h3>
@@ -598,12 +587,10 @@ export default function CapacityPage() {
           }
         </div>
 
-        {/* ── Azure Cost Breakdown ──────────────────────────────────── */}
         <div className="cp-section">
           <h3 className="cp-section-title">Azure Cost Estimation</h3>
           <p className="cp-section-sub">Compute, storage, load balancers & network egress — estimated monthly cost on AKS</p>
 
-          {/* ── Total cost banner ────────────────────────────────────── */}
           {s.totalMonthly != null && (
             <div className="cp-total-banner">
               <div className="cp-total-banner-label">Estimated Total Monthly Cost</div>
@@ -620,7 +607,6 @@ export default function CapacityPage() {
             </div>
           )}
 
-          {/* ── Compute cost cards ──────────────────────────────────── */}
           <div className="cp-cost-subtitle">Compute</div>
           <div className="cp-cost-cards">
             <div className="cp-cost-box">
@@ -659,7 +645,6 @@ export default function CapacityPage() {
             </div>
           )}
 
-          {/* ── Disk cost ───────────────────────────────────────────── */}
           <div className="cp-cost-subtitle" style={{ marginTop: 20 }}>Persistent Storage</div>
           <div className="cp-cost-cards">
             <div className="cp-cost-box" style={{ borderLeftColor: '#8b5cf6' }}>
@@ -693,7 +678,6 @@ export default function CapacityPage() {
             </div>
           )}
 
-          {/* ── Load Balancer cost ──────────────────────────────────── */}
           <div className="cp-cost-subtitle" style={{ marginTop: 20 }}>Load Balancers</div>
           <div className="cp-cost-cards">
             <div className="cp-cost-box" style={{ borderLeftColor: '#f59e0b' }}>
@@ -724,7 +708,6 @@ export default function CapacityPage() {
             </div>
           )}
 
-          {/* ── Network Egress cost ─────────────────────────────────── */}
           <div className="cp-cost-subtitle" style={{ marginTop: 20 }}>Network Egress</div>
           <div className="cp-cost-cards">
             <div className="cp-cost-box" style={{ borderLeftColor: '#06b6d4' }}>

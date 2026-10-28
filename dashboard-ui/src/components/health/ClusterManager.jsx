@@ -10,7 +10,7 @@ export default function ClusterManager({ onClose, onSaved }) {
   const [saving,     setSaving]     = useState(false)
   const [error,      setError]      = useState(null)
   const [showUpload, setShowUpload] = useState(false)
-  const [pendingDelete, setPendingDelete] = useState(null) // ctx awaiting delete confirmation
+  const [pendingDelete, setPendingDelete] = useState(null)
   const [deleting,      setDeleting]      = useState(false)
 
   function reload() {

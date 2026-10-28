@@ -1,15 +1,4 @@
 'use strict';
-// Plain Node script, not a Vitest test — this repo's Vitest can't reliably mock nested
-// require() calls between plain CJS files (see project memory / graph.js's test
-// history), so LLM-adjacent control-flow like this is verified here instead: monkey-
-// patch the module(s) under test's dependencies BEFORE requiring anything, relying on
-// the shared CommonJS require() cache. Same pattern as scripts/test-investigator-rings.js.
-//
-// Scope: fastPathNode's own wiring (graph.js) — issueTrackerStore/shortMemory calls,
-// state shape returned, routing outcome — driven with a monkey-patched
-// fastPath.diagnose() so no real LLM/kubectl call happens. fastPath.js's own internal
-// logic (profile selection, the InvestigationReportSchema adapter) is covered
-// separately by its exported pure helpers (_selectProfile/_toInvestigationReport).
 
 process.env.OPENAI_API_KEY      ??= 'test-only-key';
 process.env.OPENAI_MODEL        ??= 'test-model';

@@ -7,18 +7,15 @@ function nsLabel(ns) {
   return ns === '*' ? 'cluster-wide' : ns
 }
 
-// Fleet-wide counterpart to the per-cluster sync button that used to live on RbacPage:
-// the watch (rbacWatcher.js) runs for every monitored cluster at once in the background,
-// so reviewing/applying what it's found belongs on one page that covers all of them,
-// not gated behind whichever single cluster happens to be selected in a dropdown.
+// RBAC sync page
 export default function RbacSyncPage() {
   const navigate = useNavigate()
   const notify   = useNotify()
 
-  const [pendingByCluster, setPendingByCluster] = useState([]) // [{ cluster, context, pending: [...] }]
-  const [advisories,       setAdvisories]        = useState([]) // [{ cluster, context, bindingKind, ..., k8sUsers, dbUsers }]
-  const [unmatchedUsers,   setUnmatchedUsers]    = useState([]) // [{ email, scopes: [{ cluster, namespace, role, bindingName, timestamp }] }]
-  const [lastResults,      setLastResults]       = useState(null) // [{ cluster, context, updated, deleted, unmatched, deletedUnmatched } | { cluster, context, error }]
+  const [pendingByCluster, setPendingByCluster] = useState([])
+  const [advisories,       setAdvisories]        = useState([])
+  const [unmatchedUsers,   setUnmatchedUsers]    = useState([])
+  const [lastResults,      setLastResults]       = useState(null)
   const [syncBusy,         setSyncBusy]          = useState(false)
 
   const loadPending = useCallback(async () => {
@@ -26,7 +23,7 @@ export default function RbacSyncPage() {
       const r = await apiFetch('/api/rbac/pending-changes')
       const d = await r.json()
       setPendingByCluster(Array.isArray(d.clusters) ? d.clusters : [])
-    } catch { /* leave the last known list rather than clearing it on a transient error */ }
+    } catch { }
   }, [])
 
   const loadAdvisories = useCallback(async () => {
@@ -34,7 +31,7 @@ export default function RbacSyncPage() {
       const r = await apiFetch('/api/rbac/multi-subject-advisories')
       const d = await r.json()
       setAdvisories(Array.isArray(d.advisories) ? d.advisories : [])
-    } catch { /* leave the last known list rather than clearing it on a transient error */ }
+    } catch { }
   }, [])
 
   const loadUnmatchedUsers = useCallback(async () => {
@@ -42,7 +39,7 @@ export default function RbacSyncPage() {
       const r = await apiFetch('/api/rbac/unmatched-users')
       const d = await r.json()
       setUnmatchedUsers(Array.isArray(d.users) ? d.users : [])
-    } catch { /* leave the last known list rather than clearing it on a transient error */ }
+    } catch { }
   }, [])
 
   useEffect(() => { loadPending(); loadAdvisories(); loadUnmatchedUsers() }, [loadPending, loadAdvisories, loadUnmatchedUsers])
@@ -104,7 +101,6 @@ export default function RbacSyncPage() {
         </div>
       </div>
 
-      {/* ── Pending changes, grouped by cluster ── */}
       <div className="rbac-sync-panel">
         <div className="rbac-sync-panel-section">
           <div className="rbac-sync-panel-title">
@@ -131,7 +127,6 @@ export default function RbacSyncPage() {
         </div>
       </div>
 
-      {/* ── New users detected on K8s with no matching KubePilot account ── */}
       <div className="rbac-sync-panel">
         <div className="rbac-sync-panel-section">
           <div className="rbac-sync-panel-title">
@@ -165,7 +160,6 @@ export default function RbacSyncPage() {
         </div>
       </div>
 
-      {/* ── Last sync result, grouped by cluster ── */}
       {lastResults && (
         <div className="rbac-sync-panel">
           <div className="rbac-sync-panel-section">
@@ -236,7 +230,6 @@ export default function RbacSyncPage() {
         </div>
       )}
 
-      {/* ── Needs Review — multi-subject bindings, grouped by cluster ── */}
       <div className="rbac-sync-panel">
       <div className="rbac-sync-panel-section">
         <div className="rbac-sync-panel-title">

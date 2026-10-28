@@ -1,7 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
-// ── Audit Event (queryable audit trail alongside JSONL file) ─────────────────
 const AuditEventSchema = new Schema({
   timestamp: { type: String, required: true },
   cluster:   { type: String, default: 'unknown' },
@@ -14,8 +13,6 @@ const AuditEventSchema = new Schema({
   metadata:  Schema.Types.Mixed,
 }, { timestamps: true });
 
-// ── RBAC Audit Log ────────────────────────────────────────────────────────────
-// One document per successful apply or delete via the RBAC management UI.
 const RbacAuditLogSchema = new Schema({
   userId:    { type: String, required: true },
   userEmail: { type: String, required: true },
@@ -24,12 +21,10 @@ const RbacAuditLogSchema = new Schema({
   name:      String,
   namespace: String,
   context:   { type: String, required: true },
-  yaml:      String,   // populated for apply only
+  yaml:      String,
   timestamp: { type: Date, default: Date.now },
 }, { timestamps: true });
 
-// ── Network Audit Log ─────────────────────────────────────────────────────────
-// One document per successful apply or delete via the Network management UI.
 const NetworkAuditLogSchema = new Schema({
   userId:    { type: String, required: true },
   userEmail: { type: String, required: true },

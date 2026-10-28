@@ -1,25 +1,18 @@
 'use strict';
 
-// Turns the existing manual "Sync from K8s" button (POST /api/rbac/sync-from-k8s,
-// see rbacSync.syncFromK8s) into a periodic background check. Without this, KubePilot's
-// stored User.permissions only reflects reality up to whenever an admin last remembered
-// to click that button — anyone editing RoleBindings directly on the cluster (kubectl,
-// another tool) causes silent drift in the meantime. Opt-in: mutates permission data,
-// so it shouldn't change behavior for anyone who hasn't explicitly enabled it.
-
 let _rbacSync     = null;
 let _RbacAuditLog = null;
 let _notifEngine  = null;
 
 function _initModels() {
   if (_rbacSync) return;
-  try { _rbacSync = require('../services/rbacSync'); } catch { /* not available */ }
-  try { ({ RbacAuditLog: _RbacAuditLog } = require('../db/models')); } catch { /* MongoDB unavailable */ }
+  try { _rbacSync = require('../services/rbacSync'); } catch { }
+  try { ({ RbacAuditLog: _RbacAuditLog } = require('../db/models')); } catch { }
 }
 
 function _getNotifEngine() {
   if (!_notifEngine) {
-    try { _notifEngine = require('../services/notifications/engine'); } catch { /* not available */ }
+    try { _notifEngine = require('../services/notifications/engine'); } catch { }
   }
   return _notifEngine;
 }
@@ -28,23 +21,24 @@ const DRIFT_INTERVAL_CYCLES = parseInt(process.env.RBAC_DRIFT_INTERVAL_CYCLES ??
 
 class RbacDriftEngine {
   constructor() {
-    this._cycleCount = 0;
-    this._running    = false; // prevents concurrent drift checks (same pattern as CapacityForecastEngine)
+    this._cycleCount = new Map();
+    this._running = new Set();
   }
 
-  // Called from ClusterAgent.run() — non-blocking, fire-and-forget, feature-flagged.
+  // Check for RBAC drift
   async checkDrift({ cluster, context }) {
     _initModels();
     if (!_rbacSync) return;
 
-    this._cycleCount++;
-    if (this._cycleCount % DRIFT_INTERVAL_CYCLES !== 0) return;
+    const cycle = (this._cycleCount.get(cluster) ?? 0) + 1;
+    this._cycleCount.set(cluster, cycle);
+    if (cycle % DRIFT_INTERVAL_CYCLES !== 0) return;
 
-    if (this._running) {
+    if (this._running.has(cluster)) {
       console.log('[RBAC-DRIFT] Previous check still running — skipping cycle');
       return;
     }
-    this._running = true;
+    this._running.add(cluster);
 
     try {
       const result  = await _rbacSync.syncFromK8s(context);
@@ -79,7 +73,7 @@ class RbacDriftEngine {
     } catch (err) {
       console.warn(`[RBAC-DRIFT] ${cluster}: check failed (non-blocking): ${err.message}`);
     } finally {
-      this._running = false;
+      this._running.delete(cluster);
     }
   }
 }

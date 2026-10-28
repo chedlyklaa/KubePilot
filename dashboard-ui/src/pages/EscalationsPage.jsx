@@ -25,7 +25,6 @@ export default function EscalationsPage() {
   const escSseReady = useRef(false)
 
   useEffect(() => {
-    // HTTP pre-load while SSE is connecting — skipped if SSE init already fired.
     apiFetch('/api/escalations').then(r => r.json()).then(d => {
       if (Array.isArray(d) && !escSseReady.current) setEscalations(d)
     })
@@ -47,7 +46,6 @@ export default function EscalationsPage() {
         }
         else if (ev.type === 'added')    { setEscalations(p => [...p, ev.escalation]); notify('error', `New escalation: ${ev.escalation.issueKey}`) }
         else if (ev.type === 'updated')  setEscalations(p => {
-          // Upsert: if the item arrived before our init (reconnect scenario), add it
           const exists = p.some(x => x.id === ev.escalation.id)
           return exists ? p.map(x => x.id === ev.escalation.id ? ev.escalation : x) : [...p, ev.escalation]
         })
@@ -61,14 +59,13 @@ export default function EscalationsPage() {
   const pending  = escalations.filter(e => e.status === 'pending').length
   const needHelp = escalations.filter(e => e.status === 'need_help').length
 
-  // ── Sort ──────────────────────────────────────────────────────────────────
+  // Toggle sort column and direction
   function toggleSort(key) {
     setSort(prev => prev.key === key
       ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
       : { key, dir: 'asc' })
   }
 
-  // ── Filter + sort ─────────────────────────────────────────────────────────
   const visibleEscalations = useMemo(() => {
     let result = escalations
     if (filters.statuses.length > 0) result = result.filter(e => filters.statuses.includes(e.status))
@@ -112,7 +109,6 @@ export default function EscalationsPage() {
         </div>
       </div>
 
-      {/* ── Filter drawer ───────────────────────────────────────────────── */}
       <FilterDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} count={activeCount} onClear={clearFilters}>
         <FilterSection label="Status">
           <FilterChips options={STATUS_OPTS} selected={filters.statuses} onToggle={toggle('statuses')} colorClass />
@@ -141,7 +137,6 @@ export default function EscalationsPage() {
         </FilterSection>
       </FilterDrawer>
 
-      {/* ── Table ───────────────────────────────────────────────────────── */}
       {escalations.length === 0
         ? <div className="empty-page"><span style={{ fontSize: 48, opacity: .2 }}>✓</span><span>No active escalations</span></div>
         : visibleEscalations.length === 0

@@ -1,15 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { apiFetch } from '../lib/api'
 
-// Extracted from AutoscalingPage.jsx, ExtensionsPage.jsx, PoliciesPage.jsx, CapacityPage.jsx,
-// and RbacPage.jsx, which each hand-rolled their own near-identical copy of "fetch clusters,
-// pick a default" — and inconsistently: some defaulted to the first cluster in the list
-// regardless of what's actually active, and some didn't filter out unmonitored contexts.
-//
-// This hook standardizes both: only clusters KubePilot actually monitors are ever offered
-// (an unmanaged context showing up in a picker isn't actionable — there's no agent watching
-// it), and the default selection is whichever context is currently active in kubectl
-// (isCurrent), not just whichever happens to sort first.
+// Load the list of monitored clusters
 export function useMonitoredClusters() {
   const [clusters, setClusters] = useState([])
   const [selected, setSelected] = useState('')

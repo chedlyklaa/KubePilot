@@ -19,22 +19,18 @@ const PAGE_SIZE  = 20
 export default function HistoryPage() {
   const { user }                          = useAuth()
   const [tab,         setTab]             = useState('approvals')
-  const [data,        setData]            = useState(null)   // { docs, total, page, pages } for the active tab
+  const [data,        setData]            = useState(null)
   const [users,       setUsers]           = useState([])
   const [loading,     setLoading]         = useState(true)
   const [drawerOpen,  setDrawerOpen]      = useState(false)
   const [page,        setPage]            = useState(1)
-  // True totals per tab, independent of filters/page — fixes the tab badge showing
-  // only the current (paginated) fetch size instead of the real record count.
   const [counts,      setCounts]          = useState({ approvals: 0, escalations: 0 })
 
-  // Approval filters
   const {
     filters: apprFilters, setFilters: setApprFilters, toggle: toggleAppr, clear: clearApprFilters,
     activeCount: apprActiveCount, datePreset: apprDatePreset, applyPreset: applyApprPreset,
     setDateFrom: setApprDateFrom, setDateTo: setApprDateTo,
   } = useFilters(EMPTY_APPR, { withDatePreset: true })
-  // Escalation filters
   const {
     filters: escFilters, setFilters: setEscFilters, toggle: toggleEsc, clear: clearEscFilters,
     activeCount: escActiveCount, datePreset: escDatePreset, applyPreset: applyEscPreset,
@@ -46,8 +42,6 @@ export default function HistoryPage() {
     apiFetch('/api/history/counts').then(r => r.json()).then(setCounts).catch(() => {})
   }, [])
 
-  // Reset to page 1 whenever the tab or the active filter set changes — otherwise
-  // switching tabs or narrowing a filter could strand the user on a now-empty page.
   useEffect(() => { setPage(1) }, [tab, apprFilters, escFilters])
 
   const load = useCallback(() => {
@@ -108,7 +102,6 @@ export default function HistoryPage() {
         </div>
       </div>
 
-      {/* ── Filter drawer ───────────────────────────────────────────────── */}
       <FilterDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} count={activeCount} onClear={clearFilters}>
         {tab === 'approvals' ? (
           <>
@@ -158,7 +151,6 @@ export default function HistoryPage() {
         )}
       </FilterDrawer>
 
-      {/* ── Tabs ────────────────────────────────────────────────────────── */}
       <div className="tab-bar-flat">
         <button className={`tab-flat${tab === 'approvals' ? ' active' : ''}`} onClick={() => setTab('approvals')}>
           Approvals ({counts.approvals})
@@ -168,7 +160,6 @@ export default function HistoryPage() {
         </button>
       </div>
 
-      {/* ── Approvals table ─────────────────────────────────────────────── */}
       {tab === 'approvals' && (
         <div className="table-wrap">
           {counts.approvals === 0
@@ -206,7 +197,6 @@ export default function HistoryPage() {
         </div>
       )}
 
-      {/* ── Escalations table ───────────────────────────────────────────── */}
       {tab === 'escalations' && (
         <div className="table-wrap">
           {counts.escalations === 0

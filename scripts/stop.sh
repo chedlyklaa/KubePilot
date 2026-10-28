@@ -1,13 +1,8 @@
 #!/usr/bin/env bash
-# =============================================================================
-# stop.sh — Stop all KubePilot clusters and monitoring port-forwards
+# Stop all KubePilot clusters and port-forwards
 #
-# Usage:
-#   ./scripts/stop.sh [--delete]
-#
-# Options:
-#   --delete   Fully delete all minikube profiles (destructive — loses all data)
-# =============================================================================
+# Usage: ./scripts/stop.sh [--delete]
+#   --delete   Delete all minikube profiles
 set -euo pipefail
 
 DELETE=false
@@ -25,7 +20,7 @@ section() { echo -e "\n${BOLD}${BLU}━━━ $* ━━━${NC}"; }
 
 PROFILES=("minikube" "cluster2" "staging-cluster")
 
-# ── Kill port-forwards ────────────────────────────────────────────────────────
+# Kill port-forwards
 section "Port-Forwards"
 if pkill -f "kubectl port-forward" 2>/dev/null; then
   ok "Port-forward processes terminated"
@@ -33,7 +28,7 @@ else
   warn "No port-forward processes found"
 fi
 
-# ── Stop / delete clusters ────────────────────────────────────────────────────
+# Stop / delete clusters
 section "Clusters"
 
 for profile in "${PROFILES[@]}"; do

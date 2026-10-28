@@ -1,7 +1,6 @@
 import { useEffect } from 'react'
 
 export default function FilterDrawer({ open, onClose, title, count, onClear, children }) {
-  // Close on Escape
   useEffect(() => {
     if (!open) return
     function onKey(e) { if (e.key === 'Escape') onClose() }
@@ -33,7 +32,7 @@ export default function FilterDrawer({ open, onClose, title, count, onClear, chi
   )
 }
 
-/** Labelled section inside the drawer */
+// Labelled section inside the drawer
 export function FilterSection({ label, children }) {
   return (
     <div className="filter-section">
@@ -43,7 +42,7 @@ export function FilterSection({ label, children }) {
   )
 }
 
-/** Multi-select chips used for status / decision / risk */
+// Multi-select filter chips
 export function FilterChips({ options, selected, onToggle, colorClass }) {
   return (
     <div className="filter-chips">
@@ -60,8 +59,7 @@ export function FilterChips({ options, selected, onToggle, colorClass }) {
   )
 }
 
-/** Checkbox list for user selection.
- *  getKey — optional fn(user) → string used as toggle value; defaults to u.email */
+// Checkbox list for selecting users
 export function FilterUserList({ users, selectedIds, onToggle, onClearAll, getKey = u => u.email }) {
   return (
     <div className="filter-check-list">
@@ -91,7 +89,7 @@ export function FilterUserList({ users, selectedIds, onToggle, onClearAll, getKe
   )
 }
 
-/** Date range with presets */
+// Date range picker with presets
 export function FilterDateRange({ preset, onPreset, dateFrom, dateTo, onDateFrom, onDateTo }) {
   return (
     <div className="filter-date">

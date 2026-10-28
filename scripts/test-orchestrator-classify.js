@@ -1,24 +1,4 @@
 #!/usr/bin/env node
-// =============================================================================
-// scripts/test-orchestrator-classify.js — exercise OrchestratorAgent's real
-// classification + dispatch logic against canned cluster snapshots, with nothing
-// actually dispatched.
-//
-// Runs each scenario in benchmark/scenarios/orchestrator-classify.yaml through the
-// SAME functions production uses (orchestratorAgent.js's _summarizePods/
-// _summarizeNodes/_summarizeEvents -> _classify() [real LLM call] -> _dispatchKey()/
-// _computeGroupPriorities()), then prints what got classified and how it would be
-// grouped for dispatch. No kubectl, no shortMemory, no runWorkflow — this only ever
-// reads; it never enqueues or executes anything.
-//
-// Usage:
-//   node scripts/test-orchestrator-classify.js                # run every scenario
-//   node scripts/test-orchestrator-classify.js crashloop       # run scenarios whose
-//                                                               # name matches (substring, case-insensitive)
-//
-// To test against a live cluster instead of fixtures, see the --live flag noted at
-// the bottom of this file's usage output.
-// =============================================================================
 'use strict';
 
 require('dotenv').config({ override: true });
@@ -79,8 +59,6 @@ async function runScenario(scenario) {
   console.log(`\n  -> ${incidents.length} incident(s) classified:`);
   incidents.forEach((inc, i) => printIncident(inc, i));
 
-  // Same grouping OrchestratorAgent._runCycle applies after the (skipped-here) cooldown
-  // check — every incident in this harness is treated as a cooldown "survivor".
   const survivors = incidents.map(incident => ({
     incident,
     dispatchKey: OrchestratorAgent._dispatchKey(CLUSTER_NAME, incident),

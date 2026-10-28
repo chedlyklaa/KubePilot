@@ -11,13 +11,10 @@ const KIND_INFO = {
 }
 const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low']
 
-// Ties every finding family together into one fleet-wide scorecard — the other
-// four pages (RBAC Findings tab, Hardening, Network, Secrets) each show one
-// cluster's findings for one kind; this is the "which of my clusters has open
-// critical findings right now" view across all of them at once.
+// Security overview page
 export default function SecurityPage({ onNavigate }) {
   const { clusters } = useMonitoredClusters()
-  const [byCluster, setByCluster] = useState({}) // clusterName -> overview response
+  const [byCluster, setByCluster] = useState({})
   const [loading,   setLoading]   = useState(false)
   const [error,     setError]     = useState('')
 

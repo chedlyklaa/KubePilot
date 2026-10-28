@@ -1,15 +1,7 @@
 #!/usr/bin/env bash
-# ─────────────────────────────────────────────────────────────────────────────
-# install-monitoring.sh
-# Installs the kube-prometheus-stack (Prometheus + Grafana + kube-state-metrics
-# + node-exporter) into a Minikube cluster via Helm.
+# Install kube-prometheus-stack into Minikube with Helm
 #
-# Requirements: helm >=3, kubectl, a running Minikube cluster
-#
-# Usage:
-#   chmod +x scripts/install-monitoring.sh
-#   ./scripts/install-monitoring.sh
-# ─────────────────────────────────────────────────────────────────────────────
+# Usage: ./scripts/install-monitoring.sh
 set -euo pipefail
 
 NAMESPACE="monitoring"
@@ -20,16 +12,16 @@ GRAFANA_PORT=3000
 
 echo "=== KubePilot Monitoring Stack Installer ==="
 
-# ── Step 1: Add Helm repo ─────────────────────────────────────────────────────
+# Step 1: Add Helm repo
 echo "[1/5] Adding prometheus-community Helm repo..."
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
 helm repo update
 
-# ── Step 2: Create namespace ──────────────────────────────────────────────────
+# Step 2: Create namespace
 echo "[2/5] Creating namespace '${NAMESPACE}'..."
 kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
 
-# ── Step 3: Install chart ─────────────────────────────────────────────────────
+# Step 3: Install chart
 echo "[3/5] Installing ${CHART}..."
 helm upgrade --install "${RELEASE}" "${CHART}" \
   --namespace "${NAMESPACE}" \
@@ -44,7 +36,7 @@ helm upgrade --install "${RELEASE}" "${CHART}" \
   --wait \
   --timeout 10m
 
-# ── Step 4: Verify pods ───────────────────────────────────────────────────────
+# Step 4: Verify pods
 echo "[4/5] Waiting for pods to be ready..."
 kubectl wait --for=condition=ready pod \
   -l "app.kubernetes.io/instance=${RELEASE}" \
@@ -55,7 +47,7 @@ echo ""
 echo "[5/5] Stack status:"
 kubectl get pods -n "${NAMESPACE}"
 
-# ── Port-forward helpers ──────────────────────────────────────────────────────
+# Port-forward helpers
 echo ""
 echo "=== Access Instructions ==="
 echo ""
@@ -73,7 +65,7 @@ echo "  PROMETHEUS_URL=http://localhost:${PROMETHEUS_PORT}"
 echo ""
 echo "=== Installation complete ==="
 
-# ── Optional: start port-forward immediately ──────────────────────────────────
+# Optional: start port-forward immediately
 read -rp "Start Prometheus port-forward now? [y/N] " START_PF
 if [[ "${START_PF,,}" == "y" ]]; then
   kubectl port-forward \

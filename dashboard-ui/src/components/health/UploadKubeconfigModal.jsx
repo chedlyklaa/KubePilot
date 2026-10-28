@@ -1,16 +1,7 @@
 import { useState } from 'react'
 import { apiFetch } from '../../lib/api'
 
-// Standalone modal for uploading a cluster's kubeconfig — kept separate from
-// ClusterManager so the "test connection" flow has its own focused state instead of
-// living as an ad hoc form squeezed into the cluster table's header.
-//
-// Verification is enforced twice, deliberately:
-//  - "Test Connection" here calls /api/kube/clusters/test-credential for fast feedback
-//    while the admin is still filling in the form (nothing is saved by this call).
-//  - The real guarantee is server-side: /api/kube/clusters/upload runs the exact same
-//    check again inside sessionManager.storeCredential() before it ever persists
-//    anything, so a bad kubeconfig can't get saved even if this button is skipped.
+// Format a byte count
 function formatBytes(n) {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
@@ -24,7 +15,7 @@ export default function UploadKubeconfigModal({ onClose, onUploaded }) {
   const [fileError, setFileError] = useState(null)
   const [dragging, setDragging] = useState(false)
 
-  const [testStatus, setTestStatus] = useState('idle') // idle | testing | ok | fail
+  const [testStatus, setTestStatus] = useState('idle')
   const [testError,  setTestError]  = useState(null)
 
   const [uploading,   setUploading]   = useState(false)
@@ -32,7 +23,7 @@ export default function UploadKubeconfigModal({ onClose, onUploaded }) {
 
   function setKubeconfig(value) {
     setForm(f => ({ ...f, kubeconfig: value }))
-    setTestStatus('idle') // a stale "connected" badge for edited text would be misleading
+    setTestStatus('idle')
     setTestError(null)
   }
 

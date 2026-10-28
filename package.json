@@ -30,12 +30,9 @@
     "js-yaml": "^4.1.1",
     "langsmith": "^0.8.11",
     "mongoose": "^9.6.2",
-    "node-cron": "^4.2.1",
     "nodemailer": "^8.0.10",
     "openai": "^6.39.0",
-    "pg": "^8.20.0",
     "redis": "^5.12.1",
-    "winston": "^3.19.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

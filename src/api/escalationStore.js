@@ -1,6 +1,3 @@
-// Escalation store — in-memory active escalations + MongoDB persistence.
-// Lifecycle: pending → acknowledged → in_progress → fixed | not_fixed | need_help
-
 'use strict';
 
 const notifEngine             = require('../services/notifications/engine');
@@ -10,11 +7,7 @@ const { EscalationHistory, User } = require('../db/models');
 const { createPubSub }        = require('./pubsub');
 const { restoreActiveRecords } = require('./restoreActiveRecords');
 
-// Who should be notified about an escalation on this cluster/namespace: admins always,
-// developers only if they actually have access to the affected resource. Falls back to
-// admins-only on any lookup failure — an escalation should never go completely unseen.
-// `deps` is an injectable seam for tests (pass fake getEligibleRecipients/getAdminIds) —
-// defaults to the real permissionService lookup + real admin query in production.
+// Get the users to notify for an escalation
 async function _getEscalationTargets(cluster, namespace, deps = {}) {
   const getEligibleRecipients = deps.getEligibleRecipients ?? permissionService.getEligibleRecipients;
   const getAdminIds           = deps.getAdminIds ?? _getAdminIds;
@@ -40,27 +33,17 @@ async function _getAdminIds() {
   } catch { return []; }
 }
 
-// ── Escalate (called by agent) ────────────────────────────────────────────────
-// `deps` is an injectable seam for tests — see _getEscalationTargets above; also
-// accepts deps.EscalationHistoryModel and deps.notifEngine to fake out Mongo/notification
-// delivery without mocking require() (unreliable for CJS modules under Vitest).
+// Create an escalation
 async function escalate(issueKey, issue, history, rca = null, deps = {}) {
   const EscalationHistoryModel = deps.EscalationHistoryModel ?? EscalationHistory;
   const notifier               = deps.notifEngine ?? notifEngine;
 
-  // Deduplication: if an active escalation already exists for this issueKey,
-  // don't create a new record. Instead:
-  //   - still pending  → leave it, nothing to do
-  //   - acknowledged / in_progress → agent failed again, bump attempts and
-  //     reset to pending so it re-appears in the Unclaimed queue
   const existing = [...escalations.values()].find(e => e.issueKey === issueKey);
   if (existing) {
     if (existing.status === 'pending') {
       console.warn(`[EscalationStore] Duplicate suppressed for "${issueKey}" — already pending (id=${existing.id})`);
       return existing.id;
     }
-    // Re-surface as unclaimed so the team sees the agent is still failing.
-    // Clear all ownership metadata so the item is truly unclaimed.
     existing.status              = 'pending';
     existing.attempts            = (existing.attempts ?? 0) + 1;
     existing.assignedTo          = null;
@@ -72,7 +55,6 @@ async function escalate(issueKey, issue, history, rca = null, deps = {}) {
     existing.stateUpdatedAt      = new Date().toISOString();
     console.warn(`[EscalationStore] Re-escalated "${issueKey}" (id=${existing.id}) — reset to pending after ${existing.attempts} total attempt(s)`);
 
-    // C3: update failedHistory and rca so operators see the latest failure context
     const updatedHistory = [...(existing.history ?? []), ...history];
     existing.history = updatedHistory;
     if (rca) existing.rca = rca;
@@ -91,7 +73,6 @@ async function escalate(issueKey, issue, history, rca = null, deps = {}) {
     } catch {}
     _notify({ type: 'updated', escalation: _safe(existing) });
 
-    // Rate-limit: skip if we notified channels for this entry less than 30 min ago.
     const now = Date.now();
     const lastNotif = existing._lastTeamsNotif ?? 0;
     if (now - lastNotif >= 30 * 60 * 1000) {
@@ -173,7 +154,7 @@ async function escalate(issueKey, issue, history, rca = null, deps = {}) {
   return id;
 }
 
-// ── Acknowledge (developer claims it) ────────────────────────────────────────
+// Acknowledge an escalation
 async function acknowledge(id, user) {
   const entry = escalations.get(id);
   if (!entry) return false;
@@ -200,7 +181,7 @@ async function acknowledge(id, user) {
   return true;
 }
 
-// ── Update state ──────────────────────────────────────────────────────────────
+// Update the state of an escalation
 async function updateState(id, state, user) {
   const entry = escalations.get(id);
   if (!entry) return false;
@@ -219,7 +200,6 @@ async function updateState(id, state, user) {
     console.error('[EscalationStore] DB update failed:', err.message);
   }
 
-  // Notify admins when state is "fixed" or "need_help"
   if (state === 'fixed' || state === 'need_help') {
     const adminIds = await _getAdminIds();
     const labels   = { fixed: '✓ marked as Fixed', need_help: '⚠ needs Help' };
@@ -230,8 +210,6 @@ async function updateState(id, state, user) {
     });
   }
 
-  // Remove from active list when fixed or not_fixed (both are terminal outcomes).
-  // need_help stays active so admins can see it and reassign.
   if (state === 'fixed' || state === 'not_fixed') {
     escalations.delete(id);
     _notify({ type: 'resolved', id });
@@ -242,7 +220,7 @@ async function updateState(id, state, user) {
   return true;
 }
 
-// ── Assign to user (admin only) ───────────────────────────────────────────────
+// Assign an escalation to a user
 async function assign(id, assignedTo, assignedBy) {
   const entry = escalations.get(id);
   if (!entry) return false;
@@ -250,7 +228,7 @@ async function assign(id, assignedTo, assignedBy) {
   const oldAssignee   = entry.assignedTo;
   entry.assignedTo    = assignedTo;
   entry.assignedAt    = new Date().toISOString();
-  entry.reassignRequested = false; // reset request after admin acts
+  entry.reassignRequested = false;
 
   try {
     if (entry.mongoId) await EscalationHistory.findByIdAndUpdate(entry.mongoId, {
@@ -263,14 +241,12 @@ async function assign(id, assignedTo, assignedBy) {
     console.error('[EscalationStore] DB update failed:', err.message);
   }
 
-  // Notify new assignee (in-app)
   await notificationStore.send([assignedTo.userId], {
     type:    'warn',
     message: `📌 You have been assigned to handle: ${entry.issueKey}`,
     data:    { escalationId: id, issueKey: entry.issueKey, assignedBy: { name: assignedBy.name } },
   });
 
-  // Notify old assignee if different (in-app)
   if (oldAssignee?.userId && oldAssignee.userId !== assignedTo.userId) {
     await notificationStore.send([oldAssignee.userId], {
       type:    'info',
@@ -279,7 +255,6 @@ async function assign(id, assignedTo, assignedBy) {
     });
   }
 
-  // Notify assignee via the notification engine (handles email delivery, retries, logging)
   notifEngine.emit({
     severity:      'WARNING',
     category:      'Incidents',
@@ -295,7 +270,7 @@ async function assign(id, assignedTo, assignedBy) {
   return true;
 }
 
-// ── Developer requests reassignment ──────────────────────────────────────────
+// Request reassignment of an escalation
 async function requestReassign(id, user) {
   const entry = escalations.get(id);
   if (!entry) return false;
@@ -342,22 +317,14 @@ async function remove(id) {
 
 function getAll() { return [...escalations.values()].map(_safe); }
 
-// True while `issueKey` has an escalation still sitting in the in-memory active map —
-// i.e. status is pending/acknowledged/in_progress/need_help, NOT fixed/not_fixed (those
-// are deleted from `escalations` the moment updateState() marks them terminal, see
-// above). Used by orchestratorAgent.js's dedup step so an already-escalated incident
-// stops getting silently re-classified/re-investigated/re-escalated every cooldown
-// window while a human hasn't acted on it yet — escalating is meant to hand the issue
-// to a person and back off, not "give up for 30 minutes and go through the exact same
-// investigation again anyway, just to hit escalate()'s own pending-dedup a second time."
+// Check if an issue has an active escalation
 function hasActiveEscalation(issueKey) {
   return [...escalations.values()].some(e => e.issueKey === issueKey);
 }
 
-// ── Restore active escalations from MongoDB on startup ────────────────────────
+// Restore active escalations from MongoDB
 async function init() {
   try {
-    // Exclude terminal statuses — fixed and not_fixed are done, no need to resurface them.
     const restored = await restoreActiveRecords(
       EscalationHistory,
       { status: { $nin: ['fixed', 'not_fixed'] } },
@@ -386,7 +353,6 @@ async function init() {
       })
     );
 
-    // restoreActiveRecords doesn't sort — preserve the original escalatedAt-ascending order.
     restored.sort(([, a], [, b]) => new Date(a.createdAt ?? 0) - new Date(b.createdAt ?? 0));
     for (const [id, entry] of restored) escalations.set(id, entry);
 

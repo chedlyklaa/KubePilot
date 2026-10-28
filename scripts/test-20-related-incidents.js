@@ -1,35 +1,4 @@
 #!/usr/bin/env node
-// =============================================================================
-// scripts/test-20-related-incidents.js
-//
-// Drives 20 incidents through the REAL v5 pipeline (runWorkflow() in
-// src/orchestrator/graph.js — Investigator -> Planner -> Guardian -> Policy ->
-// Executor -> Reflexion, exactly as production runs it): 10 distinct failure
-// "personas", each instantiated once in "minikube" (tier=dev) and once in
-// "cluster2" (tier=production) — same underlying problem, different cluster/tier,
-// so the report can show whether tier changes the outcome for an otherwise
-// identical incident.
-//
-// No live cluster is required: kubectl.runCommand/getPods/getNodes are monkey-
-// patched (module-level, same technique as scripts/test-orchestrator-conflict-live.js)
-// to return fixture data per persona instead of shelling out. Real LLM calls are
-// used throughout (Investigator/Planner/Guardian/Reflexion) — only the "cluster"
-// underneath is fake. approvalStore.requestApproval is patched to auto-approve
-// immediately (logged) instead of blocking for up to 10 minutes with no human
-// present.
-//
-// PolicyEngine.dryRunMode is hardcoded true (src/policy/policyEngine.js) regardless
-// of this script, so Executor never truly mutates anything even if it thought it
-// had a live cluster.
-//
-// Usage:
-//   node scripts/test-20-related-incidents.js
-//   node scripts/test-20-related-incidents.js persona3        # filter by persona id (substring)
-//
-// Output:
-//   test-output/20-incidents/run-<timestamp>.jsonl   — one JSON record per incident
-//   test-output/20-incidents/report-<timestamp>.md   — human-readable report
-// =============================================================================
 'use strict';
 
 require('dotenv').config({ override: true });
@@ -56,11 +25,7 @@ const CLUSTERS = {
   cluster2: { name: 'cluster2', context: 'cluster2', tier: 'production' },
 };
 
-// ── Persona definitions ──────────────────────────────────────────────────────
-// Each persona is a function(clusterName) -> { incident, fixtures, expectation }.
-// `fixtures` feeds the kubectl mock; `expectation` is a human-written prediction
-// recorded alongside the real outcome in the report, not used to grade anything.
-
+// Persona: transient crash
 function P1_transientCrash(cluster) {
   const pod = `api-${cluster}-7f8`, dep = 'api', ns = 'shop';
   return {
@@ -68,10 +33,6 @@ function P1_transientCrash(cluster) {
     expectation: 'restart fixes it — transient dependency blip on startup, not a real bug',
     incident: {
       type: 'CrashLoopBackOff', severity: 'high', scope: 'pod', clusterName: cluster,
-      // §Phase4 — matches the Orchestrator's own SIMPLE gate (single pod, controller-
-      // managed, no unhealthy siblings, known pattern) so this run actually exercises
-      // Fast Path (src/agents/fastPath.js) instead of always going to the Full
-      // Investigator, which was every incident's ONLY path before that feature existed.
       complexity: 'SIMPLE',
       namespace: ns, podName: pod, deployment: dep, exitCode: 1, oomKilled: false, restartCount: 8,
       evidenceSummary: `Pod ${pod} in CrashLoopBackOff, exit code 1, 8 restarts in the last 20 minutes.`,
@@ -79,11 +40,6 @@ function P1_transientCrash(cluster) {
     fixtures: {
       pods: [{ name: pod, ns, phase: 'Running', ready: false, restartCount: 8, waiting: 'CrashLoopBackOff', owner: dep }],
       describe: `Status: CrashLoopBackOff\nRestart Count: 8\nLast State: Terminated, Reason: Error, Exit Code: 1\nEvents:\n  Warning  BackOff  30s (x8 over 20m)  kubelet  Back-off restarting failed container ${pod.split('-')[0]} in pod ${pod}_${ns}`,
-      // Deliberately no named external dependency here (an earlier version referenced
-      // "internal-auth-svc" by name, which repeatedly sent the model chasing a whole
-      // Service/Endpoint investigation the mock couldn't answer consistently) — this
-      // version is self-contained: the failure and its transient nature are both fully
-      // visible from this pod's own logs alone.
       logs: `[startup] initializing connection pool (attempt 1/3)\n[startup] ERROR: timed out waiting for downstream dependency, retrying in 2s\n[startup] ERROR: timed out waiting for downstream dependency, retrying in 2s\nFATAL: exceeded 3 startup attempts within the readiness window, exiting\n(note: this same dependency call succeeds well under 200ms during normal operation — prior restarts of this exact pod have cleared this same error)`,
       events: [{ reason: 'BackOff', message: `Back-off restarting failed container in pod ${pod}` }],
       deploymentLimitMi: '256Mi',
@@ -98,7 +54,7 @@ function P2_oom(cluster) {
     expectation: 'must raise memory limit — plain restart will recur immediately',
     incident: {
       type: 'OOMKilled', severity: 'critical', scope: 'pod', clusterName: cluster,
-      complexity: 'SIMPLE', // §Phase4 — see P1's comment
+      complexity: 'SIMPLE',
       namespace: ns, podName: pod, deployment: dep, exitCode: 137, oomKilled: true, restartCount: 12,
       evidenceSummary: `Pod ${pod} repeatedly OOMKilled, exit code 137, 12 restarts, current memory limit appears too low for the workload.`,
     },
@@ -119,7 +75,7 @@ function P3_imagePull(cluster) {
     expectation: 'no kubectl command can fix a nonexistent image tag — expect empty command / REJECT / DELEGATE_HUMAN',
     incident: {
       type: 'ImagePullBackOff', severity: 'high', scope: 'pod', clusterName: cluster,
-      complexity: 'SIMPLE', // §Phase4 — see P1's comment
+      complexity: 'SIMPLE',
       namespace: ns, podName: pod, deployment: dep, exitCode: null, oomKilled: false, restartCount: 0,
       evidenceSummary: `Pod ${pod} stuck in ImagePullBackOff — image tag does not exist in the registry.`,
     },
@@ -140,7 +96,7 @@ function P4_configError(cluster) {
     expectation: "kubectl can't add a missing config key — likely escalate rather than invent a fix",
     incident: {
       type: 'CreateContainerConfigError', severity: 'high', scope: 'pod', clusterName: cluster,
-      complexity: 'SIMPLE', // §Phase4 — see P1's comment
+      complexity: 'SIMPLE',
       namespace: ns, podName: pod, deployment: dep, exitCode: null, oomKilled: false, restartCount: 0,
       evidenceSummary: `Pod ${pod} failing to start — ConfigMap "notifier-config" is missing a key the container requires.`,
     },
@@ -148,7 +104,7 @@ function P4_configError(cluster) {
       pods: [{ name: pod, ns, phase: 'Pending', ready: false, restartCount: 0, waiting: 'CreateContainerConfigError', owner: dep }],
       describe: `Status: Pending\nEvents:\n  Warning  Failed  1m (x5 over 5m)  kubelet  Error: configmap "notifier-config" key "SMTP_HOST" not found`,
       logs: '',
-      configMap: { name: 'notifier-config', keys: ['SMTP_PORT', 'SMTP_USER'] }, // deliberately missing SMTP_HOST
+      configMap: { name: 'notifier-config', keys: ['SMTP_PORT', 'SMTP_USER'] },
       events: [{ reason: 'Failed', message: 'configmap "notifier-config" key "SMTP_HOST" not found' }],
       deploymentLimitMi: '256Mi',
     },
@@ -162,10 +118,6 @@ function P5_barePod(cluster) {
     expectation: 'no controller to recreate it — direct delete is the only real fix',
     incident: {
       type: 'CrashLoopBackOff', severity: 'medium', scope: 'pod', clusterName: cluster,
-      // §Phase4 — deliberately COMPLEX: no owning controller, which fails the
-      // Orchestrator's SIMPLE gate outright (orchestratorAgent.js's
-      // _findOvercalledSimple backstop would force this to COMPLEX even if the LLM
-      // classifier tried SIMPLE) — a control case that must NOT reach Fast Path.
       complexity: 'COMPLEX',
       namespace: ns, podName: pod, deployment: null, exitCode: 1, oomKilled: false, restartCount: 15,
       evidenceSummary: `Bare pod ${pod} (no owning controller) in CrashLoopBackOff, 15 restarts, left running from an old manual debug session.`,
@@ -187,10 +139,6 @@ function P6_flakyDependency(cluster) {
     expectation: 'restart is reasonable — downstream redis connection issue, likely transient',
     incident: {
       type: 'CrashLoopBackOff', severity: 'medium', scope: 'pod', clusterName: cluster,
-      // §Phase4 — SIMPLE per the classifier gate, but the underlying evidence is
-      // genuinely a downstream-dependency judgment call rather than a single obvious
-      // fact — a good real test of whether Fast Path's single call is confident enough
-      // to stop, or honestly escalates to the Full Investigator.
       complexity: 'SIMPLE',
       namespace: ns, podName: pod, deployment: dep, exitCode: 1, oomKilled: false, restartCount: 5,
       evidenceSummary: `Pod ${pod} restarting, exit code 1, logs show repeated Redis connection refused errors.`,
@@ -212,7 +160,7 @@ function P7_nodeNotReady(cluster) {
     expectation: 'cordon is warranted — confirmed NotReady, multiple pods affected; drain would be excessive without further evidence',
     incident: {
       type: 'NodeNotReady', severity: 'critical', scope: 'node', clusterName: cluster,
-      complexity: 'COMPLEX', // §Phase4 — node-scoped incidents can never be SIMPLE
+      complexity: 'COMPLEX',
       nodeName: node,
       evidenceSummary: `Node ${node} reports NotReady, kubelet unresponsive for 6 minutes, 8 pods across 3 namespaces affected.`,
     },
@@ -230,19 +178,11 @@ function P8_alreadyResolved(cluster) {
     expectation: 'FALSE-POSITIVE CHECK: live state shows the pod is healthy now — a correct system should recognize this and NOT apply a fix (noop/REJECT), not chase a stale signal',
     incident: {
       type: 'CrashLoopBackOff', severity: 'high', scope: 'pod', clusterName: cluster,
-      // §Phase4 — SIMPLE per the structural gate. Interesting edge case for Fast Path
-      // specifically: fastPath.js's SYSTEM_PROMPT (src/agents/fastPath.js) has no
-      // explicit "already resolved is a valid conclusion" instruction the way
-      // investigator.js's does — this persona directly tests whether the one-shot
-      // diagnosis call recognizes a live-healthy pod on its own anyway, or needs that
-      // instruction added.
       complexity: 'SIMPLE',
       namespace: ns, podName: pod, deployment: dep, exitCode: 1, oomKilled: false, restartCount: 9,
       evidenceSummary: `Pod ${pod} was reported with 9 restarts and CrashLoopBackOff a few minutes ago by the monitoring signal.`,
     },
     fixtures: {
-      // Live state (what kubectl "returns" right now) directly contradicts the incident
-      // signal — the pod is actually healthy. This is the false-positive test.
       pods: [{ name: pod, ns, phase: 'Running', ready: true, restartCount: 9, waiting: null, owner: dep }],
       describe: `Status: Running\nReady: True\nRestart Count: 9\nLast State: Terminated, Reason: Completed, Exit Code: 0\nConditions:\n  Ready  True`,
       logs: '[legacy-batch] job completed successfully\n[legacy-batch] idle, waiting for next scheduled run',
@@ -260,7 +200,7 @@ function P9_repeatedFailure(cluster) {
     expectation: 'a plain restart has already failed twice — expect Guardian to steer toward rollback or escalate, not repeat the same fix',
     incident: {
       type: 'CrashLoopBackOff', severity: 'high', scope: 'pod', clusterName: cluster,
-      complexity: 'SIMPLE', // §Phase4 — see P1's comment
+      complexity: 'SIMPLE',
       namespace: ns, podName: pod, deployment: dep, exitCode: 1, oomKilled: false, restartCount: 22,
       evidenceSummary: `Pod ${pod} in CrashLoopBackOff. This pod has ALREADY been restarted twice in the past hour by an earlier remediation attempt — the crash recurs within 2 minutes each time. 22 restarts total.`,
     },
@@ -281,7 +221,7 @@ function P10_externalOutage(cluster) {
     expectation: 'nothing kubectl can do about a third-party outage — expect DELEGATE_HUMAN',
     incident: {
       type: 'ContainerError', severity: 'critical', scope: 'pod', clusterName: cluster,
-      complexity: 'SIMPLE', // §Phase4 — see P1's comment
+      complexity: 'SIMPLE',
       namespace: ns, podName: pod, deployment: dep, exitCode: 1, oomKilled: false, restartCount: 3,
       evidenceSummary: `Pod ${pod} failing — logs show it cannot reach the external payment processor API. The processor's own status page confirms a provider-wide outage.`,
     },
@@ -297,17 +237,11 @@ function P10_externalOutage(cluster) {
 
 const PERSONAS = [P1_transientCrash, P2_oom, P3_imagePull, P4_configError, P5_barePod, P6_flakyDependency, P7_nodeNotReady, P8_alreadyResolved, P9_repeatedFailure, P10_externalOutage];
 
-// ── Build the 20 incidents + a lookup registry for the kubectl mock ─────────
-// §Phase4 — `--compare` adds a second, COMPLEX-forced run of every SIMPLE persona
-// (identical incident/fixtures, complexity overridden) so the report can pair the two
-// and show Fast Path's real delta against the Full-Investigator-only baseline every
-// incident got before Fast Path existed. `comparePairs` tracks the pairing explicitly
-// (by id) rather than re-deriving it from string suffixes in the report.
 const argv = process.argv.slice(2);
 const COMPARE_MODE = argv.includes('--compare');
 const filterArg = (argv.find(a => !a.startsWith('--')) || '').toLowerCase();
 const all = [];
-const comparePairs = []; // [{ simpleId, complexId }]
+const comparePairs = [];
 for (const build of PERSONAS) {
   for (const cluster of Object.keys(CLUSTERS)) {
     const entry = build(cluster);
@@ -326,22 +260,12 @@ for (const build of PERSONAS) {
 }
 const RUN_SET = filterArg ? all.filter(e => e.id.toLowerCase().includes(filterArg)) : all;
 
-// name (pod or node) -> fixture entry, per cluster context
-const registry = new Map(); // `${context}::${name}` -> entry
+const registry = new Map();
 for (const entry of all) {
   const name = entry.fixtures.isNode ? entry.incident.nodeName : entry.incident.podName;
   registry.set(`${entry.cluster}::${name}`, entry);
 }
 
-// ── kubectl mock ──────────────────────────────────────────────────────────
-// Since incidents run strictly sequentially (see main()'s for-loop), exactly one
-// incident is "in flight" at any moment — set here right before each runWorkflow()
-// call. Needed because not every read the agents issue names the pod/node
-// explicitly (e.g. "get configmaps -n shop", "get namespace shop") — those must
-// still resolve to the incident actually being investigated, not fall through to
-// "No resources found" (which the model reasonably reads as "the namespace itself
-// doesn't exist" — confirmed live: that exact blank spot produced a bogus
-// "create the missing namespace" plan on the first smoke-test run).
 let currentEntry = null;
 
 function _findEntry(context, cmd) {
@@ -375,10 +299,6 @@ kubectl.runCommand = async function mockRunCommand(fullCommand) {
 
   const entry = _findEntry(context, cmd);
 
-  // Every namespace any persona is registered under, for this cluster — used by the
-  // bare "get namespaces"/"get namespace <x>" handler below regardless of which
-  // specific entry matched, so the model never sees a namespace it already knows
-  // about (from the incident it's investigating) reported as missing.
   const knownNamespaces = [...new Set([...registry.values()]
     .filter(e => e.cluster === context && !e.fixtures.isNode)
     .map(e => e.incident.namespace))];
@@ -399,13 +319,6 @@ kubectl.runCommand = async function mockRunCommand(fullCommand) {
     }
     if (/-o\s*json\b/.test(cmd)) return '{"items":[]}';
     if (/^(version|cluster-info|api-resources|api-versions)/.test(cmd)) return `(mock) ${context} reachable, kubectl v1.30`;
-    // Deliberately NOT the real kubectl phrase "No resources found." — that's a
-    // confirmed-empty result a reasoning model correctly treats as evidence something
-    // doesn't exist. This harness doesn't have fixture data for every possible query
-    // the model might invent, so an unmatched query should read as "this test harness
-    // has no canned answer," not "this resource is confirmed absent" (confirmed live:
-    // the literal phrase on an unhandled "get all -n shop" made the model conclude the
-    // namespace itself didn't exist and spiral into repeatedly re-checking it).
     return '(no output configured for this query in the test harness — do not treat this as a confirmed-empty result)';
   }
 
@@ -428,13 +341,6 @@ kubectl.runCommand = async function mockRunCommand(fullCommand) {
   if (/^describe pod/.test(cmd)) return f.describe;
   if (/^logs/.test(cmd)) return f.logs ?? '(no logs)';
 
-  // A label-selector query (-l app=X) is asking about a DIFFERENT resource than the
-  // incident's own pod unless the selector value actually matches this persona's
-  // deployment/app name — answering it with the incident's own pod regardless of the
-  // selector (the original bug here) taught the model a false "yes, app=auth exists and
-  // is broken too" and sent it in circles re-confirming that non-answer. The honest mock
-  // answer for an unrelated selector is "no matches", same as a real empty selector would
-  // return.
   const selectorMatch = cmd.match(/-l\s*([\w.\-=,]+)/);
   const selectorMissesThisPod = selectorMatch && entry.incident.deployment
     && !selectorMatch[1].includes(entry.incident.deployment);
@@ -453,12 +359,6 @@ kubectl.runCommand = async function mockRunCommand(fullCommand) {
     if (/-o\s*json/.test(cmd)) return JSON.stringify({ items: (f.events ?? []).map(e => ({ reason: e.reason, message: e.message, type: 'Warning', involvedObject: { name: podName, namespace: ns } })) });
     return (f.events ?? []).map(e => `Warning   ${e.reason}   ${e.message}`).join('\n') || 'No events found.';
   }
-  // No persona narrative in this harness hinges on a broken Service/Endpoint — a
-  // downstream connectivity issue in a log line is meant to read as a transient blip,
-  // not an actual network-layer misconfiguration to go chase. Confirmed live: without
-  // this, the model spent most of its budget re-querying an unfixtured Service/Endpoint
-  // hoping for a different answer, instead of accepting "this looks healthy" and moving
-  // on to the (correctly fixtured) pod-level evidence it already had.
   if (/^get\s+(services?|svc|endpoints?|ep)\b/.test(cmd)) {
     if (/-o\s*json/.test(cmd)) return JSON.stringify({ items: [{ metadata: { name: 'service', namespace: ns }, subsets: [{ addresses: [{ ip: '10.0.0.5' }] }] }] });
     return `NAME      TYPE        CLUSTER-IP    PORT(S)\nservice   ClusterIP   10.0.0.5      443/TCP   (looks healthy, has endpoints)`;
@@ -473,16 +373,10 @@ kubectl.runCommand = async function mockRunCommand(fullCommand) {
     const depLine = entry.incident.deployment ? `deployment.apps/${entry.incident.deployment}   0/1     1            0\n` : '';
     return `NAME       READY   STATUS${' '.repeat(10)}RESTARTS   AGE\npod/${p.name}   0/1     ${p.waiting || p.phase}   ${p.restartCount}          20m\n\n${depLine}`;
   }
-  // Same reasoning as the unmatched-entry fallback above: this persona/entry IS real
-  // and IS the thing under investigation, so an unrecognized query about it should
-  // read as "the harness has no canned data for this specific query," never as
-  // "confirmed empty" — the two read very differently to a reasoning model.
   return `(no additional output configured for this query in the test harness — pod ${podName} in namespace ${ns} does exist, just no canned answer for this specific command)`;
 };
 
 kubectl.getPods = async function mockGetPods(namespace, context, asJson) {
-  // Used directly by guardianNode's §7.5 live-state re-fetch (asJson=true, via the
-  // k8sClient API path in the real module — bypassed entirely here).
   const items = [];
   for (const [key, entry] of registry) {
     const [ctx] = key.split('::');
@@ -509,17 +403,7 @@ kubectl.getLogs = async function mockGetLogs(podName, namespace, context) {
   return entry?.fixtures.logs ?? '';
 };
 
-// §Phase4 — src/agents/fastPath.js calls these as NAMED kubectl.js functions (not the
-// generic runCommand string passthrough investigator.js/planner.js always used), so
-// they need their own mocks here — without them, Fast Path's describePod/getConfigMaps/
-// getSecretsMetadata/getPersistentVolumeClaims calls fall through to the REAL
-// implementations (which need sessionManager -> MongoDB for per-cluster credentials)
-// and time out in a harness with no live DB, silently degrading Fast Path's evidence
-// instead of giving it the same realistic fixture data the Full Investigator gets via
-// the mocked runCommand path. Confirmed live during this evaluation (2026-09-07):
-// P1's Fast Path run resolved correctly anyway (Promise.allSettled degrades
-// gracefully — see fastPath.js), but with `podDescribe: null`, understating what real
-// evidence Fast Path would actually have.
+// Mock describePod
 kubectl.describePod = async function mockDescribePod(podName, namespace, context) {
   const entry = _findEntry(context, podName);
   return entry?.fixtures.describe ?? `(no describe fixture for ${podName})`;
@@ -532,14 +416,13 @@ kubectl.getConfigMaps = async function mockGetConfigMaps(namespace, context) {
 };
 
 kubectl.getSecretsMetadata = async function mockGetSecretsMetadata(namespace, context) {
-  return []; // no persona in this corpus defines a secrets fixture — an honest empty default
+  return [];
 };
 
 kubectl.getPersistentVolumeClaims = async function mockGetPersistentVolumeClaims(context) {
-  return []; // no persona in this corpus defines a PVC fixture
+  return [];
 };
 
-// ── approvalStore mock — auto-approve immediately, log + count it ──────────
 let approvalCount = 0;
 approvalStore.requestApproval = async function mockRequestApproval(payload) {
   approvalCount++;
@@ -547,24 +430,18 @@ approvalStore.requestApproval = async function mockRequestApproval(payload) {
   return true;
 };
 
-// ── escalationStore mock — never hit real Mongo/email/Teams for a test run ──
+// Mock escalation
 escalationStore.escalate = async function mockEscalate(issueKey) {
   console.log(`[MOCK-ESCALATE] ${issueKey}`);
   return 'mock-escalation-id';
 };
 
-// §Phase4 — workflowTraceStore.save() is graph.js's own runWorkflow() persisting a
-// WorkflowTracer.toDocument() (src/monitoring/workflowTracer.js) after every incident,
-// fire-and-forget, straight to Mongo (src/db/models/history.js's WorkflowTrace). Capturing
-// it here in-memory instead gets every Phase 1 metric (LLM/tool calls per NODE —
-// including planner/guardian, which src/agents/investigator.js's own `rca` fields don't
-// cover — plus the Phase 3 convergence fields) for free, with no live Mongo required.
 const traceByWorkflowId = new Map();
 workflowTraceStore.save = async function mockSaveTrace(doc) {
   traceByWorkflowId.set(doc.workflowId, doc);
 };
 
-// ── Console capture per incident ────────────────────────────────────────────
+// Capture console output for an incident
 function captureConsole(fn) {
   const lines = [];
   const origLog = console.log, origWarn = console.warn, origError = console.error;
@@ -575,7 +452,7 @@ function captureConsole(fn) {
   return fn().finally(() => { console.log = origLog; console.warn = origWarn; console.error = origError; }).then(result => ({ result, lines }));
 }
 
-// ── Run ──────────────────────────────────────────────────────────────────
+// Run the test
 async function main() {
   console.log(`\n=== 20-INCIDENT TEST RUN — ${RUN_SET.length} incident(s) ===\n`);
   await vectorStore.initialize().catch(() => {});
@@ -605,14 +482,6 @@ async function main() {
     const approvalsRequested = approvalCount - approvalsBefore;
 
     const item = outcome?.items?.[0] ?? null;
-    // graph.js's routeAfterPlanner sends an all-command-less plan straight to
-    // Reflexion, bypassing Guardian/Policy entirely (nothing for either to judge) — that
-    // path never sets state.outcome, so it comes back here as a bare `null`, not one of
-    // 'fixed'/'blocked'/'escalated'. Confirmed live (2026-08-28): Reflexion's OWN internal
-    // bookkeeping still treats this as `outcome ?? 'failed'` for issueTrackerStore, so the
-    // returned top-level state is quietly less informative than what the workflow itself
-    // already concluded — classifying it explicitly here as 'no_fix_available' rather than
-    // letting it read as "unknown" in the report.
     const noFixAvailable = outcome && outcome.outcome == null && !item?.step?.command;
     const record = {
       id: entry.id, cluster: entry.cluster, tier: CLUSTERS[entry.cluster].tier,
@@ -626,9 +495,6 @@ async function main() {
         rootCause: outcome.rca.rootCause, layer: outcome.rca.layer, confidence: outcome.rca.confidence,
         evidenceSufficiency: outcome.rca.evidenceSufficiency, reachedConfidenceTarget: outcome.rca.reachedConfidenceTarget,
         commandsRun: (outcome.rca.commandsExecuted ?? []).map(c => c.command),
-        // §Phase2/3 — present on every rca regardless of path (Fast Path or Full
-        // Investigator both set these; see fastPath.js's _toInvestigationReport and
-        // investigator.js's investigate()/_fallback()).
         fastPath: !!outcome.rca.fastPath,
         investigationTurns: outcome.rca.investigationTurns ?? null,
         ringsVisited: outcome.rca.ringsVisited ?? [],
@@ -641,9 +507,6 @@ async function main() {
       guardian: item?.verdict ? { verdict: item.verdict.verdict, classification: item.verdict.classification, reason: item.verdict.reason, suggestedCommand: item.verdict.suggestedCommand, stateDrift: item.verdict.stateDrift, estimatedBlastRadius: item.verdict.estimatedBlastRadius } : null,
       policy: item?.policyResult ? { status: item.policyResult.status, command: item.policyResult.command, reason: item.policyResult.reason } : null,
       executor: item ? { executionOutcome: item.executionOutcome, executionError: item.executionError } : null,
-      // §Phase4 — the full per-workflow trace captured via the workflowTraceStore.save
-      // mock above: totals across EVERY node (fastPath/investigator/planner/guardian),
-      // not just the investigator-specific fields already on `investigator` above.
       trace: outcome?.workflowId ? (traceByWorkflowId.get(outcome.workflowId) ?? null) : null,
       approvalsRequested,
       isFalsePositiveTest: !!entry.fixtures.isFalsePositiveTest,
@@ -661,8 +524,7 @@ async function main() {
   console.log(`\n\nDone. ${records.length} incidents run.\nJSONL: ${JSONL_PATH}\nReport: ${REPORT_PATH}`);
 }
 
-// ── Report generation ───────────────────────────────────────────────────────
-// ── Stats helpers ────────────────────────────────────────────────────────
+// Median of a list of numbers
 function _median(numbers) {
   const arr = [...numbers].sort((a, b) => a - b);
   if (arr.length === 0) return null;
@@ -688,9 +550,6 @@ function writeReport(records, comparePairs = []) {
   const totalAttempts  = records.reduce((s, r) => s + (r.attempt || 0), 0);
   const medianDurationMs = _median(records.map(r => r.durationMs).filter(d => d != null));
 
-  // False positive: the P8 "already resolved" persona pair. A run is a FALSE POSITIVE
-  // if the system proceeded to actually apply/approve a fix for a problem that live
-  // evidence showed was already resolved (i.e. it did NOT recognize the contradiction).
   const fpTests = records.filter(r => r.isFalsePositiveTest);
   const falsePositives = fpTests.filter(r => r.finalOutcome === 'fixed' || (r.guardian?.verdict === 'APPROVE'));
   const trueNegatives  = fpTests.filter(r => !falsePositives.includes(r));
@@ -719,11 +578,6 @@ function writeReport(records, comparePairs = []) {
   p(`| **Median time per incident** | **${_sec(medianDurationMs)}** | — |`);
   p('');
 
-  // ── §Phase4 — Fast Path & Convergence ──────────────────────────────────
-  // Every SIMPLE-tagged incident's `investigator.fastPath` tells us whether Fast
-  // Path actually resolved it or escalated to the Full Investigator (fastPath.js's
-  // diagnose() sets rca.fastPath=true only on the accepted path — an escalation
-  // produces no rca of its own at that node, the Full Investigator's does).
   const simpleIncidents  = records.filter(r => r.incident.complexity === 'SIMPLE');
   const fastPathResolved = simpleIncidents.filter(r => r.investigator?.fastPath);
   const fastPathEscalated = simpleIncidents.filter(r => r.investigator && !r.investigator.fastPath);
@@ -785,10 +639,6 @@ function writeReport(records, comparePairs = []) {
     p('');
   }
 
-  // ── By incident type ───────────────────────────────────────────────────
-  // Groups by the incident's own `type` field (CrashLoopBackOff, OOMKilled, etc.) —
-  // several personas share a type but differ in root cause, so this is a coarser cut
-  // than per-persona; see "Per-cycle detail" below for the persona-level breakdown.
   p('## By incident type');
   p('');
   p('| Type | n | Fixed | Escalated | No fix | Blocked | Median time |');
@@ -810,10 +660,6 @@ function writeReport(records, comparePairs = []) {
   }
   p('');
 
-  // ── By persona ──────────────────────────────────────────────────────────
-  // Finer-grained than by-type: each persona is its own scenario (e.g. P1 vs P6 are
-  // both CrashLoopBackOff but different root causes) — median here is across just the
-  // 2 cluster runs of that persona, so treat it as directional, not a real distribution.
   p('## By persona');
   p('');
   p('| Persona | n | Fixed | Escalated | No fix | Blocked | Median time |');

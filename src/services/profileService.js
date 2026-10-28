@@ -8,8 +8,6 @@ const mailer      = require('./mailer');
 const SALT_ROUNDS = 10;
 const OTP_MAX_ATTEMPTS = 5;
 
-// OTP store: userId → { otp, expiresAt, issuedAt, attempts }
-// Centralised here instead of inlined in server.js
 const otpStore = new Map();
 setInterval(() => {
   const now = Date.now();

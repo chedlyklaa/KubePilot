@@ -1,4 +1,9 @@
 clusters:
+  - name: kind-kubepilot-test-2
+    context: kind-kubepilot-test-2
+    tier: dev
+    namespaces:
+      - '*'
   - name: minikube
     context: minikube
     tier: dev

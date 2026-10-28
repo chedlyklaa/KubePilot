@@ -7,7 +7,7 @@ function sseHeaders(res) {
   res.flushHeaders();
 }
 
-// Attach a heartbeat to an SSE response — prevents ECONNRESET on idle streams
+// Add a heartbeat to an SSE response
 function heartbeat(req, res) {
   const iv = setInterval(() => { try { res.write(': ping\n\n'); } catch {} }, 25_000);
   req.on('close', () => clearInterval(iv));

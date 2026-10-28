@@ -1,21 +1,6 @@
 #!/usr/bin/env node
-// =============================================================================
-// scripts/test-llm.js — send one message straight to the configured LLM endpoint
-//
-// Bypasses the whole app (Express, chat history, tools) to isolate whether the
-// LLM_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL in .env actually work. On failure,
-// prints the full error (status + provider response body), not just err.message —
-// that's the detail the dashboard's chat error bubble doesn't show you.
-//
-// Usage:
-//   node scripts/test-llm.js
-//   node scripts/test-llm.js "hello who are you"
-// =============================================================================
 'use strict';
 
-// override: true — otherwise a stale OPENAI_API_KEY already sitting in this shell's
-// environment (e.g. from an earlier `$env:OPENAI_API_KEY = "..."` in the same
-// terminal session) silently wins over .env, same reasoning as src/api/llmClient.js.
 require('dotenv').config({ override: true });
 const OpenAI = require('openai');
 

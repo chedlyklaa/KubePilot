@@ -1,46 +1,4 @@
 'use strict';
-// Plain Node script, not a Vitest test — same require()-cache-sharing pattern as the
-// other verify-*.js scripts (mock mode) / plain harness scripts (real mode) in this
-// directory.
-//
-// §Fix-PlannerConfidenceGateABTest (Phase 5, 2026-09-18) — compares:
-//   A = current default behavior (planner.plan() with no opts — the low-confidence
-//       gate applies exactly as it does in production today)
-//   B = planner.plan(..., { forceCall: true }) — the gate is bypassed, the Planner LLM
-//       is always called regardless of confidence
-// on the same fixtures, and reports what each arm actually did.
-//
-// IMPORTANT — what this script does NOT do: it does not auto-score "was the proposed
-// remediation correct". That requires either a human rater or a real cluster to
-// execute against and re-check (the same methodology the dual-cluster benchmark
-// uses) — neither is wired up here. What it DOES capture objectively: whether a
-// command was proposed at all (arm A's gate, by construction, never proposes one for
-// a low-confidence fixture — the interesting question is whether arm B's proposals
-// look reasonable or reckless on manual review), what that command was, how many LLM
-// calls/tool round-trips it took, and how long it took. Per the architecture review's
-// own decision rule: only change the PRODUCTION default if arm B does not increase
-// "incorrect remediation"/"unnecessary action" counts relative to arm A — since that
-// judgment needs a human (or a real cluster) to make, this script's output is an
-// input to that decision, not the decision itself.
-//
-// Fixtures below are representative RECONSTRUCTIONS of the two documented historical
-// patterns that motivated keeping this gate (a missing-Secret case and a bad-image
-// case — see the architecture review's Phase 3 table and
-// pipeline_dryrun_bug_and_benchmark_audit memory note for `mk-missingsecret`/
-// `c2-badimage`), not literal replays — the raw Investigator/Planner objects from
-// those historical runs aren't recoverable from artifacts available in this sandbox
-// (noop-repro-results/*.json only stores outcome summaries, not the raw RCA/plan
-// objects), so these are built to have the same SHAPE (a real diagnosis exists, but
-// confidence sits below the gate) rather than being pulled from the original data.
-//
-// ── Modes ────────────────────────────────────────────────────────────────────────
-// --mock (default): monkey-patches the LLM boundary to prove the harness itself is
-//   wired correctly (arm A makes zero real calls, arm B makes real calls) — zero cost,
-//   zero cluster contact, safe to run any time.
-// --real: makes REAL calls against your configured OPENAI_*/PLANNER_* endpoint (and,
-//   if the Planner's tool loop uses dry_run_step/gather_more_evidence, real read-only/
-//   --dry-run=server calls against the cluster context you pass). Costs real API
-//   usage. NOT run automatically by this script's default — pass --real explicitly.
 
 const MODE = process.argv.includes('--real') ? 'real' : 'mock';
 
@@ -68,8 +26,6 @@ const CLUSTER_CONFIGS = MODE === 'real'
   : { 'test-cluster': { name: 'test-cluster', context: 'test-ctx', tier: 'dev' } };
 const CLUSTER = MODE === 'real' ? 'minikube' : 'test-cluster';
 
-// Deliberately synthetic, clearly-fake resource names in a namespace that won't
-// collide with anything real, even in --real mode against a real cluster.
 const FIXTURES = [
   {
     name: 'missing-secret-like (reconstructed from mk-missingsecret)',
@@ -103,11 +59,6 @@ const FIXTURES = [
   },
 ];
 
-// Mock diagnosis responses per fixture, ONLY used in --mock mode, matching the shape
-// _runPlanningLoop's submit_plan tool call expects. Deliberately varied: one where
-// the model still (correctly, per its own prompt instructions) declines to guess, one
-// where it (plausibly, but unverifiably by this harness) proposes something concrete —
-// exactly the kind of case a human needs to look at, which is the whole point.
 const MOCK_PLANNER_RESPONSES = {
   'missing-secret-like (reconstructed from mk-missingsecret)': {
     tool_calls: [{ name: 'submit_plan', id: 'c1', args: { steps: [{
@@ -157,8 +108,6 @@ async function main() {
     const armB = await runArm('B (forceCall — gate bypassed)', fixture, { forceCall: true });
 
     if (MODE === 'mock') {
-      // Wiring assertions — proves the harness itself behaves as designed, not a
-      // judgment about which arm is "better".
       assert.strictEqual(armA.llmCallsMade, 0, 'arm A must make ZERO LLM calls below the confidence gate — this IS the production default, unchanged');
       assert.strictEqual(armA.proposedCommand, null, 'arm A must never propose a command below the gate');
       assert.ok(armB.llmCallsMade >= 1, 'arm B must actually call the LLM when forceCall is set');

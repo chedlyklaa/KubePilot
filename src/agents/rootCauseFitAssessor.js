@@ -4,27 +4,8 @@ const { ChatOpenAI } = require('@langchain/openai');
 const { SystemMessage, HumanMessage } = require('@langchain/core/messages');
 const { loadConfig } = require('../config');
 const { runStructuredLLMCall } = require('../resilience/llmCircuitBreaker');
+const tokenStore = require('../api/tokenStore');
 const { z } = require('zod');
-
-// ── Root-cause fit assessor (Phase 4 experiment, 2026-09-18) ─────────────────────
-// ADVISORY ONLY — this module's result is logged/traced but MUST NEVER be used to
-// gate, override, or replace any verdict. It exists to collect real comparison data
-// against `_actionCannotAddressRootCause` (graph.js's regex-based root-cause/action
-// compatibility check) per the architecture review's Phase 4 experiment design:
-//
-//   1. Run this in parallel with the regex, on every Guardian review, logged not enforced.
-//   2. Build a regression set from the two confirmed-live incidents that motivated the
-//      regex (a nil-pointer-dereference diagnosis approved for a plain restart; a
-//      confirmed third-party outage approved for a restart) plus the dual-cluster
-//      benchmark's known cases, plus synthetic cases the regex is known to be blind to.
-//   3. Compare: does this call's verdict match the historically-correct outcome?
-//   4. Only promote this from "advisory" to "the actual gate" once it matches or beats
-//      the regex's own track record AND generalizes to the regex's known blind spots.
-//   5. If promoted, the regex STAYS as a deterministic backstop — never fully replaced.
-//
-// The regex (`_actionCannotAddressRootCause`, graph.js) remains the sole ENFORCED gate
-// until that promotion criterion is met with real data — this file changes nothing
-// about production behavior on its own.
 
 const _config = loadConfig();
 const ROOTCAUSEFIT_API_KEY  = _config.ROOTCAUSEFIT_API_KEY  || _config.OPENAI_API_KEY;
@@ -34,10 +15,6 @@ const ROOTCAUSEFIT_MODEL    = _config.ROOTCAUSEFIT_MODEL    || _config.OPENAI_MO
 const RootCauseFitSchema = z.object({
   fit: z.enum(['YES', 'NO', 'UNCERTAIN']),
   reason: z.string(),
-  // Mirrors GuardianVerdictSchema.evidenceCited's confabulation-guard pattern: forces
-  // the model to point at something concrete rather than asserting a mismatch (or a
-  // fit) ungrounded — same lesson this codebase has already learned from Guardian's
-  // own evidenceCited field.
   evidenceCited: z.array(z.string()).default([]),
 });
 
@@ -46,7 +23,7 @@ const assessLlm = new ChatOpenAI({
   model:  ROOTCAUSEFIT_MODEL,
   configuration: ROOTCAUSEFIT_BASE_URL ? { baseURL: ROOTCAUSEFIT_BASE_URL } : undefined,
   temperature: 0.1,
-}).withStructuredOutput(RootCauseFitSchema);
+}).withStructuredOutput(RootCauseFitSchema, { method: 'functionCalling', includeRaw: true });
 
 const SYSTEM_PROMPT = `You are assessing ONE narrow question: does the MECHANISM of a
 proposed kubectl command plausibly address the stated root cause?
@@ -74,19 +51,17 @@ specific phrases from the root cause or evidence text your answer is actually ba
 if you can't point to anything, that's a sign your answer isn't grounded, and you
 should answer UNCERTAIN instead of guessing.`;
 
-// Never throws — a failure here must never break or delay the review it's advisory
-// to. Fails to UNCERTAIN (not YES or NO), matching the honest "couldn't assess this"
-// meaning, since nothing downstream ever gates on this result today.
+// Check if the action fits the root cause
 async function assessRootCauseFit({ rootCause, command, evidenceSummary }) {
   if (!rootCause || !command) {
     return { fit: 'UNCERTAIN', reason: 'missing rootCause or command to assess', evidenceCited: [] };
   }
   try {
     const userPrompt = `Root cause: ${rootCause}\nEvidence summary: ${evidenceSummary || '(none provided)'}\nProposed command: ${command}`;
-    const result = await runStructuredLLMCall(() => assessLlm.invoke([
+    const result = await runStructuredLLMCall(async () => tokenStore.unwrapStructured('rootCauseFit', await assessLlm.invoke([
       new SystemMessage(SYSTEM_PROMPT),
       new HumanMessage(userPrompt),
-    ]));
+    ])));
     return result;
   } catch (err) {
     console.warn(`[ROOTCAUSEFIT] assessment failed (advisory only, no effect on the actual verdict): ${err.message}`);

@@ -1,7 +1,4 @@
-// Slide-in drawer replacing the old anchored user-menu dropdown — same items,
-// same navigate/sign-out behavior, just rendered as a full-height panel that's
-// fully absent from the DOM when closed (per user preference) rather than an
-// icon-only collapsed rail.
+// User menu side drawer
 export default function UserSidebar({ open, onClose, user, page, onNavigate, onSignOut }) {
   if (!open) return null
 

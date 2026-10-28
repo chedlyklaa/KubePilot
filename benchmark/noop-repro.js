@@ -1,62 +1,4 @@
 #!/usr/bin/env node
-// =============================================================================
-// noop-repro.js — focused repro for the ~13 agent-benchmark-advanced1.js cases that
-// originally scored exactly 0.25×weight (detected, but Planner returned an empty-
-// command/"noop" step where restart/rollback/increase_memory was expected). Runs ONLY
-// those cases, not the full 33-test suite, and persists the COMPLETE per-stage
-// pipeline trace for every workflow ATTEMPT to disk so you can tell offline whether
-// noop was a deliberate Planner decision or a fallback (low confidence / iteration
-// cap / LLM error / exception).
-//
-// ── Issue-scoped verdicts (2026-09-11 rewrite) ──────────────────────────────────
-// The verdict comes from the ISSUE's cumulative status via GET /api/issues (backed by
-// the IssueTracker Mongo collection, src/db/models/history.js), NOT from the single
-// most-recent workflow via GET /api/live-workflows. Confirmed root cause of the
-// original mis-scoring: liveWorkflowStore REPLACES an incident's step history whenever
-// a new workflow_id appears for the same resource (src/monitoring/liveWorkflowStore.js:46),
-// so /api/live-workflows can only ever show the latest attempt. But 'failed' is NOT
-// terminal in KubePilot — it's relabeled "Retrying" in the dashboard
-// (dashboard-ui/src/constants/index.js:28), triggers a ~45s cooldown, and the
-// orchestrator dispatches a NEW workflow (new workflowId) against the SAME still-open
-// IssueTracker document (src/api/issueTrackerStore.js:72/110 — keyed by issueKey, not
-// workflowId) until one attempt sets status 'fixed' or 'escalated'. The old version of
-// this script broke its poll loop on the first workflow's `finishedAt`, so a pod whose
-// FIRST attempt no-op'd but SECOND attempt fixed it was scored "failed" — exactly what
-// the dashboard's cumulative view would correctly show as "Fixed". This version polls
-// until the ISSUE itself settles (status ∈ {fixed, escalated} — the only two terminal
-// values per history.js's own documented lifecycle comment), while still recording
-// every individual workflow attempt's full stage trace along the way (keyed by
-// workflowId, so a later attempt never overwrites an earlier one in the OUTPUT, even
-// though it does in liveWorkflowStore itself).
-//
-// issueKey format is `${clusterName}/${namespace}/${deployment|podName}` — confirmed
-// from src/orchestrator/issueKey.js, NOT "type:target:namespace" as one might assume;
-// there's no "type" segment at all. There's no GET-by-issueKey route, so this fetches
-// GET /api/issues?cluster=<name>&limit=100 (paginated) and filters client-side.
-//
-// Fixture bodies below are copied verbatim from agent-benchmark-advanced1.js's TESTS
-// array (crashloop-dep, bad-config, cascade-db, cascade-app, rollchain, flapper,
-// init-crash, multi-crash, partial-fail, exit137, exit127-dep, exit126-dep, iso-crash
-// ×2) rather than imported from it — that file executes its whole suite as a side
-// effect of being loaded (`main().catch(...)` at the bottom, which even calls
-// process.exit(1) on a login failure), so importing it would run all 33 tests and
-// could kill this process outright. Copying ~13 short kubectl-apply blocks is lower
-// risk than restructuring an existing, working file to make it import-safe.
-//
-// Relies on two DIAGNOSTIC-marked additions elsewhere (src/agents/planner.js,
-// src/orchestrator/graph.js's plannerNode) that expose the Planner's internal
-// stopReason and exact LLM input via the existing IncidentTracer -> liveWorkflowStore
-// -> /api/live-workflows pipe — see those files' "DIAGNOSTIC (noop-repro..." comments
-// to find/remove them later. No planner/investigator/orchestrator LOGIC is touched —
-// this file only reads from a different, more correct source and waits for a different,
-// more correct stop condition.
-//
-// Usage:
-//   node benchmark/noop-repro.js
-//   node benchmark/noop-repro.js --context=minikube --ns=noop-repro --caseTimeout=900
-//   node benchmark/noop-repro.js --cluster=minikube   # if clusterName in clusters.yaml
-//                                                      # differs from --context
-// =============================================================================
 'use strict';
 
 const { execFileSync, execSync } = require('child_process');
@@ -71,38 +13,11 @@ const ARGS = process.argv.slice(2).reduce((o, a) => {
 
 const CTX         = ARGS.context     || 'minikube';
 const API         = ARGS.api         || 'http://localhost:3001';
-// §Fix-StaleEscalation (2026-09-11) — issueKey (`${cluster}/${namespace}/${pod}`) is the
-// dedup key escalationStore/hasActiveEscalation key off, and escalations survive process
-// restarts (restored from Mongo) and outlive this script's own end-of-run namespace
-// cleanup below — so re-running against a fixed "noop-repro" namespace name reuses the
-// exact same issueKeys every time. Confirmed live: rollchain escalated in a prior run,
-// never got acknowledged, and the next run's hasActiveEscalation() check silently
-// suppressed it before it was ever dispatched (0 attempts, "settled" in 5.8s on stale
-// state). RUN_SUFFIX makes every run's namespace — and therefore every issueKey — unique,
-// so a fresh run can never collide with a prior one's escalation/cooldown/dedup state.
-// Only applied when --ns/--ns for the isolation cases isn't explicitly overridden, so a
-// deliberate re-run against a fixed namespace (e.g. to inspect leftover state) still works.
 const RUN_SUFFIX   = ARGS.runSuffix || Date.now().toString(36);
 const NS          = ARGS.ns          || `noop-repro-${RUN_SUFFIX}`;
-// The "name" a cluster is registered under in clusters.yaml — usually equal to CTX
-// (true for a plain "minikube" entry, same assumption agent-benchmark-advanced1.js's
-// own HPA_CLUSTER makes), override with --cluster= if yours differs. issueKey() prefixes
-// on this name, not the kubectl context string, so getting it wrong means every
-// /api/issues lookup below silently finds nothing.
 const CLUSTER_NAME = ARGS.cluster || CTX;
-// Per-case safety cap — raised from the original 300s: an issue that retries (cooldown
-// ~45s per attempt, up to MAX_FIX_ATTEMPTS=3 in graph.js before escalating, each attempt
-// itself taking anywhere from ~10s to 2+ minutes of LLM time) can legitimately take
-// several minutes to actually settle. This is a safety net for a genuinely stuck issue,
-// not the expected run length — see isSettled() below for the real stop condition.
 const CASE_TIMEOUT_S = parseInt(ARGS.caseTimeout || '900', 10);
 const POLL_S       = parseInt(ARGS.poll || '5', 10);
-// Independent, kubectl-sourced ground truth alongside the API-based issue/workflow
-// polling above — the pipeline's own account (IssueTracker status, workflow outcome)
-// is what decides the verdict, but this is a second, unrelated source that can't be
-// wrong about what the CLUSTER actually thinks the pod's state is. Every 30s by
-// default, not tied to POLL_S, since there's no reason to hit the API and kubectl on
-// the same cadence.
 const POD_POLL_S   = parseInt(ARGS.podPoll || '30', 10);
 const OUT_DIR      = path.join(__dirname, '..', 'noop-repro-results');
 
@@ -134,14 +49,7 @@ function waitRollout(name, ns, timeoutSec = 90) {
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 let TOKEN = '';
-// Explicit timeout — a bare `fetch()` with no signal can hang indefinitely on a dead
-// connection (confirmed live, 2026-09-11: the KubePilot server under nodemon restarted
-// mid-run — triggered by this very script writing its own .json result files into a
-// nodemon-watched directory, see nodemon.json's new ignore list — and every poll after
-// that silently hung forever on the stale connection instead of erroring so the
-// existing try/catch in fetchLiveWorkflows()/fetchIssueByKey() could recover on the
-// next tick). 15s is generous for a local API call; a genuinely dead server should
-// fail fast, not freeze the whole case.
+// Call the API with a timeout
 async function api(endpoint) {
   const r = await fetch(`${API}${endpoint}`, { headers: { Authorization: `Bearer ${TOKEN}` }, signal: AbortSignal.timeout(15000) });
   return r.json();
@@ -160,9 +68,7 @@ async function fetchLiveWorkflows() {
   catch { return []; }
 }
 
-// Same substring-match philosophy as agent-benchmark-advanced1.js's matchIncident() —
-// t.pod is usually the Deployment name, resourceFromIssue() may carry that or the
-// literal generated pod name depending on how far the incident got.
+// Find the incident matching the test case
 function matchIncident(items, podName, namespace, afterIso) {
   const afterMs = new Date(afterIso).getTime();
   const candidates = items.filter(it => {
@@ -177,10 +83,7 @@ function matchIncident(items, podName, namespace, afterIso) {
   return candidates[0];
 }
 
-// No GET-by-issueKey route exists (issues.routes.js only filters by status/cluster) —
-// issueTrackerStore.list() sorts by updatedAt desc, so an issue with any recent
-// activity surfaces on an early page; paginate a few pages as a safety margin rather
-// than assuming page 1 alone is enough on a busy cluster.
+// Fetch a tracked issue by its issue key
 async function fetchIssueByKey(issueKey) {
   for (let page = 1; page <= 5; page++) {
     let d;
@@ -189,27 +92,17 @@ async function fetchIssueByKey(issueKey) {
     const items = Array.isArray(d.items) ? d.items : [];
     const found = items.find(i => i.issueKey === issueKey);
     if (found) return found;
-    if (items.length < 100) break; // last page reached
+    if (items.length < 100) break;
   }
   return null;
 }
 
-// The only two terminal values per history.js's own documented status lifecycle
-// comment: "detected -> investigating -> awaiting_approval -> approved ->
-// (blocked|skipped|failed|success)* -> fixed / -> escalated" — everything else,
-//'failed' (displayed as "Retrying") included, is explicitly repeatable.
+// Check if an issue reached a terminal status
 function isSettled(status) {
   return status === 'fixed' || status === 'escalated';
 }
 
-// Ground-truth state of EVERY pod in the namespace, straight from the cluster,
-// independent of anything the pipeline/dashboard reports. Runs exactly:
-//   kubectl --context=<CTX> -n <namespace> get pods -o json
-// No label filter — the fixture's own pod is flagged via `isTarget` (matched by the
-// `app` label, since a real fix like "rollout restart" deletes the old pod object and
-// creates a new one with a different generated name, so pinning to a fixed pod name
-// would silently go stale mid-run), but every OTHER pod in the namespace comes back
-// too, in case something unexpected is happening alongside the fixture under test.
+// Get the state of every pod in the namespace
 function getPodState(namespace, appLabel) {
   let raw;
   try {
@@ -240,10 +133,6 @@ function getPodState(namespace, appLabel) {
   return { ts: new Date().toISOString(), error: null, pods };
 }
 
-// =============================================================================
-// CASES — copied verbatim from agent-benchmark-advanced1.js's TESTS array (see file
-// header). Only the 13 pods that score 0.25×weight in the full advanced run.
-// =============================================================================
 const CASES = [
   {
     name: 'CrashLoop deployment', pod: 'crashloop-dep', category: 'basic',
@@ -524,10 +413,7 @@ spec:
   },
 ];
 
-// Groups incident.steps (chronological) by component into arrays — a re-diagnose loop
-// can visit investigator/planner more than once per workflow, and executor emits two
-// entries per step (per-step + the final "ready state" summary) — arrays keep all of it
-// rather than silently keeping only the last one.
+// Group incident steps by component
 function groupStages(steps) {
   const byComponent = {};
   for (const s of steps ?? []) {
@@ -539,13 +425,7 @@ function groupStages(steps) {
   return byComponent;
 }
 
-// A plan is only genuinely "noop" if EVERY step ended up command-less — graph.js's
-// routeAfterPlanner (`allNoop ? 'reflexion' : 'guardian'`) skips guardian/policy/
-// executor entirely in exactly that case, so their absence here is a reliable
-// cross-check independent of the diagnostic stopReason label. Matters because these
-// cases are flaky-benchmark reruns, not guaranteed-noop fixtures — a re-run can
-// legitimately produce a real, non-noop plan, and mislabeling that as "deliberate noop"
-// would defeat the point of this investigation.
+// Check if every plan step had no command
 function wasAllNoop(stages) {
   const hadPlanner = (stages.planner ?? []).length > 0;
   const reachedExecution = (stages.guardian ?? []).length > 0 || (stages.policy ?? []).length > 0 || (stages.executor ?? []).length > 0;
@@ -554,29 +434,28 @@ function wasAllNoop(stages) {
 
 function deriveNoopOrigin(stages) {
   const plannerEntries = stages.planner ?? [];
-  if (plannerEntries.length === 0) return 'unknown'; // planner never ran at all (e.g. capped before reaching it)
-  if (!wasAllNoop(stages)) return 'not-noop-this-run'; // planner produced a real, actionable plan this time
+  if (plannerEntries.length === 0) return 'unknown';
+  if (!wasAllNoop(stages)) return 'not-noop-this-run';
   const last = plannerEntries[plannerEntries.length - 1];
   const reason = last?.output?.noop_origin ?? null;
   if (reason === 'submitted') return 'deliberate';
   if (reason) return `fallback:${reason}`;
-  return 'unknown'; // no planner step recorded at all, or ran before instrumentation existed
+  return 'unknown';
 }
 
-// Per-ATTEMPT classification color (noop_origin) — unchanged from before, still used
-// inside each attempt record for the Planner investigation this script exists for.
+// Color for an attempt classification
 function colorFor(origin) {
   if (origin === 'deliberate') return C.g;
   if (origin === 'not-noop-this-run') return C.b;
   if (origin.startsWith('fallback')) return C.y;
-  return C.r; // 'unknown'
+  return C.r;
 }
 
-// Per-ISSUE verdict color — the new, issue-scoped top-level result for a case.
+// Color for an issue verdict
 function verdictColor(verdict) {
   if (verdict === 'resolved') return C.g;
   if (verdict === 'escalated') return C.y;
-  return C.r; // 'unsettled:timeout'
+  return C.r;
 }
 
 function collectErrors(stages) {
@@ -590,9 +469,7 @@ function collectErrors(stages) {
   return errors;
 }
 
-// Builds one ATTEMPT record (one workflowId's full stage trace) from a /api/live-
-// workflows incident — same shape the old single-attempt version produced, just now
-// one of potentially several kept per case instead of the only one.
+// Build one attempt record from an incident
 function buildAttemptRecord(incident) {
   const stages = groupStages(incident.steps);
   const plannerLast = (stages.planner ?? [])[(stages.planner ?? []).length - 1] ?? null;
@@ -619,10 +496,6 @@ function buildAttemptRecord(incident) {
       plan_summary:     plannerLast.output.plan_summary ?? null,
       step_count:       plannerLast.output.step_count ?? null,
       last_error:       plannerLast.output.last_error ?? null,
-      // DIAGNOSTIC (Fix 2, 2026-09-11) — graph.js's plannerNode now surfaces these
-      // alongside the existing diagnostic fields (see graph.js's plannerNode); without
-      // reading them here too, a capped run's exact per-turn tool-call sequence never
-      // makes it into this script's saved JSON.
       tool_call_log:    plannerLast.output.tool_call_log ?? null,
       turns_used:       plannerLast.output.turns_used ?? null,
     } : null,
@@ -634,20 +507,12 @@ function buildAttemptRecord(incident) {
   };
 }
 
-// label(kase) — every console line in the parallel poller is prefixed with this, since
-// with all 14 cases running concurrently their output interleaves; sequential runs
-// never needed this disambiguation.
+// Log prefix for a case
 function label(kase) {
   return kase.ns ? `${kase.pod}/${kase.ns}` : kase.pod;
 }
 
-// Runs one case's fixture creation ONLY — separated from polling so main() can create
-// all 14 up front (matching agent-benchmark-advanced1.js's own create-then-poll shape)
-// before launching every case's poller concurrently. kase.create() itself is built on
-// execFileSync/synchronous kubectl calls, so these still run one-after-another in quick
-// succession (each briefly blocks Node's single event loop) rather than simultaneously
-// at the OS level — that's fine, each one only takes a few seconds; the real
-// parallelism is in the polling that follows, which is all non-blocking I/O.
+// Create the fixtures for one case
 function createCase(kase) {
   process.stdout.write(`  ${C.b}*${C.n} ${kase.name} (${label(kase)})...`);
   try { kase.create(); console.log(` ${C.g}created${C.n}`); }
@@ -660,15 +525,9 @@ async function pollCase(kase) {
   const startIso = new Date().toISOString();
   const t0 = Date.now();
 
-  // Ground-truth pod state — one baseline snapshot right after create (before the
-  // pipeline has even had a chance to react), then one every POD_POLL_S thereafter.
   const podStateHistory = [getPodState(namespace, kase.pod)];
   let podPollAccum = 0;
 
-  // Keyed by workflowId so a LATER attempt updates its own entry (steps still
-  // accumulating within that workflow) without ever overwriting an EARLIER attempt's
-  // already-recorded entry — the exact thing liveWorkflowStore itself doesn't give us,
-  // since it replaces wholesale per new workflow_id (liveWorkflowStore.js:46).
   const attemptsByWorkflowId = new Map();
   let issueRecord = null;
   let settled = false;
@@ -687,34 +546,22 @@ async function pollCase(kase) {
     const liveItems = await fetchLiveWorkflows();
     const incident = matchIncident(liveItems, kase.pod, namespace, startIso);
     if (incident?.workflowId && !attemptsByWorkflowId.has(incident.workflowId)) {
-      // A genuinely NEW attempt just appeared (not just a fresher snapshot of the one
-      // we're already tracking) — worth a live line, since this is exactly the moment
-      // the old workflow-scoped test would have started ignoring everything before it.
       const ordinal = attemptsByWorkflowId.size + 1;
       const rec = buildAttemptRecord(incident);
       console.log(`  [${label(kase)}] attempt ${ordinal} (${incident.workflowId.slice(0, 8)}): ${colorFor(rec.noop_origin)}${rec.noop_origin}${C.n}`);
     }
     if (incident?.workflowId) attemptsByWorkflowId.set(incident.workflowId, buildAttemptRecord(incident));
 
-    // The REAL stop condition: the ISSUE's own cumulative status, not this tick's
-    // workflow. A transient fetch miss (Mongo hiccup) keeps the last-known record
-    // rather than resetting to null, so one bad poll can't un-settle an already-
-    // confirmed result.
     issueRecord = await fetchIssueByKey(issueKey) ?? issueRecord;
     if (issueRecord && isSettled(issueRecord.status)) { settled = true; break; }
   }
 
-  // One last snapshot at the moment we actually stop watching — whether that's because
-  // the issue settled or the safety cap hit — so the pod-state timeline always ends at
-  // the same moment the verdict was decided, not up to POD_POLL_S seconds earlier.
   podStateHistory.push(getPodState(namespace, kase.pod));
 
-  const attempts = [...attemptsByWorkflowId.values()]; // insertion order = chronological
+  const attempts = [...attemptsByWorkflowId.values()];
   const finalStatus = issueRecord?.status ?? 'unknown';
   const verdict = !settled ? 'unsettled:timeout' : finalStatus === 'fixed' ? 'resolved' : 'escalated';
 
-  // The exact thing this rewrite exists to catch: an early attempt that no-op'd/failed,
-  // superseded by a later one that actually resolved the issue.
   const earlyFailureThenLaterFixed = settled && finalStatus === 'fixed' && attempts.length > 1
     && attempts.slice(0, -1).some(a => a.outcome && a.outcome !== 'fixed');
 
@@ -733,7 +580,7 @@ async function pollCase(kase) {
     workflowIds: attempts.map(a => a.workflowId),
     attempts,
     earlyFailureThenLaterFixed,
-    podStateHistory, // independent kubectl ground truth, every POD_POLL_S seconds
+    podStateHistory,
     totalLatencyMs,
   };
 
@@ -756,11 +603,6 @@ async function main() {
 
   try { execFileSync('kubectl', [`--context=${CTX}`, 'create', 'namespace', NS], { encoding: 'utf8', timeout: 10000, stdio: 'pipe' }); } catch {}
 
-  // Create every fixture up front (same shape as agent-benchmark-advanced1.js's own
-  // create-then-poll split), THEN launch all 14 pollers concurrently — they're all
-  // non-blocking I/O (sleep/fetch) from this point on, so running them via Promise.all
-  // instead of one at a time is what actually cuts the total run time down, rather than
-  // waiting up to CASE_TIMEOUT_S for each case in turn.
   console.log(`${C.b}[create]${C.n} Deploying ${CASES.length} fixtures...`);
   for (const kase of CASES) createCase(kase);
 
@@ -770,8 +612,6 @@ async function main() {
   const summary = results.map(r => {
     const lastAttempt = r.attempts[r.attempts.length - 1] ?? null;
     const lastPodSnapshot = r.podStateHistory[r.podStateHistory.length - 1] ?? null;
-    // getPodState() now returns EVERY pod in the namespace — pick out the one that's
-    // actually this case's fixture (isTarget), not just the first pod in the list.
     const lastPod = lastPodSnapshot?.pods?.find(p => p.isTarget) ?? null;
     return {
       issueKey: r.issueKey, issueId: r.issueId,
@@ -783,9 +623,6 @@ async function main() {
       planner_duration_ms: lastAttempt?.stages.planner[lastAttempt.stages.planner.length - 1]?.durationMs ?? null,
       diagnosis_present: (lastAttempt?.stages.investigator ?? []).some(e => (e.output?.sub_events ?? []).length > 0 || e.output?.root_cause_layer),
       tool_available: !!(lastAttempt?.plannerDetail?.tools_available?.length),
-      // Ground truth, independent of the verdict above — worth comparing against it:
-      // a 'resolved' verdict whose pod isn't actually Running/ready would be its own
-      // finding.
       finalPodPhase: lastPod?.phase ?? null,
       finalPodReady: lastPod?.ready ?? null,
       finalPodRestartCount: lastPod?.restartCount ?? null,
@@ -810,8 +647,6 @@ async function main() {
   console.log(`\n${C.d}Per-case files + summary: noop-repro-results/${C.n}`);
 
   console.log(`\n${C.b}[cleanup]${C.n} Removing test namespaces...`);
-  // Derived from CASES' actual (now RUN_SUFFIX-tagged) namespaces rather than hardcoded,
-  // so this can't silently drift from what create() above actually used.
   const runNamespaces = [...new Set([NS, ...CASES.map(k => k.ns).filter(Boolean)])];
   for (const n of runNamespaces) {
     try { execFileSync('kubectl', [`--context=${CTX}`, 'delete', 'namespace', n, '--ignore-not-found', '--wait=false'],

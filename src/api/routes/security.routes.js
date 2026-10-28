@@ -8,13 +8,8 @@ const escalationStore = require('../escalationStore');
 
 const router = express.Router();
 
-// Findings are admin-only, same reasoning as /api/policies/overview — posture
-// data is sensitive and some orgs restrict it to platform/security teams.
 router.use('/api/security', requireAuth, requireAdmin);
 
-// Detector engines, keyed by the `kind` they own — used by the rescan endpoint
-// to dispatch to the right one. Only RbacPosture exists so far; future milestones
-// (Workload Hardening, Network Exposure, Secrets Hygiene) register here too.
 const ENGINES_BY_KIND = {
   RbacPosture:       () => require('../../agents/rbacPostureEngine'),
   WorkloadHardening: () => require('../../agents/workloadHardeningEngine'),
@@ -26,7 +21,6 @@ function _contextForCluster(name) {
   return getClusters().find(c => c.name === name)?.context ?? null;
 }
 
-// GET /api/security/overview?cluster=NAME — open-finding counts by kind and severity
 router.get('/api/security/overview', asyncHandler(async (req, res) => {
   const { cluster } = req.query;
   if (!cluster) return res.status(400).json({ error: 'cluster is required' });
@@ -41,7 +35,6 @@ router.get('/api/security/overview', asyncHandler(async (req, res) => {
   res.json({ cluster, total: open.length, byKind, bySeverity });
 }));
 
-// GET /api/security/findings?cluster=NAME&kind=RbacPosture&status=open
 router.get('/api/security/findings', asyncHandler(async (req, res) => {
   const { cluster, kind, status = 'open' } = req.query;
   if (!cluster) return res.status(400).json({ error: 'cluster is required' });
@@ -59,10 +52,6 @@ router.get('/api/security/findings', asyncHandler(async (req, res) => {
   res.json(findings);
 }));
 
-// POST /api/security/findings/:id/accept  { reason }
-// Marks a finding as an accepted risk — mirrors silenceStore's reason/createdBy
-// shape, but permanent (no expiry) since this is a deliberate sign-off, not a
-// temporary mute. Does not touch the cluster in any way.
 router.post('/api/security/findings/:id/accept', asyncHandler(async (req, res) => {
   const { reason } = req.body;
   const finding = await SecurityFinding.findById(req.params.id);
@@ -76,9 +65,6 @@ router.post('/api/security/findings/:id/accept', asyncHandler(async (req, res) =
   res.json(finding);
 }));
 
-// POST /api/security/findings/:id/rescan
-// Runs the owning engine's scan immediately instead of waiting for its cycle
-// throttle — useful right after applying a fix, to confirm the finding is gone.
 router.post('/api/security/findings/:id/rescan', asyncHandler(async (req, res) => {
   const finding = await SecurityFinding.findById(req.params.id);
   if (!finding) return res.status(404).json({ error: 'Finding not found' });
@@ -93,10 +79,6 @@ router.post('/api/security/findings/:id/rescan', asyncHandler(async (req, res) =
   res.json(result);
 }));
 
-// POST /api/security/findings/:id/escalate
-// Pushes a finding into the same urgent Escalations queue used by unresolved
-// pod/node incidents — for the rare finding that needs someone paged now rather
-// than quietly sitting on a findings table.
 router.post('/api/security/findings/:id/escalate', asyncHandler(async (req, res) => {
   const finding = await SecurityFinding.findById(req.params.id);
   if (!finding) return res.status(404).json({ error: 'Finding not found' });
@@ -120,8 +102,6 @@ function _csvField(value) {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-// GET /api/security/report?cluster=NAME (optional — omit for a fleet-wide export)
-// CSV only for now — PDF is a stretch goal, not built.
 router.get('/api/security/report', asyncHandler(async (req, res) => {
   const { cluster } = req.query;
   const filter = cluster ? { cluster } : {};

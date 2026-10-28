@@ -12,14 +12,12 @@ const { asyncHandler } = require('../middleware/asyncHandler');
 
 const router = express.Router();
 
-// ── Token usage ───────────────────────────────────────────────────────────
 router.get('/api/tokens', requireAuth, (_req, res) => res.json(tokenStore.getAll()));
 router.post('/api/tokens/reset', requireAuth, requireAdmin, (_req, res) => {
   tokenStore.reset();
   res.json({ ok: true });
 });
 
-// ── Prometheus metrics endpoints ──────────────────────────────────────────
 router.get('/api/metrics/status', requireAuth, (_req, res) => {
   res.json({
     available: metricsCollector.isAvailable(),
@@ -32,14 +30,10 @@ router.get('/api/metrics/errors', requireAuth, asyncHandler(async (_req, res) =>
   res.json({ errors, prometheusAvailable: metricsCollector.isAvailable() });
 }));
 
-// GET /api/metrics/pods — all-pods Prometheus metrics across all configured clusters
 router.get('/api/metrics/pods', requireAuth, asyncHandler(async (_req, res) => {
   const clusterCfg = getClusters();
     const defaultUrl = process.env.PROMETHEUS_URL || 'http://localhost:9090';
 
-    // Build target list: one entry per unique Prometheus URL, using per-cluster prometheusUrl
-    // if set, otherwise skipping (clusters without prometheusUrl won't appear here).
-    // Fall back to the global default when no cluster has an explicit URL configured.
     const seenUrls = new Set();
     const targets  = [];
     for (const c of clusterCfg) {
@@ -50,7 +44,6 @@ router.get('/api/metrics/pods', requireAuth, asyncHandler(async (_req, res) => {
     }
     if (targets.length === 0) targets.push({ name: 'default', url: defaultUrl });
 
-    // Query each cluster's Prometheus in parallel
     const settled = await Promise.allSettled(targets.map(async ({ name, url }) => {
       const client = getPodClient(name, url);
       if (!client.available) await client.initialize();
@@ -102,7 +95,6 @@ router.get('/api/metrics/pods', requireAuth, asyncHandler(async (_req, res) => {
       for (const k of throttleSet) registerErr(k, 'CPUThrottling');
       for (const k of imgSet)      registerErr(k, 'ImagePullFailed');
 
-      // Union all keys so pods with errors always appear even without cAdvisor data
       const allKeys = new Set([
         ...Object.keys(metricsMap),
         ...Object.keys(errTypeMap),
@@ -126,12 +118,10 @@ router.get('/api/metrics/pods', requireAuth, asyncHandler(async (_req, res) => {
       return { cluster: name, pods };
     }));
 
-    // Merge results from all clusters
     const allPods = settled
       .filter(r => r.status === 'fulfilled')
       .flatMap(r => r.value.pods);
 
-    // Sort: pods with errors first, then by restarts desc
     allPods.sort((a, b) => {
       const ae = a.errorTypes.length > 0 ? 1 : 0;
       const be = b.errorTypes.length > 0 ? 1 : 0;
@@ -144,7 +134,6 @@ router.get('/api/metrics/pods', requireAuth, asyncHandler(async (_req, res) => {
   res.json({ available, pods: allPods });
 }));
 
-// GET /api/nodes — all nodes with status, conditions, Prometheus metrics
 router.get('/api/nodes', requireAuth, asyncHandler(async (req, res) => {
   const clusters = getClusters();
     const allNodeMetrics = await metricsCollector.collectAllNodesMetrics().catch(() => null);
@@ -163,8 +152,6 @@ router.get('/api/nodes', requireAuth, asyncHandler(async (req, res) => {
           const addrs      = node.status?.addresses ?? [];
           const internalIp = addrs.find(a => a.type === 'InternalIP')?.address;
           const hostname   = addrs.find(a => a.type === 'Hostname')?.address;
-          // Prometheus node_exporter uses instance=IP:port; after stripping port the key is the IP.
-          // Try exact node name first, then InternalIP, then Hostname as fallback.
           const m = allNodeMetrics?.[name]
                  ?? allNodeMetrics?.[internalIp]
                  ?? allNodeMetrics?.[hostname]
@@ -194,7 +181,6 @@ router.get('/api/nodes', requireAuth, asyncHandler(async (req, res) => {
   res.json(result);
 }));
 
-// GET /api/events — recent warning events across all clusters
 router.get('/api/events', requireAuth, asyncHandler(async (_req, res) => {
   const clusters = getClusters();
   const all = [];
@@ -203,13 +189,12 @@ router.get('/api/events', requireAuth, asyncHandler(async (_req, res) => {
       const eventsJson = await kubectl.getEvents(cluster.context);
       const events     = EventAnalyzer.extractEvents(eventsJson);
       all.push(...events.map(e => ({ ...e, clusterName: cluster.name })));
-    } catch { /* cluster unreachable */ }
+    } catch { }
   }));
   all.sort((a, b) => b.count - a.count);
   res.json({ events: all.slice(0, 200) });
 }));
 
-// GET /api/metrics/nodes — batch Prometheus node metrics
 router.get('/api/metrics/nodes', requireAuth, asyncHandler(async (_req, res) => {
   if (!metricsCollector.isAvailable())
     return res.json({ available: false, nodes: {} });

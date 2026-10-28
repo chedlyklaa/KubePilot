@@ -10,7 +10,7 @@ const ALERT_SUGGESTIONS = {
   check_image:        { icon: '🔎', label: 'Binary not found — verify image entrypoint'  },
 }
 
-// "my-deploy-6c8fb8d957-xk2p9" → "my-deploy"
+// Get the workload name from a pod name
 function podToWorkload(name) {
   if (!name) return name
   const parts = name.split('-')

@@ -1,7 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 
-// guardianAgent.js pulls in ../config (OPENAI_API_KEY/OPENAI_MODEL) transitively at
-// module load — same pattern as graph.test.js/investigator.test.js/planner.test.js.
 process.env.OPENAI_API_KEY ??= 'test-only-key';
 process.env.OPENAI_MODEL   ??= 'test-model';
 
@@ -11,16 +9,6 @@ beforeAll(async () => {
   ({ default: GuardianAgent, _guardianFailureVerdict } = await import('./guardianAgent.js'));
 });
 
-// §Fix-GuardianFailClosed (2026-09-18) — every Guardian failure path used to return an
-// APPROVE-shaped fallback ("proceeding with caution"). Real end-to-end coverage of each
-// failure path (LLM throws, malformed JSON, invalid verdict string, MODIFY with no
-// suggestedCommand) driven through the real GuardianAgent.review() lives in
-// scripts/verify-guardian-failclosed.js, not here — this repo's Vitest can't reliably
-// mock nested require() between plain CJS files (llmCircuitBreaker.runLLMCall must be
-// monkey-patched BEFORE guardianAgent.js's own top-level `require()` destructures it,
-// which needs a fresh process, not vi.mock — see that script's header for the pattern
-// this mirrors from scripts/test-fastpath-live.js). What IS safely unit-testable here,
-// with zero LLM/network involvement, is the shape of the fallback object itself.
 describe('_guardianFailureVerdict — fail-closed shape', () => {
   it('never returns APPROVE', () => {
     const v = _guardianFailureVerdict('some failure reason');

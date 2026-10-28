@@ -10,11 +10,10 @@ class TemporalMemory {
     this._initialized = false;
   }
 
-  // Load recent events from MongoDB. Called explicitly from ClusterAgent.run()
-  // on the first cycle so that detection methods read real history immediately.
+  // Load recent events from MongoDB
   async initialize() {
     if (this._initialized || !TemporalEvent) return;
-    this._initialized = true; // prevent concurrent init
+    this._initialized = true;
     try {
       const recent = await TemporalEvent
         .find()
@@ -30,13 +29,11 @@ class TemporalMemory {
         riskScore: e.riskScore,
         metadata:  e.metadata,
       }));
-      // Prepend history before any entries added during the async window so
-      // chronological order is preserved and in-flight entries are not lost.
       this.memory = [...loaded, ...this.memory].slice(-this.maxEntries);
       console.log(`[TemporalMemory] Loaded ${loaded.length} entries from MongoDB`);
     } catch (err) {
       console.warn(`[TemporalMemory] Could not load from MongoDB: ${err.message}`);
-      this._initialized = false; // allow retry on next initialize() call
+      this._initialized = false;
     }
   }
 
@@ -55,7 +52,6 @@ class TemporalMemory {
     this.memory.push(memoryEntry);
     if (this.memory.length > this.maxEntries) this.memory.shift();
 
-    // Persist to MongoDB asynchronously — non-blocking
     if (TemporalEvent) {
       TemporalEvent.create(memoryEntry).catch(err =>
         console.warn(`[TemporalMemory] MongoDB write failed: ${err.message}`)

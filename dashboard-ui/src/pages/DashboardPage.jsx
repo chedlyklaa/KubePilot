@@ -14,6 +14,9 @@ const AGENT_DEFS = [
   { key: 'guardian',     label: 'Guardian',     icon: '🛡',  color: 'warn'    },
   { key: 'investigator', label: 'Investigator', icon: '🔍', color: 'info'    },
   { key: 'reflection',   label: 'Reflection',   icon: '💡', color: 'success' },
+  { key: 'fastPath',     label: 'Fast Path',    icon: '⚡', color: 'info'    },
+  { key: 'rootCauseFit', label: 'Fit Check',    icon: '🎯', color: 'warn'    },
+  { key: 'chat',         label: 'Chat',         icon: '💬', color: 'primary' },
 ]
 function fmtN(n) { return (n ?? 0).toLocaleString() }
 
@@ -33,7 +36,6 @@ export default function DashboardPage({ onCountsChange }) {
   const logScrollRef = useRef(null)
   const escSseReady  = useRef(false)
 
-  // ── Logs SSE ───────────────────────────────────────────────────────────────
   useEffect(() => {
     let es, cancelled = false
     openSSE('/api/logs/stream').then(s => {
@@ -53,7 +55,6 @@ export default function DashboardPage({ onCountsChange }) {
     return () => { cancelled = true; es?.close() }
   }, [])
 
-  // ── Approvals SSE ──────────────────────────────────────────────────────────
   useEffect(() => {
     let es, cancelled = false
     openSSE('/api/approvals/stream').then(s => {
@@ -69,7 +70,6 @@ export default function DashboardPage({ onCountsChange }) {
     return () => { cancelled = true; es?.close() }
   }, [notify, user.role])
 
-  // ── Escalations SSE + HTTP fallback ───────────────────────────────────────
   useEffect(() => {
     apiFetch('/api/escalations').then(r => r.json()).then(data => {
       if (Array.isArray(data) && !escSseReady.current) setEscalations(data)
@@ -102,7 +102,6 @@ export default function DashboardPage({ onCountsChange }) {
     return () => { cancelled = true; es?.close() }
   }, [notify])
 
-  // ── Auto-scroll logs ───────────────────────────────────────────────────────
   useEffect(() => {
     if (autoScroll && logEndRef.current) logEndRef.current.scrollIntoView({ behavior: 'smooth' })
   }, [logs, autoScroll])
@@ -112,7 +111,7 @@ export default function DashboardPage({ onCountsChange }) {
     if (el) setAutoScroll(el.scrollHeight - el.scrollTop - el.clientHeight < 40)
   }, [])
 
-  // ── Token usage polling ────────────────────────────────────────────────────
+  // Fetch token usage
   const fetchTokens = useCallback(() => {
     apiFetch('/api/tokens').then(r => r.json()).then(setTokens).catch(() => {})
   }, [])
@@ -138,10 +137,8 @@ export default function DashboardPage({ onCountsChange }) {
   return (
     <div className="dashboard-wrap">
 
-      {/* ── Two-panel area ── */}
       <div className="body">
 
-        {/* Left: logs */}
         <div className="panel">
           <div className="panel-header">
             <span className="panel-title">Agent Logs</span>
@@ -182,7 +179,6 @@ export default function DashboardPage({ onCountsChange }) {
           </div>
         </div>
 
-        {/* Right: approvals / escalations / orders */}
         <div className="panel">
           <div className="tab-bar">
             <button className={`tab ${rightTab === 'approvals' ? 'active' : ''}`} onClick={() => setRightTab('approvals')}>
@@ -218,23 +214,20 @@ export default function DashboardPage({ onCountsChange }) {
         </div>
       </div>
 
-      {/* ── Token usage bar ── */}
       <TokenBar tokens={tokens} onRefresh={fetchTokens} isAdmin={user.role === 'admin'} />
 
     </div>
   )
 }
 
-// Real Scaleway cost for one agent's counters, from AGENT_PRICING — prompt/completion
-// are billed at different per-agent rates, so this has to be summed per agent rather
-// than applied once to the combined total.
+// Compute the cost for one agent
 function agentCost(key, c) {
   const rate = AGENT_PRICING[key]
   if (!rate || !c) return 0
   return (c.prompt / 1_000_000) * rate.inputPerM + (c.completion / 1_000_000) * rate.outputPerM
 }
 
-// ── TokenBar component ────────────────────────────────────────────────────────
+// Token usage bar
 function TokenBar({ tokens, onRefresh, isAdmin }) {
   const [expanded, setExpanded] = useState(false)
 

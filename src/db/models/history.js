@@ -1,7 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
-// ── Approval history ──────────────────────────────────────────────────────────
 const ApprovalHistorySchema = new Schema({
   issueKey:    { type: String, required: true },
   issue:       Schema.Types.Mixed,
@@ -9,14 +8,11 @@ const ApprovalHistorySchema = new Schema({
   decision:    { type: String, enum: ['approved', 'denied', 'timeout', 'silenced'], required: true },
   decidedBy:   { userId: String, name: String, email: String, role: String },
   requestedAt: Date,
-  // Counterfactual override feedback (populated on denial only)
   overrideReasons: [String],
   preferredAction: String,
   adminNote:       String,
 }, { timestamps: true });
 
-// ── Escalation history ────────────────────────────────────────────────────────
-// States: pending → acknowledged → in_progress → fixed | not_fixed | need_help
 const EscalationHistorySchema = new Schema({
   issueKey:      { type: String, required: true },
   issue:         Schema.Types.Mixed,
@@ -27,7 +23,6 @@ const EscalationHistorySchema = new Schema({
   escalatedAt:   { type: Date, default: Date.now },
   rca:           Schema.Types.Mixed,
 
-  // Lifecycle
   status: {
     type: String,
     enum: ['pending', 'acknowledged', 'in_progress', 'fixed', 'not_fixed', 'need_help'],
@@ -36,53 +31,37 @@ const EscalationHistorySchema = new Schema({
   stateUpdatedAt:  Date,
   stateUpdatedBy:  { name: String, email: String, role: String },
 
-  // Who acknowledged it
   acknowledgedBy:  { userId: String, name: String, email: String, role: String },
   acknowledgedAt:  Date,
 
-  // Current assignee (may differ from acknowledger after reassignment)
   assignedTo:   { userId: String, name: String, email: String, role: String },
   assignedAt:   Date,
   assignedBy:   { name: String, email: String },
 
-  // Reassignment request from developer
   reassignRequested:   { type: Boolean, default: false },
   reassignRequestedAt: Date,
   reassignRequestedBy: { name: String, email: String },
 
-  // Timestamp of the last Teams notification sent for this escalation.
-  // Persisted so the 30-min rate-limit survives server restarts.
   lastTeamsNotif: Date,
 }, { timestamps: true });
 
-// ── Chat history ─────────────────────────────────────────────────────────────
 const ChatHistorySchema = new Schema({
   userId:   { type: String, required: true, unique: true, index: true },
   messages: [{ role: { type: String, enum: ['user', 'assistant'] }, content: String }],
 }, { timestamps: true });
 
-// ── Command (Orders) history ──────────────────────────────────────────────────
 const CommandHistorySchema = new Schema({
   userId: { type: String, required: true, unique: true, index: true },
   turns:  [Schema.Types.Mixed],
 }, { timestamps: true });
 
-// ── Silence Rule ─────────────────────────────────────────────────────────────
-// One document per active silence. Expired docs are not auto-deleted here —
-// the store filters by `until > now` and silenceStore.init() skips old docs.
 const SilenceRuleSchema = new Schema({
-  key:       { type: String, required: true },          // agent key: "type:target:ns"
+  key:       { type: String, required: true },
   until:     { type: Date, required: true, index: true },
   reason:    { type: String, default: '' },
   createdBy: { name: String, email: String, role: String },
 }, { timestamps: true });
 
-// ── Issue tracker ─────────────────────────────────────────────────────────────
-// One document per remediation episode — from first detection through to fixed/
-// still-retrying — so a user who clicks Approve can look up what happened next.
-// `seq` is the human-facing id (#1042); `issueKey` is the agent's own dedupe key
-// ("type:target:namespace") and is how this doc gets found again on later stages
-// of the same episode (see issueTrackerStore.js).
 const IssueTrackerSchema = new Schema({
   seq:         { type: Number, required: true, unique: true, index: true },
   issueKey:    { type: String, required: true, index: true },
@@ -90,23 +69,17 @@ const IssueTrackerSchema = new Schema({
   cluster:     String,
   tier:        String,
   namespace:   String,
-  resource:    String,   // pod / deployment / node name
+  resource:    String,
   fingerprint: Schema.Types.Mixed,
   rca:         Schema.Types.Mixed,
-  // Cross-link to WorkflowTraceSchema below — lets a UI jump from one issue's timeline
-  // to the full per-workflow observability trace (LLM/tool call counts, hypothesis
-  // history, etc.) that produced it. Nullable: legacy ClusterAgent-path episodes and
-  // anything tracked before this field existed have no workflow to link to.
   workflowId:  { type: String, index: true },
   status: {
     type: String,
-    // detected → investigating → awaiting_approval → approved → (blocked|skipped|failed|success)* → fixed
-    //                                                                                             → escalated
     enum: ['detected', 'investigating', 'awaiting_approval', 'approved', 'blocked', 'skipped', 'failed', 'success', 'escalated', 'fixed'],
     default: 'detected',
   },
   timeline: [{
-    stage:           String,   // detected | investigated | awaiting_approval | approved | progress | escalated | resolved
+    stage:           String,
     action:          String,
     outcome:         String,
     guardianVerdict: String,
@@ -116,14 +89,6 @@ const IssueTrackerSchema = new Schema({
   resolvedAt: Date,
 }, { timestamps: true });
 
-// ── Workflow trace ────────────────────────────────────────────────────────────
-// One document per runWorkflow() invocation (src/orchestrator/graph.js) — observability
-// only, never read back to make a remediation decision (same non-authoritative role as
-// IssueTracker above). Built by src/monitoring/workflowTracer.js's WorkflowTracer,
-// persisted fire-and-forget by src/api/workflowTraceStore.js. Loosely typed
-// (Schema.Types.Mixed for the evolving per-node/history shapes) — same convention
-// IssueTrackerSchema.rca/fingerprint already use for agent-produced data whose exact
-// shape isn't a schema-enforced contract with any other part of the system.
 const WorkflowTraceSchema = new Schema({
   workflowId:   { type: String, required: true, unique: true, index: true },
   pipeline:     { type: String, enum: ['legacy', 'v5'], default: 'v5' },
@@ -135,16 +100,16 @@ const WorkflowTraceSchema = new Schema({
   startedAt:      Date,
   endedAt:        Date,
   totalLatencyMs: Number,
-  nodes:          Schema.Types.Mixed, // { [nodeName]: { durationMs, llmCalls, toolCalls } }
+  nodes:          Schema.Types.Mixed,
   totalLlmCalls:  Number,
   totalToolCalls: Number,
   investigationTurns:     Number,
   ringsVisited:           [Number],
   layersInvestigated:     [String],
-  hypothesisHistory:      Schema.Types.Mixed, // reshaped ringAssessmentLog
+  hypothesisHistory:      Schema.Types.Mixed,
   confidenceHistory:      [Number],
   reachedConfidenceTarget: Boolean,
-  bestHypothesis:         Schema.Types.Mixed, // { hypothesis, layer, confidence, supportingEvidence, turn }
+  bestHypothesis:         Schema.Types.Mixed,
   nonImprovingRounds:     Number,
   stoppingOutcome: {
     type: String,
@@ -160,6 +125,7 @@ const WorkflowTraceSchema = new Schema({
   policyRejections:       Number,
   humanApprovalRequests:  Number,
   humanEscalations:       Number,
+  tokenUsage:             Schema.Types.Mixed,
   finalOutcome: { type: String, enum: ['fixed', 'blocked', 'escalated'] },
 }, { timestamps: true });
 

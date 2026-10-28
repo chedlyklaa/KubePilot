@@ -1,10 +1,3 @@
-export const STATES = [
-  { key: 'in_progress', label: 'Working on it', color: 'primary' },
-  { key: 'fixed',       label: 'Fixed ✓',        color: 'success' },
-  { key: 'not_fixed',   label: 'Not Fixed',      color: 'danger'  },
-  { key: 'need_help',   label: 'Need Help',      color: 'warn'    },
-]
-
 export const STATE_LABEL = {
   pending:      'Pending',
   acknowledged: 'Acknowledged',
@@ -16,8 +9,6 @@ export const STATE_LABEL = {
 
 export const RISK_COLOR = { LOW: 'success', MEDIUM: 'warn', HIGH: 'danger' }
 
-// Issue tracker lifecycle — see src/db/models/history.js IssueTrackerSchema for the
-// authoritative state list.
 export const ISSUE_STATUS = {
   detected:          { label: 'Detected',           color: 'info'    },
   investigating:     { label: 'Investigating',       color: 'info'    },
@@ -44,9 +35,6 @@ export const CATEGORY_ICON = {
 
 export const LOG_LEVELS = ['ALL', 'INFO', 'WARN', 'ERROR']
 
-// Live Pipeline page — graph.js node name -> icon/label. Matches the `component`
-// values IncidentTracer.step() is called with across src/orchestrator/graph.js
-// (orchestrator/investigator/planner/guardian/policy/executor/reflector).
 export const WORKFLOW_STEP = {
   orchestrator: { icon: '🛰',  label: 'Detected' },
   investigator: { icon: '🔎', label: 'Investigator' },
@@ -58,10 +46,6 @@ export const WORKFLOW_STEP = {
 }
 export const WORKFLOW_STEP_ORDER = ['orchestrator', 'investigator', 'planner', 'guardian', 'policy', 'executor', 'reflector']
 
-// Scaleway Generative APIs per-1M-token pricing (EUR), keyed by agent — mirrors
-// which model each agent is actually configured to use (OPENAI_MODEL for
-// planner/investigator, GUARDIAN_MODEL for guardian/reflection in .env).
-// Update these if .env is repointed at different models.
 export const AGENT_PRICING = {
   planner:      { model: 'qwen3-235b-a22b-instruct-2507',        inputPerM: 0.75, outputPerM: 2.25 },
   investigator: { model: 'qwen3-235b-a22b-instruct-2507',        inputPerM: 0.75, outputPerM: 2.25 },

@@ -2,7 +2,6 @@
 
 const { loadConfig } = require('../config');
 
-// Event reason → structured category mapping
 const REASON_CATEGORY = {
   FailedScheduling:        'scheduling',
   FailedMount:             'storage',
@@ -24,26 +23,19 @@ const REASON_CATEGORY = {
 
 const _config = loadConfig();
 
-// Events older than this are ignored entirely
 const EVENT_MAX_AGE_MS = _config.EVENT_MAX_AGE_MS;
-// Persistence threshold: events must be recurring (count >= N) OR very recent to be actionable
 const EVENT_MIN_COUNT        = _config.EVENT_MIN_COUNT;
 const EVENT_RECENT_WINDOW_MS = _config.EVENT_RECENT_WINDOW_MS;
 
 class EventAnalyzer {
-  /**
-   * Parse `kubectl get events -A -o json` output into structured classified events.
-   *
-   * @param {object} eventsData - Parsed JSON from kubectl
-   * @returns {Array} structured events, sorted by count desc then by last timestamp
-   */
+  // Parse and classify Kubernetes events
   static extractEvents(eventsData) {
     const now    = Date.now();
     const cutoff = now - EVENT_MAX_AGE_MS;
     const events = [];
 
     for (const ev of eventsData.items ?? []) {
-      if (ev.type === 'Normal') continue; // only Warning events matter for remediation
+      if (ev.type === 'Normal') continue;
 
       const lastSeen = new Date(ev.lastTimestamp || ev.eventTime || 0).getTime();
       if (lastSeen < cutoff) continue;
@@ -72,18 +64,11 @@ class EventAnalyzer {
       });
     }
 
-    // Sort by count descending (most frequent first)
     events.sort((a, b) => b.count - a.count);
     return events;
   }
 
-  /**
-   * Return a compact text summary of events for LLM prompt injection.
-   * Groups by category and limits total tokens.
-   *
-   * @param {Array}  events
-   * @param {number} maxItems - max events per category
-   */
+  // Summarize events for the prompt
   static summarize(events, maxItems = 5) {
     if (!events.length) return '';
     const byCategory = {};
@@ -107,9 +92,7 @@ class EventAnalyzer {
     return lines.join('\n');
   }
 
-  /**
-   * Filter events relevant to a specific pod or node.
-   */
+  // Filter events for a pod or node
   static forTarget(events, { podName, namespace, nodeName } = {}) {
     return events.filter(e => {
       if (podName    && e.name      === podName    && e.namespace === namespace) return true;

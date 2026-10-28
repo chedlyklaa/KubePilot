@@ -1,25 +1,4 @@
 'use strict';
-// Plain Node script, not a Vitest test — same require()-cache-sharing pattern as the
-// other verify-*.js scripts in this directory.
-//
-// §Fix-RootCauseFitExperiment (Phase 4, 2026-09-18) — proves, for real, that
-// rootCauseFitAssessor's advisory check can NEVER change guardianNode's returned
-// verdict, no matter what it says. This is the entire safety property Phase 4's
-// design depends on ("logged, not enforced") — asserted here, not just claimed in a
-// comment. Drives the REAL guardianNode (graph.js) with GuardianAgent.review and
-// assessRootCauseFit both monkey-patched; no real LLM/kubectl call happens.
-//
-// IMPORTANT ordering note (this is the exact mistake that had to be fixed before this
-// script worked correctly): graph.js does
-// `const { assessRootCauseFit } = require('../agents/rootCauseFitAssessor');` at its
-// own top-level require() — a DESTRUCTURED binding captured at that exact moment.
-// Reassigning `rootCauseFitAssessor.assessRootCauseFit` on the module object AFTER
-// graph.js has already been required does NOT change graph.js's own already-bound
-// local reference — graph.js would keep calling the REAL function regardless, which
-// on an earlier draft of this script silently made one real LLM call against the
-// live configured endpoint. The mock (a stable wrapper delegating to a mutable
-// variable, same pattern already used for llmCircuitBreaker.runStructuredLLMCall in
-// the other verify-*.js scripts) MUST be installed before graph.js is first required.
 
 process.env.OPENAI_API_KEY      ??= 'test-only-key';
 process.env.OPENAI_MODEL        ??= 'test-model';
@@ -28,8 +7,7 @@ process.env.NOTIFICATION_SECRET ??= 'test-only-secret-not-a-real-value-012345678
 const assert = require('assert');
 
 const kubectl = require('../src/tools/kubectl');
-// Returns the exact incident pod as healthy/present so §Fix-P8/§Fix-TargetGone (both
-// unrelated deterministic overrides) don't fire and confound this test's own assertions.
+// Mock getPods returning a healthy pod
 kubectl.getPods = async () => ({
   items: [{
     metadata: { name: 'app-1' },
@@ -40,8 +18,6 @@ kubectl.getPods = async () => ({
 const reflectionAgent = require('../src/agents/reflectionAgent');
 reflectionAgent.getContext = async () => ({ rules: [], structuralMatches: [], semanticMatches: [] });
 
-// Install the mock BEFORE graph.js is ever required, so its destructured
-// `assessRootCauseFit` binding captures THIS wrapper, not the real function.
 const rootCauseFitAssessor = require('../src/agents/rootCauseFitAssessor');
 let nextAdvisoryResponse = async () => { throw new Error('scenario did not configure an advisory response'); };
 rootCauseFitAssessor.assessRootCauseFit = (...args) => nextAdvisoryResponse(...args);
@@ -66,8 +42,7 @@ async function scenario_advisoryDisagreesButVerdictUnaffected() {
     suggestedCommand: null, confidence: 0.9, safetyConcerns: [], evidenceCited: ['transient crash'],
     impactSummary: 'restarts the deployment', estimatedBlastRadius: 'single_pod',
   });
-  // The advisory disagrees as strongly as possible with Guardian's APPROVE — if this
-  // has ANY effect on the returned verdict, the "advisory only" guarantee is broken.
+  // Mock advisory that disagrees with Guardian
   nextAdvisoryResponse = async () => ({ fit: 'NO', reason: 'this is deliberately the opposite of what Guardian decided', evidenceCited: ['x'] });
 
   const result = await guardianNode(baseState(), undefined);
@@ -90,9 +65,7 @@ async function scenario_advisoryFailureDoesNotBreakGuardianNode() {
 }
 
 async function scenario_regexRejectStillWinsAndSkipsTheAdvisoryEntirely() {
-  // Root cause matches the EXISTING regex (nil pointer + restart) — the enforced gate
-  // should still fire exactly as before Phase 4 was added, and the advisory should be
-  // skipped entirely (nothing left to usefully compare against an already-rejected verdict).
+  // Mock Guardian review
   GuardianAgent.prototype.review = async () => ({
     verdict: 'APPROVE', classification: 'SAFE', reason: 'looks fine', suggestedCommand: null, confidence: 0.9,
     safetyConcerns: [], evidenceCited: ['x'], impactSummary: null, estimatedBlastRadius: null,

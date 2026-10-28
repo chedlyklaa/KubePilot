@@ -4,25 +4,17 @@ const { User } = require('../db/models');
 
 const SALT_ROUNDS = 10;
 
-// In-memory token store: token → { user payload + expiresAt }
 const tokens = new Map();
 
-// Token TTL: 8 hours from login
 const TOKEN_TTL_MS = 8 * 60 * 60 * 1000;
 
-// In-memory password reset tokens: token → { email, expiresAt }
 const resetTokens = new Map();
-const RESET_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const RESET_TTL_MS = 15 * 60 * 1000;
 
-// Per-account login lockout: email → { count, lastAttempt, lockedUntil }
-// Keyed by account rather than IP — combined with the per-IP rateLimit middleware
-// on the route (which stops one attacker hammering many accounts), this stops
-// repeated guesses against one specific account regardless of source IP.
 const loginAttempts       = new Map();
 const MAX_LOGIN_ATTEMPTS  = 5;
-const LOGIN_LOCKOUT_MS    = 15 * 60 * 1000; // 15 minutes
+const LOGIN_LOCKOUT_MS    = 15 * 60 * 1000;
 
-// Sweep expired tokens every 15 minutes to avoid memory leaks
 setInterval(() => {
   const now = Date.now();
   for (const [tok, entry] of tokens)      { if (now > entry.expiresAt) tokens.delete(tok); }
@@ -31,7 +23,7 @@ setInterval(() => {
     const staleAt = entry.lockedUntil ?? (entry.lastAttempt + LOGIN_LOCKOUT_MS);
     if (now > staleAt) loginAttempts.delete(key);
   }
-}, 15 * 60 * 1000).unref(); // .unref() so this timer doesn't prevent process exit
+}, 15 * 60 * 1000).unref();
 
 function _recordFailedLogin(key) {
   const entry = loginAttempts.get(key) ?? { count: 0, lockedUntil: null };
@@ -41,9 +33,7 @@ function _recordFailedLogin(key) {
   loginAttempts.set(key, entry);
 }
 
-// Seed default users on first start.
-// Passwords are randomly generated per-install rather than hardcoded — a fixed default
-// password is a well-known attack vector against any deployment that forgets to change it.
+// Create the default users on first start
 async function seedUsers() {
   const count = await User.countDocuments();
   if (count === 0) {
@@ -88,7 +78,7 @@ function getUser(token) {
   const entry = tokens.get(token);
   if (!entry) return null;
   if (Date.now() > entry.expiresAt) {
-    tokens.delete(token); // expired — force 401
+    tokens.delete(token);
     return null;
   }
   return entry;
@@ -98,8 +88,7 @@ function logout(token) {
   tokens.delete(token);
 }
 
-// Update the in-memory payload for all active sessions belonging to a user.
-// Call this after a profile name change so req.user.name stays current.
+// Update active sessions for a user
 function updateUserPayload(userId, patch) {
   for (const entry of tokens.values()) {
     if (entry.id === userId) Object.assign(entry, patch);
@@ -109,8 +98,6 @@ function updateUserPayload(userId, patch) {
 async function forgotPassword(email) {
   if (!email) throw Object.assign(new Error('Email is required'), { status: 400 });
   const user = await User.findOne({ email: email.toLowerCase().trim(), active: true });
-  // Return silently (same as the success path) whether or not the account exists —
-  // a distinct response for "no account" lets an attacker enumerate valid emails.
   if (!user) return;
   const token = crypto.randomBytes(32).toString('hex');
   resetTokens.set(token, { email: user.email, expiresAt: Date.now() + RESET_TTL_MS });

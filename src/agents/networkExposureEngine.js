@@ -1,57 +1,49 @@
 'use strict';
 
-// Scans NetworkPolicies, Services, and Ingresses for network-exposure gaps and
-// reports them as standing SecurityFinding documents — same shape as
-// rbacPostureEngine.js / workloadHardeningEngine.js: feature-flagged,
-// cycle-throttled, fire-and-forget, notify-only. Never touches the pod/node
-// remediation pipeline.
-
 let _SecurityFinding = null;
 let _notifEngine     = null;
 
 function _initModels() {
   if (_SecurityFinding) return;
-  try { ({ SecurityFinding: _SecurityFinding } = require('../db/models')); } catch { /* MongoDB unavailable */ }
+  try { ({ SecurityFinding: _SecurityFinding } = require('../db/models')); } catch { }
 }
 
 function _getNotifEngine() {
   if (!_notifEngine) {
-    try { _notifEngine = require('../services/notifications/engine'); } catch { /* not available */ }
+    try { _notifEngine = require('../services/notifications/engine'); } catch { }
   }
   return _notifEngine;
 }
 
 const SCAN_INTERVAL_CYCLES = parseInt(process.env.NETWORK_EXPOSURE_INTERVAL_CYCLES ?? '10', 10);
 
-// Same exclusion PoliciesPage.jsx and workloadHardeningEngine.js already apply —
-// system namespaces aren't what an operator is auditing network exposure for.
 const SKIP_NAMESPACES = new Set(['kube-system', 'kube-public', 'kube-node-lease']);
 
 const EXPOSED_SERVICE_TYPES = new Set(['NodePort', 'LoadBalancer']);
 
 class NetworkExposureEngine {
   constructor() {
-    this._cycleCount = 0;
-    this._running    = false;
+    this._cycleCount = new Map();
+    this._running = new Set();
   }
 
   async check({ cluster, context }) {
-    this._cycleCount++;
-    if (this._cycleCount % SCAN_INTERVAL_CYCLES !== 0) return;
+    const cycle = (this._cycleCount.get(cluster) ?? 0) + 1;
+    this._cycleCount.set(cluster, cycle);
+    if (cycle % SCAN_INTERVAL_CYCLES !== 0) return;
     await this.rescanNow({ cluster, context });
   }
 
-  // Runs the scan immediately, bypassing the cycle throttle — used by the
-  // "Re-scan now" button as well as by check() once its interval has elapsed.
+  // Run the network scan now
   async rescanNow({ cluster, context }) {
     _initModels();
     if (!_SecurityFinding) return { scanned: false, reason: 'MongoDB unavailable' };
 
-    if (this._running) {
+    if (this._running.has(cluster)) {
       console.log('[NETWORK-EXPOSURE] Previous scan still running — skipping');
       return { scanned: false, reason: 'already running' };
     }
-    this._running = true;
+    this._running.add(cluster);
 
     try {
       const kubectl = require('../tools/kubectl');
@@ -87,13 +79,12 @@ class NetworkExposureEngine {
       console.warn(`[NETWORK-EXPOSURE] ${cluster}: scan failed (non-blocking): ${err.message}`);
       return { scanned: false, reason: err.message };
     } finally {
-      this._running = false;
+      this._running.delete(cluster);
     }
   }
 }
 
-// ── Detection rules (deterministic, no LLM) ───────────────────────────────────
-
+// Find namespaces without a network policy
 function _scanNamespacesWithoutPolicy(podsJson, networkPolicies) {
   const findings = [];
 
@@ -168,8 +159,7 @@ function _scanIngressesWithoutTls(ingresses) {
   return findings;
 }
 
-// ── Upsert findings, resolve ones no longer seen ─────────────────────────────
-
+// Save findings and resolve old ones
 async function _reconcile(cluster, detected) {
   const now = new Date();
   const seenKeys = new Set();

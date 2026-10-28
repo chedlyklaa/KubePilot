@@ -1,6 +1,4 @@
-// src/agents/podAnalyzer.js  — patched sections
-// Drop-in replacement for extractIssues()
-
+// Extracts issues from pod data
 class PodAnalyzer {
   static extractIssues(podsData) {
     const issues = [];
@@ -10,15 +8,9 @@ class PodAnalyzer {
       const namespace = pod.metadata?.namespace ?? "default";
       const phase     = pod.status?.phase;
 
-      // ── Skip pods that are fine ──────────────────────
-      // Completed = Job/init container finished cleanly. Not an issue.
-     
       const ownerRefs  = pod.metadata?.ownerReferences ?? [];
       const { deployment, ownerKind, controllerName } = PodAnalyzer._extractOwner(ownerRefs);
 
-      // Startup grace period: skip pods younger than 30s that have no explicit
-      // error state yet (still in Pending/ContainerCreating). This prevents
-      // false positives during normal deployment rollouts.
       const podAgeSecs = pod.metadata?.creationTimestamp
         ? (Date.now() - new Date(pod.metadata.creationTimestamp).getTime()) / 1000
         : Infinity;
@@ -34,11 +26,8 @@ class PodAnalyzer {
       for (const cs of pod.status?.containerStatuses ?? []) {
         const waiting    = cs.state?.waiting;
         const terminated = cs.state?.terminated;
-         // ── CrashLoopBackOff ────────────────────────────
         if (waiting?.reason === "CrashLoopBackOff") {
 
-          // Try to detect OOM: check lastState exit code 137
-          // or reason "OOMKilled". 137 = SIGKILL from OOM killer.
           const lastTerminated = cs.lastState?.terminated;
           const isOOM =
             lastTerminated?.reason === "OOMKilled" ||
@@ -51,14 +40,12 @@ class PodAnalyzer {
             deployment, ownerKind, controllerName,
             containerName: cs.name,
             restartCount:  cs.restartCount,
-            // Pass OOM signal explicitly so LLM/fix logic can use it
             oomKilled:     isOOM,
             exitCode:      lastTerminated?.exitCode ?? null,
             message:       waiting.message ?? null,
           });
         }
 
-        // ── OOMKilled (not yet in backoff) ──────────────
         if (terminated?.reason === "OOMKilled") {
           issues.push({
             type:          "OOMKilled",
@@ -73,14 +60,11 @@ class PodAnalyzer {
           });
         }
 
-        // ── Error / non-zero exit ───────────────────────
-        // Only flag if it's NOT Completed (exit 0)
         if (
           terminated &&
           terminated.reason !== "Completed" &&
           terminated.exitCode !== 0
         ) {
-          // Avoid double-reporting OOMKilled
           if (terminated.reason !== "OOMKilled") {
             issues.push({
               type:          "ContainerError",
@@ -95,7 +79,6 @@ class PodAnalyzer {
           }
         }
 
-        // ── ImagePullBackOff ────────────────────────────
         if (
           waiting?.reason === "ImagePullBackOff" ||
           waiting?.reason === "ErrImagePull"
@@ -111,10 +94,6 @@ class PodAnalyzer {
         }
       }
 
-      // ── Init container failures ─────────────────────────────────────────────
-      // When an init container fails the main container never starts, so
-      // containerStatuses is empty and the loop above finds nothing.
-      // Read initContainerStatuses directly to surface those crashes.
       for (const ics of pod.status?.initContainerStatuses ?? []) {
         if (issues.some(i => i.podName === podName)) break;
 
@@ -152,19 +131,11 @@ class PodAnalyzer {
         }
       }
 
-      // ── PodNotReady (catch-all) ─────────────────────────────────────────────
-      // Only emit if phase is not Running AND no more specific issue was already
-      // recorded for this pod.
       const alreadyReported = issues.some((i) => i.podName === podName);
       const podReady = (pod.status?.conditions ?? []).find(
         (c) => c.type === "Ready"
       );
 
-      // Pods stuck in Pending with no container activity at all — this happens
-      // when a Secret/ConfigMap volume can't be mounted. Kubernetes sets no Ready
-      // condition until containers actually try to start, so podReady is undefined
-      // and the Ready=False check below never fires. Guard with a 60s age threshold
-      // so normally-starting pods aren't flagged mid-launch.
       const hasAnyStatuses =
         (pod.status?.containerStatuses     ?? []).length > 0 ||
         (pod.status?.initContainerStatuses ?? []).length > 0;
@@ -174,9 +145,6 @@ class PodAnalyzer {
       const stuckPending =
         phase === 'Pending' && !hasAnyStatuses && ageSecs > 60;
 
-      // ── Unschedulable / FailedScheduling ─────────────────────────────────
-      // Detect pods stuck in Pending with impossible resource requests or
-      // scheduling constraints. These will never start without human intervention.
       if (
         !alreadyReported &&
         phase === 'Pending' &&

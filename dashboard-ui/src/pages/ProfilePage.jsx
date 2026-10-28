@@ -5,17 +5,17 @@ import { apiFetch } from '../lib/api'
 import { fmtDT } from '../utils/format'
 import { StatCard, ActivityChart } from '../components/ProfileShared'
 
-// ── Decision badge ─────────────────────────────────────────────────────────────
+// Decision badge
 function DecisionBadge({ d }) {
   const cls = d === 'approved' ? 'badge-approved' : d === 'denied' ? 'badge-denied' : 'badge-timeout'
   return <span className={`decision-badge ${cls}`}>{d}</span>
 }
 
-// ── Password-change section ───────────────────────────────────────────────────
+// Password change section
 function PasswordSection({ emailAvailable, userId }) {
   const notify = useNotify()
   const [open,          setOpen]          = useState(false)
-  const [method,        setMethod]        = useState('password') // 'password' | 'email'
+  const [method,        setMethod]        = useState('password')
   const [otpSent,       setOtpSent]       = useState(false)
   const [sendingOtp,    setSendingOtp]    = useState(false)
   const [saving,        setSaving]        = useState(false)
@@ -78,7 +78,6 @@ function PasswordSection({ emailAvailable, userId }) {
         <button type="button" className="btn-link" onClick={() => { setOpen(false); setOtpSent(false) }}>Cancel</button>
       </div>
 
-      {/* Method selector */}
       <div className="pw-method-row">
         <span className="pw-method-label">Verify via:</span>
         <label className={`pw-method-opt ${method === 'password' ? 'pw-method-active' : ''}`}>
@@ -143,7 +142,7 @@ function PasswordSection({ emailAvailable, userId }) {
   )
 }
 
-// ── Escalation activity list ──────────────────────────────────────────────────
+// Escalation activity list
 export function EscalationList({ items }) {
   if (!items?.length) return <div className="activity-empty">No escalations yet</div>
   return (
@@ -167,7 +166,7 @@ export function EscalationList({ items }) {
   )
 }
 
-// ── Approval activity list ────────────────────────────────────────────────────
+// Approval activity list
 export function ApprovalList({ items }) {
   if (!items?.length) return <div className="activity-empty">No approvals yet</div>
   return (
@@ -190,7 +189,7 @@ export function ApprovalList({ items }) {
   )
 }
 
-// ── Main profile page ─────────────────────────────────────────────────────────
+// Profile page
 export default function ProfilePage() {
   const { user, updateUser } = useAuth()
   const notify               = useNotify()
@@ -200,7 +199,7 @@ export default function ProfilePage() {
   const [editing,  setEditing]  = useState(false)
   const [saving,   setSaving]   = useState(false)
   const [emailAvailable, setEmailAvailable] = useState(false)
-  const [actTab,   setActTab]   = useState('escalations') // 'escalations' | 'approvals'
+  const [actTab,   setActTab]   = useState('escalations')
   const [form, setForm] = useState({ name: user.name })
 
   useEffect(() => {
@@ -246,7 +245,6 @@ export default function ProfilePage() {
   return (
     <div className="profile-page">
 
-      {/* ── Header card ── */}
       <div className="profile-header-card">
         <div className="profile-avatar-lg">{initials}</div>
         <div className="profile-header-info">
@@ -259,7 +257,6 @@ export default function ProfilePage() {
         </button>
       </div>
 
-      {/* ── Edit name form ── */}
       {editing && (
         <form className="profile-edit-form" onSubmit={handleSaveName}>
           <div className="profile-edit-grid">
@@ -281,10 +278,8 @@ export default function ProfilePage() {
         </form>
       )}
 
-      {/* ── Password change ── */}
       <PasswordSection emailAvailable={emailAvailable} />
 
-      {/* ── Stats ── */}
       <div className="profile-section-title">Activity Overview</div>
       <div className="profile-stats">
         <StatCard icon="🔺" label="Escalations Handled" value={loading ? '…' : (stats?.escalationsHandled ?? 0)} color="danger"  />
@@ -294,10 +289,8 @@ export default function ProfilePage() {
         <StatCard icon="⌘"  label="Commands Run"        value={loading ? '…' : (stats?.commandsRun        ?? 0)} color="info"    />
       </div>
 
-      {/* ── Chart ── */}
       {stats?.daily && <ActivityChart daily={stats.daily} />}
 
-      {/* ── Activity lists ── */}
       <div className="profile-section-title">Work History</div>
       <div className="activity-tabs">
         <button className={`activity-tab ${actTab === 'escalations' ? 'active' : ''}`} onClick={() => setActTab('escalations')}>

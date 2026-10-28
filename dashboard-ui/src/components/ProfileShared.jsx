@@ -1,6 +1,4 @@
-// Shared UI primitives used by ProfilePage and UserProfileModal.
-// Keeping them here avoids duplicating ~60 lines across both files.
-
+// Stat card used on profile pages
 export function StatCard({ icon, label, value, color, small = false }) {
   return (
     <div className={`stat-card stat-card-${color}${small ? ' stat-card-sm' : ''}`}>

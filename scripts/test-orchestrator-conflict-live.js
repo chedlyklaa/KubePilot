@@ -1,36 +1,4 @@
 #!/usr/bin/env node
-// =============================================================================
-// scripts/test-orchestrator-conflict-live.js — end-to-end, READ-ONLY observation
-// of the REAL fleet-wide OrchestratorAgent against one or more live clusters:
-// cross-cluster namespace correlation/classification, dispatch grouping/priority, and
-// the Redis-backed conflict detector (per-dispatchKey resourceLock) that must prevent
-// a second workflow from launching for a namespace (now correlated across clusters)
-// that already has one in flight.
-//
-// This is a pure OBSERVATION harness — it does not modify src/. It:
-//   1. Monkey-patches (wraps, doesn't edit on disk) the shared kubectl and shortMemory
-//      singletons so every call they receive is logged with args/result before
-//      delegating to the real implementation.
-//   2. Monkey-patches clusterConfigStore.getClusters() to return ONLY the test
-//      cluster(s) passed on the CLI — the fleet cycle now always reads clusters from
-//      this store directly (there's no more per-cluster OrchestratorAgent instance to
-//      construct), so this is what keeps the user's real clusters.yaml untouched.
-//   3. Calls the real OrchestratorAgent._runFleetCycle() (exported test hook) for a
-//      bounded number of ticks.
-//   4. Writes every tool call, classification, dispatch-group, lock decision, and the
-//      final short-memory state to ./test-output/orchestrator/.
-//
-// Actual cluster mutation is impossible regardless of this script: PolicyEngine.
-// dryRunMode is hardcoded true (src/policy/policyEngine.js) — Executor simulates
-// every write action and never calls kubectl for it (src/agents/executor.js).
-//
-// Usage:
-//   node scripts/test-orchestrator-conflict-live.js --context=kind-kubepilot-test \
-//     --cluster=kubepilot-test --namespaces=kp-test --ticks=6 --tickIntervalMs=15000
-//   node scripts/test-orchestrator-conflict-live.js \
-//     --clusters=kubepilot-test:kind-kubepilot-test,kubepilot-test-2:kind-kubepilot-test-2 \
-//     --namespaces=kp-test --ticks=6 --tickIntervalMs=30000
-// =============================================================================
 'use strict';
 
 require('dotenv').config({ override: true });
@@ -56,8 +24,6 @@ const NAMESPACES     = args.namespaces ? args.namespaces.split(',') : ['*'];
 const TICKS          = Number(args.ticks ?? 6);
 const TICK_INTERVAL  = Number(args.tickIntervalMs ?? 15000);
 
-// --clusters=name1:context1,name2:context2 (multi-cluster) takes priority; falls back
-// to the original single-cluster --context[=X] --cluster[=Y] shape for backward compat.
 const TEST_CLUSTERS = args.clusters
   ? args.clusters.split(',').map(pair => {
       const [name, context] = pair.split(':');
@@ -74,11 +40,10 @@ const OUT_DIR = path.join(__dirname, '../test-output/orchestrator');
 fs.mkdirSync(OUT_DIR, { recursive: true });
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 
-// ── Tool-call / decision log ────────────────────────────────────────────────
-const toolCalls = [];   // every kubectl.* call, in order
-const lockDecisions = []; // every shortMemory.acquireResourceLock call, in order
-const groupEvents = [];   // addToGroup / clearGroup / enqueue / dequeue
-const cycleLog = [];       // one entry per orchestrator tick, filled in from console interception
+const toolCalls = [];
+const lockDecisions = [];
+const groupEvents = [];
+const cycleLog = [];
 
 function logToolCall(fn, argsIn, resultOrErr, isError) {
   toolCalls.push({
@@ -98,8 +63,6 @@ function summarize(result) {
   return s.length > 2000 ? s.slice(0, 2000) + `...[truncated ${s.length - 2000} chars]` : s;
 }
 
-// ── Wrap kubectl (shared singleton — orchestratorAgent.js requires the same
-// module-cache instance, so patching methods here affects it too) ─────────────
 for (const fnName of Object.keys(kubectl)) {
   const orig = kubectl[fnName];
   if (typeof orig !== 'function') continue;
@@ -115,14 +78,9 @@ for (const fnName of Object.keys(kubectl)) {
   };
 }
 
-// ── Redirect clusterConfigStore to the test cluster(s) only — never the user's real
-// clusters.yaml. orchestratorAgent.js's fleet cycle calls getClusters() fresh every
-// tick now (no more per-cluster instance to construct), so this is the whole scoping
-// mechanism for this harness. ────────────────────────────────────────────────────
+// Return only the test clusters
 clusterConfigStore.getClusters = () => TEST_CLUSTERS;
 
-// ── Wrap the shortMemory calls that matter for conflict detection — fleet-wide
-// signatures now (no clusterName param on queue/active-set calls) ─────────────
 const _acquireResourceLock = shortMemory.acquireResourceLock.bind(shortMemory);
 shortMemory.acquireResourceLock = async function (key, workflowId, ttlMs) {
   const acquired = await _acquireResourceLock(key, workflowId, ttlMs);
@@ -161,28 +119,15 @@ shortMemory.dequeue = async function (maxCount) {
   return keys;
 };
 
-// Require OrchestratorAgent AFTER the monkey-patches above so its internal
-// `require('../tools/kubectl')`/`require('../memory/shortMemory')`/
-// `require('../config/clusterConfig')` resolve to the same (now-patched) module-cache
-// singletons — Node caches modules by resolved path, so this ordering is what makes
-// the patches visible to the agent's own calls.
 const OrchestratorAgent = require('../src/agents/orchestratorAgent');
 
-// ── Console capture — the codebase already logs extensively at each pipeline
-// stage ([ORCHESTRATOR], [GRAPH] investigator/planner/guardian/policy/executor);
-// mirror it to a raw log file instead of re-deriving that detail ─────────────────
 const rawLogPath = path.join(OUT_DIR, `raw-stdout-${stamp}.log`);
 const rawLogStream = fs.createWriteStream(rawLogPath, { flags: 'a' });
-rawLogStream.on('error', () => {}); // defensive backstop — see streamEnded below
+rawLogStream.on('error', () => {});
 let streamEnded = false;
 const origLog = console.log, origErr = console.error, origWarn = console.warn;
 function tee(streamFn, prefix) {
   return (...a) => {
-    // Fire-and-forget workflows (runWorkflow in orchestratorAgent.js) can still be
-    // mid-flight after main() finishes and closes this stream — without this guard,
-    // their console.log calls write-after-end and crash the whole process (confirmed
-    // live, 2026-08-24: ERR_STREAM_WRITE_AFTER_END mid-investigation). Once closed,
-    // still print to the real console (untouched below), just stop teeing to the file.
     if (!streamEnded) {
       rawLogStream.write(`[${new Date().toISOString()}]${prefix} ${a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' ')}\n`);
     }
@@ -200,11 +145,6 @@ async function main() {
   await shortMemory.initialize();
   await vectorStore.initialize().catch(err => console.warn('[harness] vectorStore init failed (continuing):', err.message));
   await episodicMemory.initialize().catch(err => console.warn('[harness] episodicMemory init failed (continuing):', err.message));
-  // Same boot sequence as index.js — without this, issueTrackerStore's in-memory `seq`
-  // counter starts at 0 instead of resuming from Mongo's actual max, and every track()
-  // call in this run collides with real pre-existing seq values (unique index) rather
-  // than a genuine race in the store itself. Confirmed live, 2026-08-24: skipping this
-  // produced a 100% track() failure rate for an otherwise-correct run.
   await escalationStore.init().catch(err => console.warn('[harness] escalationStore init failed (continuing):', err.message));
   await issueTrackerStore.init().catch(err => console.warn('[harness] issueTrackerStore init failed (continuing):', err.message));
 
@@ -236,13 +176,9 @@ async function main() {
     }
   }
 
-  // Let any still-running fire-and-forget workflows drain a bit before we snapshot
-  // final short-memory state and exit, so the report reflects settled state where
-  // possible (workflows can legitimately still be mid-flight — that's fine, we report it).
   console.log(`\n[harness] all ${TICKS} ticks issued — waiting 20s for in-flight workflows to progress before final snapshot...`);
   await new Promise(r => setTimeout(r, 20000));
 
-  // ── Final short-memory snapshot ─────────────────────────────────────────────
   let finalShortMemory = { ready: shortMemory.ready };
   if (shortMemory.ready) {
     const client = shortMemory.client;
@@ -294,10 +230,4 @@ main()
   .finally(async () => {
     streamEnded = true;
     rawLogStream.end();
-    // Deliberately NOT quitting the shortMemory/mongoose connections here — a
-    // fire-and-forget workflow can still be using them after main() returns, and
-    // closing out from under it would throw. Node's event loop keeps the process
-    // alive on its own (kubectl's execFile calls, the open Redis/Mongo sockets) until
-    // any in-flight workflow actually finishes, so this just lets the process exit
-    // naturally once nothing is left running instead of forcing a premature close.
   });

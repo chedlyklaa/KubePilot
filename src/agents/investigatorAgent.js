@@ -12,8 +12,7 @@ const PolicyEngine   = require('../policy/policyEngine');
 
 const policyEngine = new PolicyEngine();
 
-// Sanitize a kubectl command before executing it — the same allowlist/injection gate
-// ClusterAgent applies to its own kubectl calls (see ClusterAgent._runSafeCommand).
+// Sanitize and run a kubectl command
 function safeRun(cmd) {
   const { safe, command, reason } = policyEngine.sanitizeCommand(cmd);
   if (!safe) return Promise.reject(new Error(`Command blocked by policy sanitizer: ${reason}`));
@@ -113,10 +112,6 @@ class InvestigatorAgent {
       const { podName, namespace = 'default', deployment, nodeName } = issue;
       const ns = namespace;
 
-      // ── Gather all evidence concurrently ───────────────────────────────────
-      // Every command runs through the same sanitizer gate ClusterAgent uses before
-      // its own kubectl calls. Investigator only ever reads, so a sanitizer rejection
-      // just rejects that one promise — already tolerated by Promise.allSettled below.
       const logStep = podName
         ? safeRun(`kubectl --context=${kubeContext} logs ${podName} -n ${ns} --tail=100`)
         : Promise.resolve(null);
@@ -154,7 +149,6 @@ class InvestigatorAgent {
         ? vectorStore.search(`${issue.type} ${podName ?? ''} ${ns}`, 3)
         : Promise.resolve([]);
 
-      // ── Hard 10-second total timeout using Promise.allSettled ──────────────
       const results = await Promise.race([
         Promise.allSettled([logStep, prevLogStep, eventsStep, deployStep, nodeStep, promStep, vectorStep]),
         new Promise(resolve => setTimeout(() => resolve(null), GATHER_TIMEOUT_MS)),
@@ -168,7 +162,6 @@ class InvestigatorAgent {
       const val = r => (r?.status === 'fulfilled' ? r.value ?? null : null);
       const [logs, prevLogs, events, deployManifest, nodeDescribe, promParts, vectorHits] = results.map(val);
 
-      // ── Assemble evidence array ────────────────────────────────────────────
       const evidence = [];
       if (logs)     evidence.push(`current logs:\n${logs.slice(-800)}`);
       if (prevLogs) evidence.push(`previous container logs:\n${prevLogs.slice(-800)}`);
@@ -186,7 +179,6 @@ class InvestigatorAgent {
       if (Array.isArray(vectorHits) && vectorHits.length > 0)
         evidence.push(`similar past incidents: ${vectorHits.map(h => `${h.payload?.issueType}(resolved=${h.payload?.resolved})`).join(', ')}`);
 
-      // ── Single LLM call (circuit-breaker wrapped, streaming) ─────────────
       const userPrompt = `Pod: ${podName ?? 'unknown'}
 Namespace: ${ns}
 IssueType: ${issue.type}
@@ -230,7 +222,6 @@ ${evidence.join('\n\n') || '(no evidence gathered)'}`;
       if (!Array.isArray(result.evidence)) result.evidence = [];
       result.rootCause = result.suspected_cause;
 
-      // Enrich with capacity forecast context for memory/OOM issues
       const CAPACITY_ISSUE_TYPES = new Set(['OOMKilled', 'HighRestarts', 'MemNearLimit']);
       if (podName && (CAPACITY_ISSUE_TYPES.has(issue.type) || issue.oomKilled)) {
         try {
@@ -246,7 +237,7 @@ ${evidence.join('\n\n') || '(no evidence gathered)'}`;
               exhaustionAt:      fc.exhaustionAt,
             };
           }
-        } catch { /* capacity forecast unavailable — non-blocking */ }
+        } catch { }
       }
 
       console.log(`[INVESTIGATOR][${clusterName}] ${result.suspected_cause} (conf=${result.confidence.toFixed(2)}, risk=${result.risk_level})`);

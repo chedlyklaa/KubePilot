@@ -1,10 +1,7 @@
 import { useState } from 'react'
 import { SEVERITY_COLOR } from '../constants'
 
-// Shared render for every security-finding page (RBAC posture, Workload
-// Hardening, and future families) — the same severity/resource/description/
-// CIS-control/status/actions shape works for all of them, so this replaces
-// what would otherwise be a near-identical table hand-rolled per page.
+// Table of security findings
 export default function SecurityFindingsTable({ findings, loading, error, emptyMessage, onAccept, onRescan, onEscalate, busyId }) {
   const [acceptTarget, setAcceptTarget] = useState(null)
   const [acceptReason, setAcceptReason] = useState('')

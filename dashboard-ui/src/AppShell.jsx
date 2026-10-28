@@ -71,8 +71,6 @@ export default function AppShell() {
     return () => { cancelled = true; es?.close() }
   }, [notify])
 
-  // Keep the dashboard badge accurate on every page — DashboardPage only updates
-  // dashCounts while it is mounted, so we poll independently here.
   useEffect(() => {
     async function fetchCounts() {
       try {
@@ -86,7 +84,7 @@ export default function AppShell() {
           approvals: Array.isArray(approvals) ? approvals.length : 0,
           unclaimed: Array.isArray(escalations) ? escalations.filter(e => e.status === 'pending').length : 0,
         })
-      } catch { /* network unavailable — keep last known value */ }
+      } catch { }
     }
     fetchCounts()
     const id = setInterval(fetchCounts, 15_000)

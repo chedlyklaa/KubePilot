@@ -1,13 +1,7 @@
 #!/usr/bin/env bash
-# Exercises the live RBAC watch (src/services/rbacWatcher.js) end to end against a
-# real cluster: create a binding, patch it to multi-subject, delete it — and (if
-# KUBEPILOT_EMAIL/KUBEPILOT_PASSWORD are set) verify each step shows up via the API
-# the dashboard's RbacSyncPage uses. Requires the KubePilot backend already running
-# (`npm start`) and a reachable kubeconfig context (the watch needs the same cluster
-# access `kubectl` does).
+# Test the live RBAC watch end to end against a real cluster
 #
-# Usage:
-#   ./scripts/test-rbac-watch.sh
+# Usage: ./scripts/test-rbac-watch.sh
 #   CONTEXT=cluster3 CLUSTER_NAME=cluster3 KUBEPILOT_EMAIL=you@x.com KUBEPILOT_PASSWORD=... ./scripts/test-rbac-watch.sh
 
 set -euo pipefail
@@ -39,7 +33,7 @@ ok "kubectl reaches $CONTEXT"
 
 log "2. Checking KubePilot API is up at $API_BASE"
 if ! curl -sf -o /dev/null "$API_BASE/api/auth/me" -H "Authorization: Bearer invalid" --max-time 3 2>/dev/null; then
-  # 401 is expected (bad token) — curl -f treats 401 as failure, so probe differently
+  # 401 is expected here
   code=$(curl -s -o /dev/null -w '%{http_code}' "$API_BASE/api/auth/me" --max-time 3 || echo 000)
   if [ "$code" = "000" ]; then
     echo "No response from $API_BASE — start the backend first (npm start). Aborting." >&2

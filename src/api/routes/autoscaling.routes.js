@@ -14,7 +14,6 @@ function _clusterContext(name) {
   return cluster.context;
 }
 
-// GET /api/autoscaling/hpas?cluster=NAME
 router.get('/api/autoscaling/hpas', requireAuth, asyncHandler(async (req, res) => {
   const { cluster } = req.query;
   if (!cluster) return res.status(400).json({ error: 'cluster is required' });
@@ -33,8 +32,6 @@ router.get('/api/autoscaling/hpas', requireAuth, asyncHandler(async (req, res) =
     const cpuCurrent = status.currentMetrics?.find(m => m.resource?.name === 'cpu')?.resource?.current?.averageUtilization
       ?? status.currentCPUUtilizationPercentage ?? null;
 
-    // Stuck if the metrics API isn't being served at all, or the HPA hasn't managed to
-    // read any metric in its own status — either way, it's silently doing nothing.
     const noMetricsYet = !status.currentMetrics?.length && cpuCurrent == null;
     const stuck = !metricsAvailable || noMetricsYet;
 
@@ -56,7 +53,6 @@ router.get('/api/autoscaling/hpas', requireAuth, asyncHandler(async (req, res) =
   res.json({ metricsAvailable, hpas: items });
 }));
 
-// PUT /api/autoscaling/hpas/:name  { cluster, namespace, minReplicas, maxReplicas }
 router.put('/api/autoscaling/hpas/:name', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
   const { cluster, namespace, minReplicas, maxReplicas } = req.body;
   if (!cluster || !namespace) return res.status(400).json({ error: 'cluster and namespace are required' });

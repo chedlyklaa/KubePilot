@@ -1,37 +1,6 @@
 'use strict';
 
-/**
- * Fallback Planner
- *
- * Produces deterministic, conservative remediation decisions when the LLM
- * circuit breaker has exhausted all retries.  Activates only via
- * llmCircuitBreaker.runLLMCall throwing CircuitOpenError.
- *
- * Safety constraints (non-negotiable):
- *   • Never returns drain_node  — blast radius requires LLM reasoning.
- *   • Never returns scale_down  — replica math requires LLM reasoning.
- *   • Every decision carries { fallbackUsed: true, reason } so the value
- *     flows through the existing audit trail without any schema changes.
- *
- * Pod-issue rules:
- *   CrashLoopBackOff  → restart        (confidence 0.80)
- *   OOMKilled         → restart        (confidence 0.50 — memory change needs human)
- *   NodeNotReady      → cordon_node    (confidence 0.70)
- *   ImagePullBackOff  → noop + escalate
- *   Pending / other   → noop + escalate
- *
- * Node-issue rules:
- *   NodeNotReady  → cordon_node
- *   anything else → noop + escalate
- */
-
-// ── Pod-level plan ────────────────────────────────────────────────────────────
-
-/**
- * @param {object} issue   - Issue object from PodAnalyzer (type, oomKilled, …)
- * @param {string} reason  - REASON.* from llmCircuitBreaker (llm_timeout | …)
- * @returns {object}  Plan shaped identically to PlannerAgent.plan() output.
- */
+// Fallback plan when the LLM is unavailable
 function plan(issue, reason) {
   const type    = (issue.type ?? '').toLowerCase();
   const oomKill = !!(issue.oomKilled);
@@ -46,7 +15,6 @@ function plan(issue, reason) {
     confidence = 0.80;
 
   } else if (type.includes('oomkilled') || oomKill) {
-    // restart provides short-term relief; memory increase requires human approval
     action     = 'restart';
     risk       = 'MEDIUM';
     rootCause  = 'OOMKilled — LLM unavailable; restart applied (memory limit increase deferred to human review)';
@@ -97,13 +65,7 @@ function plan(issue, reason) {
   };
 }
 
-// ── Node-level plan ───────────────────────────────────────────────────────────
-
-/**
- * @param {object} nodeIssue  - NodeIssue from NodeAnalyzer (type, nodeName, …)
- * @param {string} reason     - REASON.* from llmCircuitBreaker
- * @returns {object}  Plan shaped identically to PlannerAgent.planNodeAction() output.
- */
+// Fallback plan for a node issue
 function planNodeAction(nodeIssue, reason) {
   const type = (nodeIssue.type ?? '').toLowerCase();
 

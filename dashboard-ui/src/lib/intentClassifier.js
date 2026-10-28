@@ -1,8 +1,3 @@
-// Hand-rolled regex/keyword-scoring intent classifier for the chat input — decides
-// whether a message wants a PDF export, is about the live cluster, or is a general
-// Kubernetes question. Extracted from ChatPage.jsx, which previously mixed this with
-// the PDF report renderer and the chat UI itself in one 771-line file.
-
 const PDF_PATTERNS = [
   { re: /\b(generate|create|make|build|give\s+me)\s+(\w+\s+){0,3}report\b/,   score: 6 },
   { re: /\b(download|export|save)\s+(\w+\s+){0,2}report\b/,                   score: 6 },

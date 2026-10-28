@@ -1,9 +1,4 @@
 #!/usr/bin/env node
-// One-off DIAGNOSTIC (not part of the permanent test suite) — calls the classification
-// LLM directly, WITHOUT withStructuredOutput()'s schema enforcement, using the exact
-// same system prompt orchestratorAgent.js uses, so we can see the model's raw JSON when
-// it fails IncidentSchema's superRefine (namespace/podName missing for scope:"pod").
-// Read-only: only calls kubectl get pods/nodes/events. No source files modified.
 'use strict';
 require('dotenv').config({ override: true });
 const { ChatOpenAI }     = require('@langchain/openai');
@@ -15,8 +10,6 @@ const { loadConfig }      = require('../src/config');
 
 const CONTEXT = process.argv[2] || 'kind-kubepilot-test';
 
-// Copied verbatim from src/agents/orchestratorAgent.js SYSTEM_PROMPT (read-only reference,
-// not a modification of that file).
 const SYSTEM_PROMPT = `You are the Orchestrator agent of an autonomous Kubernetes remediation system.
 You receive a compact summary of the current pods, nodes, and warning events in one cluster.
 Classify this evidence into a list of distinct INCIDENTS worth investigating — do not report

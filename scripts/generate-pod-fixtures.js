@@ -1,23 +1,7 @@
 #!/usr/bin/env node
-// =============================================================================
-// scripts/generate-pod-fixtures.js — synthetic "kubectl get pods/nodes/events -o json"
-// snapshot generator, spread across a configurable number of namespaces, for stress-
-// testing OrchestratorAgent's classification + namespace-grouping dispatch behavior
-// (see scripts/test-orchestrator-visualize.js, which consumes this).
-//
-// Deterministic when a --seed is given (same seed -> same fixture, so a run can be
-// reproduced) — otherwise seeds from the current time.
-//
-// Usage (as a CLI, prints the fixture as JSON):
-//   node scripts/generate-pod-fixtures.js --namespaces=5 --perNamespace=4 --failureRate=0.5 --seed=42
-//
-// Usage (as a module):
-//   const { generateFixture } = require('./generate-pod-fixtures');
-//   const fixture = generateFixture({ namespaceCount: 5, podsPerNamespace: 4, failureRate: 0.5, seed: 42 });
-// =============================================================================
 'use strict';
 
-// mulberry32 — small, fast, seedable PRNG (Math.random() can't be seeded).
+// Seedable random number generator
 function mulberry32(seed) {
   let a = seed >>> 0;
   return function rand() {
@@ -39,9 +23,6 @@ function randHex(rand, len) {
   return s;
 }
 
-// Each failure mode returns the containerStatuses[0] override + an optional matching
-// Warning event — mirrors the symptom+event pairing the real classifier is told
-// (SYSTEM_PROMPT in orchestratorAgent.js) to merge into ONE incident, not two.
 const FAILURE_MODES = {
   healthy: (rand, ctx) => ({
     phase: 'Running',
@@ -91,7 +72,7 @@ const FAILURE_MODES = {
   }),
   pending: (rand, ctx) => ({
     phase: 'Pending',
-    containerStatus: null, // unscheduled — no containerStatuses yet, same as a real Pending pod
+    containerStatus: null,
     event: {
       reason: 'FailedScheduling', count: 1 + Math.floor(rand() * 8),
       message: '0/3 nodes are available: 3 Insufficient cpu.',
@@ -136,15 +117,15 @@ function buildPod(rand, namespace, nodeName, forcedMode) {
   return { pod, event: evt, mode, appName };
 }
 
-// ── Public API ───────────────────────────────────────────────────────────────
+// Generate a pod fixture
 function generateFixture(opts = {}) {
   const {
     namespaceCount   = 3,
     podsPerNamespace = 3,
     nodeCount        = 2,
-    failureRate      = 0.5,   // fraction of pods NOT forced healthy (rest are random failure modes)
-    nodeFailureRate  = 0,     // fraction of nodes forced NotReady
-    namespaces       = null,  // explicit namespace names; overrides namespaceCount if given
+    failureRate      = 0.5,
+    nodeFailureRate  = 0,
+    namespaces       = null,
     seed             = Date.now() >>> 0,
   } = opts;
 
@@ -167,7 +148,7 @@ function generateFixture(opts = {}) {
 
   const pods = [];
   const events = [];
-  const manifest = []; // { namespace, podName, mode } — what we intended to generate, for comparison against what the LLM actually classified
+  const manifest = [];
 
   for (const namespace of nsNames) {
     for (let i = 0; i < podsPerNamespace; i++) {
@@ -189,7 +170,6 @@ function generateFixture(opts = {}) {
   };
 }
 
-// ── CLI ──────────────────────────────────────────────────────────────────────
 if (require.main === module) {
   const args = Object.fromEntries(process.argv.slice(2).map(a => {
     const [k, v] = a.replace(/^--/, '').split('=');

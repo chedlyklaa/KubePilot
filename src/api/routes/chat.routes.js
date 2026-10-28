@@ -12,7 +12,6 @@ const { asyncHandler } = require('../middleware/asyncHandler');
 const router = express.Router();
 const { buildClusterContext } = chatService;
 
-// ── Chat config (returns LLM model info — API key stays server-side) ──────
 router.get('/api/chat/config', requireAuth, (_req, res) => {
   res.json({
     model:   process.env.OPENAI_MODEL   || '',
@@ -20,7 +19,6 @@ router.get('/api/chat/config', requireAuth, (_req, res) => {
   });
 });
 
-// ── Chat endpoints (delegated to chatService) ──────────────────────────────
 router.post('/api/chat', requireAuth, (req, res) => chatService.chatNonStreaming(req, res, llm));
 
 router.get('/api/chat/cluster-context', requireAuth, loadPerms, asyncHandler(async (req, res) => {
@@ -32,7 +30,6 @@ router.get('/api/chat/cluster-context', requireAuth, loadPerms, asyncHandler(asy
 router.post('/api/chat/stream', requireAuth, (req, res) => chatService.streamChat(req, res, { llm, chatTools }));
 router.post('/api/chat/pdf-report', requireAuth, (req, res) => chatService.generatePdfReport(req, res, llm));
 
-// ── Chat history (per-user, persisted in MongoDB) ────────────────────────────
 router.get('/api/chat/history', requireAuth, asyncHandler(async (req, res) => {
   const doc = await ChatHistory.findOne({ userId: req.user.id });
   const all = doc?.messages || [];

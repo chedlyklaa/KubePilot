@@ -1,11 +1,8 @@
-// Per-user SSE notification delivery + MongoDB persistence.
-// Tracks live SSE connections so notifications reach the right browser tab.
-
 'use strict';
 
 const { Notification } = require('../db/models');
 
-const connections = new Map(); // userId → Set<SSEResponse>
+const connections = new Map();
 
 function register(userId, res) {
   if (!connections.has(userId)) connections.set(userId, new Set());

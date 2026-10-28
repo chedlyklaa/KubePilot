@@ -10,8 +10,6 @@ const { asyncHandler } = require('../middleware/asyncHandler');
 
 const router = express.Router();
 
-// GET /api/capacity/forecast?cluster=NAME
-// Returns latest cached forecast for a cluster, or computes a fresh one.
 router.get('/api/capacity/forecast', requireAuth, asyncHandler(async (req, res) => {
   const cluster = req.query.cluster || null;
   if (!cluster) return res.status(400).json({ error: 'cluster query param required' });
@@ -23,8 +21,6 @@ router.get('/api/capacity/forecast', requireAuth, asyncHandler(async (req, res) 
   res.json({ enabled: true, cluster, forecast: forecast ?? null });
 }));
 
-// GET /api/capacity/history?cluster=NAME&target=node:node-1&hours=48
-// Returns raw MetricSnapshot timeseries for sparkline rendering.
 router.get('/api/capacity/history', requireAuth, asyncHandler(async (req, res) => {
   const { cluster, target, hours } = req.query;
   if (!cluster || !target) return res.status(400).json({ error: 'cluster and target query params required' });
@@ -40,7 +36,6 @@ router.get('/api/capacity/history', requireAuth, asyncHandler(async (req, res) =
   res.json({ enabled: true, cluster, target, snapshots });
 }));
 
-// ── Capacity overview (delegated to capacityService) ────────────────────
 router.get('/api/capacity/overview', requireAuth, asyncHandler(async (req, res) => {
   const clusterName = req.query.cluster;
   if (!clusterName) return res.status(400).json({ error: 'cluster required' });

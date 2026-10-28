@@ -1,14 +1,10 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 
-// shortMemory.js pulls in ../config, whose EnvSchema requires OPENAI_API_KEY/
-// OPENAI_MODEL/NOTIFICATION_SECRET to be set — same pattern as escalationStore.test.js:
-// set them before the module graph loads, via a dynamic (non-hoisted) import.
 process.env.OPENAI_API_KEY    ??= 'test-only-key';
 process.env.OPENAI_MODEL      ??= 'test-model';
 process.env.NOTIFICATION_SECRET ??= 'test-only-secret-not-a-real-value-0123456789';
 
-// In-memory fake standing in for the `redis` client — exercises shortMemory.js's own
-// key-construction/branching logic without requiring a real Redis server in CI.
+// Fake Redis client
 function fakeRedisClient() {
   const store = new Map();
   const zsets = new Map();
@@ -71,9 +67,6 @@ beforeAll(async () => {
   ({ default: shortMemory } = await import('./shortMemory.js'));
 });
 
-// Inject the fake client directly rather than going through initialize() — avoids
-// any real network attempt against a Redis server that may not exist in CI, and
-// keeps this a pure test of shortMemory.js's own key-construction/branching logic.
 beforeEach(() => {
   fake = fakeRedisClient();
   shortMemory.client = fake;
@@ -116,9 +109,6 @@ describe('ShortMemory — per-resource lock', () => {
   });
 });
 
-// Fleet-wide now, not per-cluster (queueKey()/activeKey() dropped their cluster
-// parameter — see shortMemory.js) — one flat queue/active-set for the whole fleet,
-// since a single dispatch key can itself span multiple clusters' incidents.
 describe('ShortMemory — priority queue (fleet-wide)', () => {
   it('dequeues highest-priority incidents first', async () => {
     await shortMemory.enqueue('ns/low', 1);

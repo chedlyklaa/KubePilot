@@ -1,13 +1,6 @@
-// override: true — otherwise a variable already sitting in the shell's environment
-// (e.g. a leftover `$env:OPENAI_API_KEY = "..."` from an earlier debugging session)
-// silently wins over .env. This is the FIRST env load in the process and loadConfig()
-// below caches its result for the process's entire lifetime, so getting this right
-// here is what actually matters — a later override:true elsewhere (e.g. llmClient.js)
-// is too late, since by then loadConfig() has already frozen the (possibly stale) config.
 require('dotenv').config({ override: true });
 require('./src/api/logStore');
 
-// ─── Validate environment up front — fails loudly here instead of at request time ───
 const { loadConfig } = require('./src/config');
 let config;
 try {
@@ -25,15 +18,8 @@ const silenceStore       = require('./src/api/silenceStore');
 const issueTrackerStore  = require('./src/api/issueTrackerStore');
 const sessionManager     = require('./src/services/sessionManager');
 
-// Sweep any per-cluster kubeconfig files orphaned by a previous crash before anything
-// starts using the runtime directory — this is the real cleanup guarantee, not the
-// shutdown handlers (which never fire on SIGKILL or a hard crash).
 sessionManager.initRuntimeDir();
 
-// ─── Auto port-forward: Prometheus ──────────────────────────────────────────
-// Spawns kubectl port-forward in the background so PROMETHEUS_URL=http://localhost:9090
-// works without manual setup. Restarts automatically if the process dies.
-// Only runs when PROMETHEUS_URL points to localhost (skip for remote clusters).
 ;(function startPrometheusForward() {
   const url = config.PROMETHEUS_URL;
   if (!url.includes('localhost') && !url.includes('127.0.0.1')) return;
@@ -44,9 +30,6 @@ sessionManager.initRuntimeDir();
   const NS    = config.PROMETHEUS_NAMESPACE;
   const LOCAL = new URL(url).port || '9090';
   let   stopping = false;
-  // Only ever attempted ONCE per process — a slow/failed Helm install must not repeat
-  // on every 5s port-forward retry below (which otherwise runs forever independent of
-  // this).
   let   installAttempted = false;
   let   installInProgress = false;
 
@@ -67,13 +50,7 @@ sessionManager.initRuntimeDir();
     catch { return false; }
   }
 
-  // Installs the same kube-prometheus-stack release scripts/start.sh already sets up
-  // manually (same chart, same values) — so running `node index.js` directly, without
-  // start.sh, still ends up with a working Prometheus instead of the "namespace not
-  // found" port-forward retry looping forever. Best-effort, fire-and-forget (a 3-8
-  // minute Helm install must not block the HTTP server from starting or the port-forward
-  // retry loop below, which keeps running — and will simply start succeeding once this
-  // finishes).
+  // Install the kube-prometheus-stack Helm release
   async function installPrometheusStack() {
     installInProgress = true;
     console.log(`[PROM] namespace "${NS}" not found — installing kube-prometheus-stack into it (this can take several minutes)...`);
@@ -117,10 +94,6 @@ sessionManager.initRuntimeDir();
     pf.on('spawn', () => console.log(`[PROM] Port-forward started → localhost:${LOCAL}`));
     pf.on('error', () => {});
     pf.stderr?.on('data', d => {
-      // Suppress noise for two known, already-handled cases: "address already in use"
-      // (the probe handles that) and anything while an install is in flight (we already
-      // logged why once in installPrometheusStack() — no need to repeat the same
-      // NotFound error every 5s until it finishes).
       if (installInProgress) return;
       const msg = d.toString().trim();
       if (msg && !msg.includes('address already in use')) console.warn(`[PROM] ${msg}`);
@@ -135,13 +108,12 @@ sessionManager.initRuntimeDir();
     if (stopping) return;
 
     if (!installAttempted) {
-      installAttempted = true; // never retry the install itself, only ever once
+      installAttempted = true;
       if (!(await namespaceExists())) {
-        installPrometheusStack(); // fire-and-forget — see doc comment above
+        installPrometheusStack();
       }
     }
 
-    // Probe: if port already bound (previous forward still alive) skip spawn
     const probe = net.createConnection({ port: Number(LOCAL), host: '127.0.0.1' });
     probe.setTimeout(800);
     probe.on('connect', () => {
@@ -167,7 +139,6 @@ const OrchestratorAgent = require('./src/agents/orchestratorAgent');
 const ClusterAgent      = require('./src/agents/clusterAgent');
 const clusterConfig     = require('./src/config/clusterConfig');
 
-// ─── Parse CLI args ─────────────────────────────────────────────────────────
 const args    = process.argv.slice(2);
 const mode    = args.includes('--benchmark') ? 'benchmark'
               : args.includes('--task')      ? 'task'
@@ -175,14 +146,9 @@ const mode    = args.includes('--benchmark') ? 'benchmark'
 
 async function main() {
   if (mode === 'autonomous') {
-    // Always the v5 pipeline (LLM classification + LangGraph remediation, Redis Short
-    // Memory) — no longer a runtime toggle (was ORCHESTRATOR_V5_ENABLED). The legacy
-    // FleetOrchestrator/ClusterAgent pipeline is no longer reachable from here; the
-    // files still exist (ClusterAgent is still used directly by `--task` mode below).
     await OrchestratorAgent.start(config.CYCLE_INTERVAL_MS);
 
   } else if (mode === 'task') {
-    // Run a single task against a specific cluster
     const taskIdx   = args.indexOf('--task');
     const task      = args[taskIdx + 1];
     const clusterIdx = args.indexOf('--cluster');
@@ -204,7 +170,6 @@ async function main() {
     console.log('\nTask complete:', JSON.stringify(result, null, 2));
 
   } else if (mode === 'benchmark') {
-    // Run the evaluation benchmark
     const { runBenchmark } = require('./benchmark/runner/run');
     await runBenchmark();
   }

@@ -2,10 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { apiFetch } from '../lib/api'
 import { useNotify } from '../contexts/NotifyContext'
 
-// Shared data layer for every security-finding page (RBAC posture, Workload
-// Hardening, and future families) — load/accept/rescan/escalate all hit the
-// same generic /api/security/findings/:id/* routes regardless of `kind`, so
-// there's nothing family-specific to duplicate per page.
+// Load and manage security findings
 export function useSecurityFindings(cluster, kind) {
   const notify = useNotify()
   const [findings, setFindings] = useState(null)

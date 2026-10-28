@@ -1,23 +1,14 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 
-// podHealth.js requires ./kubectl, which transitively requires sessionManager.js ->
-// notifications/crypto.js, which throws at module load if NOTIFICATION_SECRET is unset
-// — same env-vars-before-import requirement graph.test.js has, and the same fix: set
-// them before a dynamic (non-hoisted) import, since a static `import` is hoisted above
-// any code that would set them first.
 process.env.NOTIFICATION_SECRET ??= 'test-only-secret-not-a-real-value-0123456789';
 
-let verifyResourceHealthy, isActiveContainerProblem;
+let verifyResourceHealthy, isActiveContainerProblem, isPodHealthy;
 
 beforeAll(async () => {
-  ({ verifyResourceHealthy, isActiveContainerProblem } = await import('./podHealth.js'));
+  ({ verifyResourceHealthy, isActiveContainerProblem, isPodHealthy } = await import('./podHealth.js'));
 });
 
-// Fake kubectl matching the real module's getPods(ns, context, asJson)/getNodes(context)/
-// runCommand(cmd) shape, passed via verifyResourceHealthy's injectable `kubectl` option —
-// avoids mocking require('./kubectl') at the module level (Vitest's ESM-oriented vi.mock
-// does not reliably intercept a plain CJS require() call in a "type": "commonjs" project;
-// same reasoning as permissionService.test.js's fakeModels()).
+// Fake kubectl module
 function fakeKubectl({ pods = [], nodes = [], runCommand } = {}) {
   return {
     getPods: async () => ({ items: pods }),
@@ -48,13 +39,28 @@ describe('isActiveContainerProblem', () => {
   });
 
   it('is a problem when a restart happened recently, even if ready now', () => {
-    const finishedAt = new Date(Date.now() - 60_000).toISOString(); // 1 min ago
+    const finishedAt = new Date(Date.now() - 60_000).toISOString();
     expect(isActiveContainerProblem({ ready: true, restartCount: 1, lastState: { terminated: { finishedAt } } })).toBe(true);
   });
 
   it('is not a problem when the only restart happened long ago (outside the recency window)', () => {
-    const finishedAt = new Date(Date.now() - 60 * 60_000).toISOString(); // 1 hour ago
+    const finishedAt = new Date(Date.now() - 60 * 60_000).toISOString();
     expect(isActiveContainerProblem({ ready: true, restartCount: 1, lastState: { terminated: { finishedAt } } })).toBe(false);
+  });
+});
+
+describe('isPodHealthy', () => {
+  it('is healthy when Running with every container ready and no restarts', () => {
+    expect(isPodHealthy(pod())).toBe(true);
+  });
+
+  it('is not healthy for a CrashLoopBackOff pod caught briefly Running+Ready right after a restart', () => {
+    const finishedAt = new Date(Date.now() - 30_000).toISOString();
+    expect(isPodHealthy(pod({ containers: [{ ready: true, restartCount: 5, state: { running: {} }, lastState: { terminated: { finishedAt } } }] }))).toBe(false);
+  });
+
+  it('is not healthy when a container is waiting on an image pull', () => {
+    expect(isPodHealthy(pod({ phase: 'Pending', containers: [{ ready: false, restartCount: 0, state: { waiting: { reason: 'ImagePullBackOff' } } }] }))).toBe(false);
   });
 });
 
@@ -135,11 +141,6 @@ describe('verifyResourceHealthy — Node', () => {
 });
 
 describe('verifyResourceHealthy — generic kind (§Fix-VerifyGenericKind)', () => {
-  // Regression test: a kind with no dedicated verifier (Secret, ConfigMap,
-  // ServiceAccount, ...) used to be reported unhealthy unconditionally ("no
-  // verification method"), which made graph.js roll back — and delete — a Secret a
-  // Planner step had just correctly created. Confirmed live, 2026-09-21
-  // (single-issue-test/secret-app never resolved because of exactly this).
   it('is healthy when a live "kubectl get <kind> <name>" succeeds, for any kind', async () => {
     let seenCommand;
     const kubectl = fakeKubectl({ runCommand: async cmd => { seenCommand = cmd; return 'secret/smtp-credentials'; } });

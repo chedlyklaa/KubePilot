@@ -1,8 +1,7 @@
-// Shared color-threshold progress bar — CapacityPage, AutoscalingPage, and
-// PoliciesPage each used to define a near-identical local copy of this.
+// Pick bar color from usage percentage
 const THRESHOLD_COLOR = pct => pct >= 90 ? 'var(--danger)' : pct >= 75 ? 'var(--warn)' : 'var(--success)'
 
-// Percentage-driven bar: caller already has a 0-100 number (CPU/mem %, forecast %).
+// Progress bar from a percentage
 export function PercentBar({ value, label, size = 'md' }) {
   const v = value ?? 0
   return (
@@ -15,7 +14,7 @@ export function PercentBar({ value, label, size = 'md' }) {
   )
 }
 
-// Parse a Kubernetes resource quantity string ("500m", "2Gi", "4") into a raw number.
+// Parse a Kubernetes quantity string into a number
 export function parseQty(str) {
   if (str == null) return null
   const m = String(str).match(/^([\d.]+)([A-Za-z]*)$/)
@@ -26,7 +25,7 @@ export function parseQty(str) {
   return mult[unit] ? n * mult[unit] : n
 }
 
-// Quantity-driven bar: caller has raw "used"/"hard" quantity strings (ResourceQuota).
+// Progress bar from used and hard quota values
 export function QuotaBar({ used, hard }) {
   const u = parseQty(used), h = parseQty(hard)
   const pct = u != null && h ? Math.min(100, (u / h) * 100) : null

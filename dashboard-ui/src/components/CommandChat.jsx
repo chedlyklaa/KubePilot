@@ -2,10 +2,9 @@ import { useState, useRef, useEffect } from 'react'
 import { apiFetch } from '../lib/api'
 import { RISK_COLOR, CATEGORY_ICON } from '../constants'
 
-// Terminal = turn is finished and should be persisted; it breaks the clarification thread.
 const TERMINAL = new Set(['done', 'denied', 'error'])
 
-// Strip ephemeral states before storing so reloaded turns render cleanly.
+// Remove temporary states before saving a turn
 function cleanTurn(t) {
   return {
     id:          t.id,
@@ -15,7 +14,6 @@ function cleanTurn(t) {
     result:      t.result  ?? null,
     error:       t.error   ?? null,
     recovery:    t.recovery?.status === 'ready' ? t.recovery : null,
-    // Persist clarifying turns so the thread is readable on reload
     ...(t.status === 'clarifying' ? { clarifyingQuestion: t.plan?.question ?? null } : {}),
   }
 }
@@ -33,7 +31,6 @@ export default function CommandChat() {
   useEffect(() => { turnsRef.current = turns }, [turns])
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [turns])
 
-  // Load history from MongoDB on first mount
   useEffect(() => {
     apiFetch('/api/command/history')
       .then(r => r.json())
@@ -44,8 +41,6 @@ export default function CommandChat() {
       .finally(() => setLoaded(true))
   }, [])
 
-  // Debounced auto-save: 1.5 s after any turns change, once loaded.
-  // Only save terminal turns to avoid persisting mid-stream states.
   useEffect(() => {
     if (!loaded) return
     const terminal = turns.filter(t => TERMINAL.has(t.status) || t.status === 'clarifying')
@@ -71,8 +66,7 @@ export default function CommandChat() {
   const patchById = (id, fn) =>
     setTurns(prev => prev.map(t => t.id === id ? fn(t) : t))
 
-  // Collect all clarifying turns in the current thread (from last terminal turn onward).
-  // Passed to LLM2 so it has full conversation context, not just the latest answer.
+  // Build the conversation history for the current thread
   function buildConversationHistory() {
     const all = turnsRef.current
     let threadStart = 0
@@ -119,11 +113,9 @@ export default function CommandChat() {
         setBusy(false)
         return
       }
-      // ── Phase 7: handle clarification response ────────────────────────────
       if (data.type === 'clarification') {
         patchLast(t => ({ ...t, status: 'clarifying', plan: data }))
       } else {
-        // 'command' or 'provision' — proceed to approval
         patchLast(t => ({ ...t, status: 'awaiting_approval', plan: data }))
       }
     } catch (err) {
@@ -136,7 +128,6 @@ export default function CommandChat() {
   async function approve(id) {
     const turn = turnsRef.current.find(t => t.id === id)
 
-    // ── Cluster provisioning (polling) ───────────────────────────────────────
     if (turn?.plan?.type === 'provision') {
       patchById(id, t => ({ ...t, status: 'provisioning', provisionLog: '' }))
       const { profileName, tier } = turn.plan
@@ -158,7 +149,6 @@ export default function CommandChat() {
         return
       }
 
-      // Poll every 2 s — safe through any proxy, no SSE/EventSource issues
       const poll = setInterval(async () => {
         try {
           const r    = await apiFetch(`/api/cluster/provision/status?id=${jobId}`)
@@ -179,13 +169,12 @@ export default function CommandChat() {
               error: data.error ?? 'minikube start failed — check logs above',
             }))
           }
-        } catch (_e) { /* network hiccup — keep polling */ }
+        } catch (_e) { }
       }, 2000)
 
       return
     }
 
-    // ── Regular kubectl command ───────────────────────────────────────────────
     patchById(id, t => ({ ...t, status: 'executing' }))
     const command = turn?.plan?.command
     try {
@@ -251,7 +240,6 @@ export default function CommandChat() {
 
   const onKeyDown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }
 
-  // Determine placeholder hint based on context
   const inThread = turns.length > 0 && turns[turns.length - 1]?.status === 'clarifying'
   const inputPlaceholder = inThread
     ? 'Type your answer…'
@@ -286,7 +274,6 @@ export default function CommandChat() {
               </div>
             )}
 
-            {/* ── Phase 7: clarification bubble ──────────────────────────── */}
             {t.status === 'clarifying' && t.plan && (
               <div className="cmd-bubble-agent cmd-clarify">
                 <div className="cmd-clarify-icon">❓</div>

@@ -1,26 +1,4 @@
 #!/usr/bin/env node
-// =============================================================================
-// scripts/trace-cli.js — developer-only per-pod decision timeline, built from the
-// IncidentTracer JSONL files each workflow writes (src/monitoring/incidentTracer.js).
-//
-// This is a pure log reader: it never touches Mongo/Redis/the dashboard API, and
-// nothing it prints is available anywhere in the app's user-facing output — the same
-// separation IncidentTracer itself enforces (logs/CLI only, never issueTrackerStore's
-// user-facing /issues timeline).
-//
-// Usage:
-//   node scripts/trace-cli.js pod <namespace>/<name>   every incident that touched
-//                                                       this pod, across every
-//                                                       ./logs/*.jsonl file, newest first
-//   node scripts/trace-cli.js incident <workflowId>    the same timeline for one
-//                                                       workflow (reads
-//                                                       ./logs/<workflowId>.jsonl directly)
-//
-// Related raw-log one-liners (no CLI needed):
-//   tail -f logs/<workflowId>.jsonl | jq                     follow one workflow live
-//   jq 'select(.component=="guardian")' logs/*.jsonl         every Guardian verdict, fleet-wide
-//   jq 'select(.resource.name=="api-7f9")' logs/*.jsonl       every event for one pod, raw
-// =============================================================================
 'use strict';
 
 const fs   = require('fs');
@@ -45,7 +23,7 @@ function readAllEvents(files) {
     try { raw = fs.readFileSync(file, 'utf8'); } catch { continue; }
     for (const line of raw.split('\n')) {
       if (!line.trim()) continue;
-      try { events.push(JSON.parse(line)); } catch { /* skip a malformed/partial line */ }
+      try { events.push(JSON.parse(line)); } catch { }
     }
   }
   return events;
@@ -139,7 +117,6 @@ function tracePod(podArg) {
     return;
   }
 
-  // Oldest incident first — reads top-to-bottom as a history of what happened to this pod.
   const workflowIds = [...byWorkflow.keys()].sort(
     (a, b) => new Date(byWorkflow.get(a)[0].ts) - new Date(byWorkflow.get(b)[0].ts)
   );

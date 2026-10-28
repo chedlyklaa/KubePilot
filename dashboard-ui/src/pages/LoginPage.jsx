@@ -3,7 +3,6 @@ import { useAuth } from '../contexts/AuthContext'
 import ThemeToggle from '../components/ThemeToggle'
 import HelpModal from '../components/HelpModal'
 
-// ── Flow schemas ──────────────────────────────────────────────────────────
 const SCHEMAS = [
   {
     id: 'monitoring',
@@ -187,7 +186,6 @@ const SCHEMAS = [
   },
 ]
 
-// ── How everything connects to minikube ───────────────────────────────────
 const MINIKUBE_CONNECTIONS = [
   { from: 'Orchestrator Agent',   arrow: 'kubectl get pods / nodes / events', color: '#3b82f6' },
   { from: 'Investigator',         arrow: 'kubectl describe / logs / get (read-only)', color: '#8b5cf6' },
@@ -205,12 +203,11 @@ const FEATURES = [
   { icon: '💬', title: 'Natural Language Orders',  body: 'Type commands in plain English. A two-LLM clarification chain collects every missing parameter before generating kubectl.' },
 ]
 
-// ── Component ──────────────────────────────────────────────────────────────
+// Login page
 export default function LoginPage() {
   const { login }                       = useAuth()
   const [showModal, setShowModal]       = useState(false)
   const [showHelp, setShowHelp]         = useState(false)
-  // 'login' | 'forgot' | 'sent' | 'reset'
   const [view, setView]                 = useState('login')
   const [email, setEmail]               = useState('')
   const [password, setPassword]         = useState('')
@@ -222,7 +219,6 @@ export default function LoginPage() {
   const [error, setError]               = useState('')
   const [loading, setLoading]           = useState(false)
 
-  // Detect ?reset=<token> in URL to open the reset-password form directly
   useEffect(() => {
     const token = new URLSearchParams(window.location.search).get('reset')
     if (token) { setResetToken(token); setView('reset'); setShowModal(true) }
@@ -296,7 +292,6 @@ export default function LoginPage() {
   return (
     <div className="lp-root">
 
-      {/* ── Navbar ──────────────────────────────────────────────────────── */}
       <nav className="lp-nav">
         <div className="lp-nav-logo">
           <span className="lp-nav-icon">⎈</span>
@@ -309,7 +304,6 @@ export default function LoginPage() {
         </div>
       </nav>
 
-      {/* ── Hero ────────────────────────────────────────────────────────── */}
       <section className="lp-hero">
         <div className="lp-hero-badge">Autonomous Kubernetes Operations</div>
         <h1 className="lp-hero-title">AI-Powered Cluster<br />Management Platform</h1>
@@ -320,7 +314,6 @@ export default function LoginPage() {
         <button className="lp-hero-cta" onClick={openModal}>Get Started →</button>
       </section>
 
-      {/* ── Flow schemas ─────────────────────────────────────────────────── */}
       <section className="lp-arch">
         <h2 className="lp-section-title">How KubePilot Works</h2>
         <p className="lp-section-sub">
@@ -391,7 +384,6 @@ export default function LoginPage() {
           ))}
         </div>
 
-        {/* ── Minikube connection map ──────────────────────────────────── */}
         <div className="lp-minikube-section">
           <h3 className="lp-section-title" style={{ fontSize: 20 }}>How Everything Connects to Minikube</h3>
           <p className="lp-section-sub">Every agent communicates with your cluster through kubectl context</p>
@@ -414,7 +406,6 @@ export default function LoginPage() {
         </div>
       </section>
 
-      {/* ── Feature cards ───────────────────────────────────────────────── */}
       <section className="lp-features">
         {FEATURES.map(f => (
           <div key={f.title} className="lp-feature-card">
@@ -425,7 +416,6 @@ export default function LoginPage() {
         ))}
       </section>
 
-      {/* ── Footer CTA ──────────────────────────────────────────────────── */}
       <section className="lp-footer-cta">
         <h2>Ready to automate your cluster ops?</h2>
         <button className="lp-hero-cta" onClick={openModal}>Sign in to KubePilot</button>
@@ -433,13 +423,11 @@ export default function LoginPage() {
 
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
 
-      {/* ── Login / Forgot-password modal ────────────────────────────────── */}
       {showModal && (
         <div className="lp-overlay" onClick={e => { if (e.target === e.currentTarget) closeModal() }}>
           <div className="lp-modal">
             <button className="lp-modal-close" onClick={closeModal}>✕</button>
 
-            {/* ── Sign-in view ─────────────────────────────────────────── */}
             {view === 'login' && (<>
               <div className="login-logo">
                 <span className="login-logo-icon">⎈</span>
@@ -480,7 +468,6 @@ export default function LoginPage() {
               )}
             </>)}
 
-            {/* ── Forgot-password view ─────────────────────────────────── */}
             {view === 'forgot' && (<>
               <div className="login-logo">
                 <span className="login-logo-icon">⎈</span>
@@ -503,7 +490,6 @@ export default function LoginPage() {
               </div>
             </>)}
 
-            {/* ── Email sent confirmation ──────────────────────────────── */}
             {view === 'sent' && (<>
               <div className="login-logo">
                 <span className="login-logo-icon">⎈</span>
@@ -522,7 +508,6 @@ export default function LoginPage() {
               </div>
             </>)}
 
-            {/* ── Reset-password view (opened via ?reset=token URL) ────── */}
             {view === 'reset' && (<>
               <div className="login-logo">
                 <span className="login-logo-icon">⎈</span>

@@ -33,19 +33,6 @@ Output ONLY valid JSON. No markdown.`;
 
 class PlannerAgent {
   constructor() {
-    // ── Context section registry ──────────────────────────────────────────
-    // Each entry formats one optional evidence block for plan()'s prompt. Adding a new
-    // signal source (a new engine's output) means adding ONE entry here — not a new
-    // destructured param, a new method, AND a new template insertion point kept in sync
-    // by hand across three places.
-    //
-    // `prefix` reproduces this file's historical prompt layout exactly: the first seven
-    // sections were each on their own template-literal line, so got an unconditional
-    // leading blank line even when empty; the last three were concatenated with no
-    // separator, relying solely on each formatter's own leading '\n' when non-empty.
-    // New sections should normally use prefix: '' (self-contained leading '\n' inside
-    // the formatter itself, as changeCorrelation/capacityForecast/rca already do) so an
-    // inactive section doesn't leave a stray blank line.
     this.contextSections = [
       { key: 'metrics',           prefix: '\n', formatter: p => this._formatMetrics(p.metrics) },
       { key: 'nodeContext',       prefix: '\n', formatter: p => this._formatNodeContext(p.nodeMetrics, p.nodeIssues) },
@@ -65,20 +52,15 @@ class PlannerAgent {
     ];
   }
 
-  // Builds the full dynamic-evidence block from the registered context sections above.
+  // Build the context block for the prompt
   _buildContextBlock(params) {
     return this.contextSections.map(s => s.prefix + s.formatter(params)).join('');
   }
 
-  /**
-   * Plan remediation for a pod issue.
-   * All existing parameters preserved; new optional node/event/correlation context added.
-   */
+  // Plan the fix for a pod issue
   async plan(params) {
     const {
       issue, podLogs, attempt, structuralMatches, semanticMatches, learnedRules, metrics,
-      // Defaults applied here since params is no longer destructured in the signature —
-      // callers may omit any of these exactly as before.
       nodeMetrics = null, nodeIssues = [], events = [], correlationFindings = [], clusterFindings = [],
       investigationContext = null, rca = null, changeCorrelation = null, capacityForecast = null,
     } = params;
@@ -224,7 +206,6 @@ Return ONLY valid JSON:
       parsed.action = 'noop';
     }
 
-    // Structural guard: delete_pod makes no sense for deployment-managed pods
     if (parsed.action === 'delete_pod' && hasDeployment) {
       console.warn('[PLANNER] delete_pod overridden to rollback (deployment exists)');
       parsed.action = 'rollback';
@@ -233,10 +214,7 @@ Return ONLY valid JSON:
     return parsed;
   }
 
-  /**
-   * Plan remediation for a node-level issue (NodeNotReady, NodeMemoryPressure, etc.)
-   * Separate entry point to keep node prompts focused.
-   */
+  // Plan the fix for a node issue
   async planNodeAction({ nodeIssue, nodeMetrics, affectedPods, events, attempt, pastEpisodes = [], learnedRules = [] }) {
     const pastCtx  = this._formatPastEpisodes(pastEpisodes, []);
     const rulesCtx = this._formatRules(learnedRules);
@@ -308,7 +286,7 @@ Return ONLY valid JSON:
     }
   }
 
-  // ── Change Correlation context ────────────────────────────────────────────
+  // Format change correlation context
   _formatChangeCorrelation(cc) {
     if (!cc || cc.confidence < 0.2) return '';
     const level = cc.confidence >= 0.60 ? 'HIGH' : cc.confidence >= 0.35 ? 'MEDIUM' : 'LOW';
@@ -331,7 +309,7 @@ Return ONLY valid JSON:
     return lines.join('\n');
   }
 
-  // ── Capacity Forecast context ─────────────────────────────────────────────
+  // Format capacity forecast context
   _formatCapacityForecast(fc) {
     if (!fc || (fc.alertLevel !== 'HIGH' && fc.alertLevel !== 'CRITICAL')) return '';
 
@@ -355,7 +333,7 @@ Return ONLY valid JSON:
     return lines.join('\n');
   }
 
-  // ── Investigation Gate context ────────────────────────────────────────────
+  // Format investigation context
   _formatInvestigationContext(ctx) {
     if (!ctx) return '';
 
@@ -389,7 +367,7 @@ Return ONLY valid JSON:
     return lines.join('\n');
   }
 
-  // ── Format pod Prometheus metrics ─────────────────────────────────────────
+  // Format pod metrics
   _formatMetrics(metrics) {
     if (!metrics) return '';
     const lines = ['\nPOD METRICS SNAPSHOT (Prometheus — last 15 minutes)'];
@@ -400,7 +378,7 @@ Return ONLY valid JSON:
     return lines.join('\n');
   }
 
-  // ── Format node-level metrics ─────────────────────────────────────────────
+  // Format node metrics
   _formatNodeContext(nodeMetrics, nodeIssues) {
     const lines = [];
     if (nodeIssues?.length) {
@@ -428,10 +406,9 @@ Return ONLY valid JSON:
     return lines.join('\n');
   }
 
-  // ── Format Kubernetes events ──────────────────────────────────────────────
+  // Format Kubernetes events
   _formatEvents(events, issue) {
     if (!events?.length) return '';
-    // Filter to events relevant to this pod/node
     const relevant = events.filter(e =>
       (issue?.podName    && e.name      === issue.podName)    ||
       (issue?.nodeName   && e.nodeName  === issue.nodeName)   ||
@@ -446,7 +423,7 @@ Return ONLY valid JSON:
     return lines.join('\n');
   }
 
-  // ── Format correlation findings ───────────────────────────────────────────
+  // Format correlation findings
   _formatCorrelation(correlationFindings, clusterFindings) {
     if (!correlationFindings?.length && !clusterFindings?.length) return '';
     const lines = ['\nCORRELATION & CLUSTER CONTEXT'];
@@ -459,7 +436,7 @@ Return ONLY valid JSON:
     return lines.join('\n');
   }
 
-  // ── Format past episodes ──────────────────────────────────────────────────
+  // Format past episodes
   _formatPastEpisodes(structural, semantic) {
     if (!structural?.length && !semantic?.length) return '';
     const lines = ['\nPAST SIMILAR INCIDENTS (use to inform your decision)'];
@@ -480,7 +457,7 @@ Return ONLY valid JSON:
     return lines.join('\n');
   }
 
-  // ── Format learned rules ──────────────────────────────────────────────────
+  // Format learned rules
   _formatRules(rules) {
     if (!rules?.length) return '';
     const lines = ['\nLEARNED RULES (apply these)'];

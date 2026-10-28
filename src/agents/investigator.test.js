@@ -1,8 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 
-// investigator.js pulls in ../config (OPENAI_API_KEY/OPENAI_MODEL/NOTIFICATION_SECRET)
-// transitively — same pattern as graph.test.js/orchestratorAgent.test.js: set required
-// env vars before the module graph loads, via a dynamic (non-hoisted) import.
 process.env.OPENAI_API_KEY      ??= 'test-only-key';
 process.env.OPENAI_MODEL        ??= 'test-model';
 process.env.NOTIFICATION_SECRET ??= 'test-only-secret-not-a-real-value-0123456789';
@@ -18,11 +15,6 @@ describe('_isReadOnlyCommand — Secret-value block', () => {
     expect(investigator._isReadOnlyCommand('get secrets -n kube-system').ok).toBe(false);
   });
 
-  // Regression test: found in review 2026-08-26 — scanning only the FIRST non-flag
-  // token let a flag's VALUE (the namespace here) masquerade as the resource type
-  // whenever it happened to come first, so the real "secrets" token was never
-  // inspected and the command was allowed through, leaking Secret values (including
-  // base64 .data) into the LLM's context.
   it('blocks "secrets" even when a flag+value comes first in the command', () => {
     expect(investigator._isReadOnlyCommand('get -n kube-system secrets -o json').ok).toBe(false);
   });
@@ -45,5 +37,46 @@ describe('_isReadOnlyCommand — Secret-value block', () => {
 
   it('allows an ordinary read that never mentions secrets', () => {
     expect(investigator._isReadOnlyCommand('get pods -n kube-system -o json').ok).toBe(true);
+  });
+});
+
+describe('summarizeFindings — retry reuses the previous attempt', () => {
+  const rca = {
+    rootCause: 'container exceeds its 256Mi memory limit',
+    layer: 'pod',
+    confidence: 0.95,
+    evidenceSufficiency: 0.9,
+    evidence: ['lastState.terminated.reason=OOMKilled, exitCode=137', 'restartCount=14'],
+    perLayerFindings: [
+      { layer: 'pod', status: 'critical', summary: 'OOMKilled', commandsRun: [] },
+      { layer: 'node', status: 'healthy', summary: 'no pressure', commandsRun: [] },
+    ],
+    commandsExecuted: [
+      { command: 'get pod api -n shop -o yaml', result: 'x'.repeat(500) },
+      { command: 'get pod api -n shop -o yaml', result: 'dup' },
+      { command: 'logs api -n shop --previous', result: 'y' },
+    ],
+  };
+
+  it('keeps root cause, evidence, unique commands and per-layer status', () => {
+    expect(investigator.summarizeFindings(rca)).toEqual({
+      rootCause: rca.rootCause,
+      layer: 'pod',
+      evidence: rca.evidence,
+      commandsAlreadyRun: ['get pod api -n shop -o yaml', 'logs api -n shop --previous'],
+      layersChecked: { pod: 'critical', node: 'healthy' },
+    });
+  });
+
+  it('leaves out the previous confidence scores and raw command output', () => {
+    const s = JSON.stringify(investigator.summarizeFindings(rca));
+    expect(s).not.toContain('confidence');
+    expect(s).not.toContain('evidenceSufficiency');
+    expect(s).not.toContain('xxxxx');
+  });
+
+  it('returns null when there is nothing real to reuse', () => {
+    expect(investigator.summarizeFindings(null)).toBeNull();
+    expect(investigator.summarizeFindings({ rootCause: 'unknown', evidence: [], commandsExecuted: [] })).toBeNull();
   });
 });

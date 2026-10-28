@@ -2,16 +2,12 @@
 
 const { PrometheusClient } = require('./prometheusClient');
 
-const CACHE_TTL_MS = 60_000; // 60 s — one fresh fetch per pod per minute
+const CACHE_TTL_MS = 60_000;
 
-// ── MetricsCollector ──────────────────────────────────────────────────────────
-// Aggregates raw Prometheus time-series into structured summaries used by
-// PlannerAgent and stored in incident episodes.
-
+// Collects metrics from Prometheus
 class MetricsCollector {
   constructor() {
     this.client = new PrometheusClient();
-    // key → { data, expiresAt }
     this._cache = new Map();
   }
 
@@ -24,8 +20,7 @@ class MetricsCollector {
     return this.client.available;
   }
 
-  // ── Collect pod metrics ──────────────────────────────────────────────────────
-  // Returns a structured summary or null when Prometheus is unavailable.
+  // Collect metrics for one pod
   async collectPodMetrics(namespace, podName) {
     const cacheKey = `pod:${namespace}:${podName}`;
     const cached   = this._cache.get(cacheKey);
@@ -43,10 +38,7 @@ class MetricsCollector {
     }
   }
 
-  // ── Collect all pods in one batch (3 queries instead of 4×N) ────────────────
-  // Returns a map of "namespace/pod" → { cpuCores, memBytes, restarts }
-  // Used by the dashboard API to populate the Cluster Health table without
-  // hitting Prometheus once per pod.
+  // Collect metrics for all pods
   async collectAllPodsMetrics() {
     const cacheKey = 'batch:all-pods';
     const cached   = this._cache.get(cacheKey);
@@ -92,9 +84,7 @@ class MetricsCollector {
     }
   }
 
-  // ── Fetch enriched Prometheus alert events ───────────────────────────────────
-  // Returns OOMKilled, HighRestarts (with memory context), CPUThrottling,
-  // MemNearLimit, ImagePullFailed, and NodePressure alerts.
+  // Fetch Prometheus alert events
   async getErrors() {
     const cacheKey = 'batch:errors';
     const cached   = this._cache.get(cacheKey);
@@ -133,21 +123,17 @@ class MetricsCollector {
         this.client.query(
           'kube_node_status_condition{condition=~"MemoryPressure|DiskPressure|PIDPressure",status="true"}'
         ),
-        // last exit code per container
         this.client.query(
           'kube_pod_container_status_last_terminated_exit_code'
         ),
-        // restarts in the last hour (per pod)
         this.client.query(
           'sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total[1h]))'
         ),
-        // current CPU usage in millicores (per pod)
         this.client.query(
           'sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!=""}[5m])) * 1000'
         ),
       ]);
 
-      // ── Enrichment lookup maps ─────────────────────────────────────────────
       const memBytesMap = {};
       for (const r of (memBytesRes ?? [])) {
         memBytesMap[`${r.metric.namespace}/${r.metric.pod}`] = parseFloat(r.value[1]);
@@ -156,13 +142,11 @@ class MetricsCollector {
       for (const r of (memLimitRes ?? [])) {
         memLimitMap[`${r.metric.namespace}/${r.metric.pod}`] = parseFloat(r.value[1]);
       }
-      // lastTermMap: stores { reason, container } — the container name tells us which failed
       const lastTermMap = {};
       for (const r of (lastTermRes ?? [])) {
         const key = `${r.metric.namespace}/${r.metric.pod}`;
         if (!lastTermMap[key]) lastTermMap[key] = { reason: r.metric.reason, container: r.metric.container ?? null };
       }
-      // exitCodeMap: last exit code + container name
       const exitCodeMap = {};
       for (const r of (exitCodeRes ?? [])) {
         const key = `${r.metric.namespace}/${r.metric.pod}`;
@@ -171,13 +155,11 @@ class MetricsCollector {
           container: r.metric.container ?? null,
         };
       }
-      // restartRateMap: restarts in last hour
       const restartRateMap = {};
       for (const r of (restartRateRes ?? [])) {
         const val = Math.round(parseFloat(r.value[1]));
         if (val > 0) restartRateMap[`${r.metric.namespace}/${r.metric.pod}`] = val;
       }
-      // cpuMillicoresMap: current CPU usage
       const cpuMillicoresMap = {};
       for (const r of (cpuMillicoresRes ?? [])) {
         cpuMillicoresMap[`${r.metric.namespace}/${r.metric.pod}`] = Math.round(parseFloat(r.value[1]));
@@ -186,7 +168,6 @@ class MetricsCollector {
       const errors = [];
       const seen   = new Set();
 
-      // ── OOMKilled ──────────────────────────────────────────────────────────
       for (const r of (oomRes ?? [])) {
         const key = `oom:${r.metric.namespace}/${r.metric.pod}`;
         if (seen.has(key)) continue;
@@ -213,7 +194,6 @@ class MetricsCollector {
         });
       }
 
-      // ── HighRestarts ───────────────────────────────────────────────────────
       for (const r of (highRestartRes ?? [])) {
         const count         = Math.round(parseFloat(r.value[1]));
         const podKey        = `${r.metric.namespace}/${r.metric.pod}`;
@@ -252,7 +232,6 @@ class MetricsCollector {
         });
       }
 
-      // ── CPU Throttling (> 60%) ────────────────────────────────────────────
       for (const r of (cpuThrottleRes ?? [])) {
         const throttlePct = +(parseFloat(r.value[1]) * 100).toFixed(0);
         if (throttlePct < 60) continue;
@@ -269,7 +248,6 @@ class MetricsCollector {
         });
       }
 
-      // ── Memory Near Limit (> 85%) ─────────────────────────────────────────
       for (const r of (memLimitRes ?? [])) {
         const podKey        = `${r.metric.namespace}/${r.metric.pod}`;
         const memUsedBytes  = memBytesMap[podKey] ?? null;
@@ -292,7 +270,6 @@ class MetricsCollector {
         });
       }
 
-      // ── ImagePullFailed ───────────────────────────────────────────────────
       for (const r of (imagePullRes ?? [])) {
         const key = `imgpull:${r.metric.namespace}/${r.metric.pod}`;
         if (seen.has(key)) continue;
@@ -306,7 +283,6 @@ class MetricsCollector {
         });
       }
 
-      // ── NodePressure ──────────────────────────────────────────────────────
       for (const r of (nodePressureRes ?? [])) {
         const key = `nodepressure:${r.metric.node}:${r.metric.condition}`;
         if (seen.has(key)) continue;
@@ -320,7 +296,6 @@ class MetricsCollector {
         });
       }
 
-      // Sort: critical first
       errors.sort((a, b) =>
         (a.severity === 'critical' ? 0 : 1) - (b.severity === 'critical' ? 0 : 1)
       );
@@ -332,9 +307,7 @@ class MetricsCollector {
     }
   }
 
-  // ── Namespace aggregate metrics (for capacity forecasting) ──────────────────
-  // Returns { cpuUsedCores, memUsedBytes, cpuQuotaCores, memQuotaBytes,
-  //           cpuQuotaPct, memQuotaPct } or null when unavailable.
+  // Collect namespace metrics
   async collectNamespaceMetrics(namespace) {
     if (!this.client.available) return null;
     const cacheKey = `ns:${namespace}`;
@@ -390,7 +363,7 @@ class MetricsCollector {
     }
   }
 
-  // ── Collect node metrics (single node) ──────────────────────────────────────
+  // Collect metrics for one node
   async collectNodeMetrics(nodeName) {
     const cacheKey = `node:${nodeName}`;
     const cached   = this._cache.get(cacheKey);
@@ -408,11 +381,7 @@ class MetricsCollector {
     }
   }
 
-  // ── Collect all nodes metrics in one batch ────────────────────────────────────
-  // Returns map: nodeName/IP → { cpuUsagePct, memUsedPct, diskUsedPct, ... }
-  // Each node is stored under BOTH its IP (instance label) AND its node name
-  // (node label from kube-prometheus-stack relabeling) so /api/nodes lookups
-  // succeed regardless of which identifier Kubernetes returns.
+  // Collect metrics for all nodes
   async collectAllNodesMetrics() {
     const cacheKey = 'batch:all-nodes';
     const cached   = this._cache.get(cacheKey);
@@ -420,11 +389,8 @@ class MetricsCollector {
 
     if (!this.client.available) return null;
 
-    // allSettled: a failed query (e.g. network) does not wipe out the others.
     const [cpuR, memTotalR, memAvailR, diskTotalR, diskAvailR, netRxR, netTxR] =
       await Promise.allSettled([
-        // Standard 1-minus-idle approach — more reliable than sum/count division
-        // which silently returns empty on label mismatches.
         this.client.query(
           '1 - avg by (instance, node) (rate(node_cpu_seconds_total{mode="idle"}[5m]))'
         ),
@@ -444,9 +410,7 @@ class MetricsCollector {
 
     const map = {};
 
-    // Register each metric under every identifier the node has:
-    // IP address (instance label with port stripped) and node name (node label).
-    // This makes the lookup in /api/nodes work with either Kubernetes name or IP.
+    // Get the keys a node is stored under
     const _keys = r => {
       const keys = new Set();
       const ip = r.metric?.instance?.replace(/:.*/, '');
@@ -473,7 +437,6 @@ class MetricsCollector {
     _set(netRxR,    'netRxBytesPerSec', v => +v.toFixed(0));
     _set(netTxR,    'netTxBytesPerSec', v => +v.toFixed(0));
 
-    // Compute derived fields
     for (const m of Object.values(map)) {
       if (m.memTotalBytes && m.memAvailBytes) {
         m.memUsedBytes = m.memTotalBytes - m.memAvailBytes;
@@ -489,7 +452,7 @@ class MetricsCollector {
     return map;
   }
 
-  // ── Pod aggregation ──────────────────────────────────────────────────────────
+  // Aggregate pod metrics
   _aggregatePod(raw) {
     const cpuSeries  = this._flattenRange(raw.cpuRange);
     const memSeries  = this._flattenRange(raw.memRange);
@@ -525,7 +488,7 @@ class MetricsCollector {
     };
   }
 
-  // ── Node aggregation ─────────────────────────────────────────────────────────
+  // Aggregate node metrics
   _aggregateNode(raw) {
     const cpuSeries = this._flattenRange(raw.cpuRange);
     const memSeries = this._flattenRange(raw.memRange);
@@ -558,10 +521,7 @@ class MetricsCollector {
     };
   }
 
-  // ── Helpers ──────────────────────────────────────────────────────────────────
-
-  // Merge all time-series from a range result, summing values at the same timestamp.
-  // This handles pods with multiple containers — their CPU/memory are summed per slot.
+  // Merge all series of a range result
   _flattenRange(rangeResult) {
     if (!rangeResult?.length) return [];
     const byTs = new Map();
@@ -573,7 +533,7 @@ class MetricsCollector {
     return [...byTs.values()];
   }
 
-  // Sum the scalar value across all series in an instant query result.
+  // Sum an instant query result
   _sumInstant(instantResult) {
     if (!instantResult?.length) return null;
     return instantResult.reduce(
@@ -592,8 +552,7 @@ class MetricsCollector {
     return Math.max(...values);
   }
 
-  // Compare first-half average vs second-half average.
-  // >10% growth → 'increasing', <−10% → 'decreasing', otherwise 'stable'.
+  // Compute the trend of a series
   _trend(values) {
     if (values.length < 4) return 'unknown';
     const half      = Math.floor(values.length / 2);

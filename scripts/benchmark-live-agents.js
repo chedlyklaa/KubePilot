@@ -1,37 +1,4 @@
 #!/usr/bin/env node
-// scripts/benchmark-live-agents.js
-//
-// Real-cluster live-agent benchmark. Unlike scripts/test-20-related-incidents.js
-// (which mocks kubectl and calls runWorkflow() directly), this script does NOT drive
-// the agents at all: it creates real broken Kubernetes resources on real clusters,
-// then steps back. The ALREADY-RUNNING project (`node index.js`, autonomous mode) has
-// to notice them on its own next fleet cycle, diagnose them, and remediate them for
-// real — this script just watches issueTrackerStore (the same store /api/issues reads
-// from) and, once the agent claims each scenario is done, independently re-checks the
-// REAL cluster via kubectl before believing it. Never trust a self-reported outcome —
-// same principle as this session's Executor `executed_unverified` gate, applied here
-// to the benchmark itself.
-//
-// Usage:
-//   Terminal 1: node index.js                          (the real running project)
-//   Terminal 2: node scripts/benchmark-live-agents.js   (this script)
-//
-// Flags:
-//   --clusters=minikube,cluster2   which cluster contexts to target (default: both)
-//   --namespace=kubepilot-bench    dedicated namespace created on each cluster
-//   --presoak=120                  seconds P9 pre-soaks (crash-loops alone) before
-//                                  the rest of the scenarios are created, so it has
-//                                  real accumulated restarts by the time anything
-//                                  gets detected — matches the original persona's
-//                                  "already restarted twice" framing, for real.
-//   --poll=15                      seconds between issueTrackerStore polls
-//   --timeout=900                  max seconds to wait for ALL scenarios to resolve
-//   --keep                         skip cleanup (leave the namespace for inspection)
-//
-// P7 (NodeNotReady) is deliberately not included — confirmed with the user: unsafe to
-// simulate for real on a typical single/few-node dev cluster without taking the whole
-// cluster's scheduling down, and hard to reverse cleanly. Still covered by the
-// synthetic (mocked) 20-incident script.
 
 'use strict';
 require('dotenv').config();
@@ -57,7 +24,7 @@ const OUT_DIR = path.join(__dirname, '..', 'test-output', 'live-benchmark');
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// ── kubectl helpers — same proven pattern as benchmark/agent-benchmark-advanced1.js ──
+// Run kubectl against a context
 function kubectl(ctx, ...args) {
   return execFileSync('kubectl', [`--context=${ctx}`, ...args],
     { encoding: 'utf8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
@@ -74,15 +41,7 @@ function kubeJson(ctx, ns, ...args) {
   catch { return null; }
 }
 
-// Heuristic ground-truth check for the INVESTIGATOR'S REASONING, not just the end
-// state — same spirit as verify()'s "never trust a self-reported outcome" above, applied
-// to whether the agent's stated root cause actually matches what we (as the scenario's
-// author) KNOW is really wrong, not just whether the pod ended up healthy. Necessarily
-// fuzzy (rootCause/reasoning are freeform prose) — a keyword regex is a floor, not a
-// precise grade: it can under-count a correct diagnosis phrased unusually, but a
-// diagnosis that doesn't even mention the right concept is a real signal something's off.
-// Returns null (not applicable) for scenarios with no single unambiguous "must mention
-// this" ground truth to check against.
+// Check the investigator's reasoning
 function _reasoningVerdict(rca, mustMatch, mustNotMatch = null) {
   if (!rca) return null;
   const text = `${rca.rootCause ?? ''} ${rca.reasoning ?? ''}`;
@@ -90,13 +49,6 @@ function _reasoningVerdict(rca, mustMatch, mustNotMatch = null) {
   const correct = mustMatch.test(text);
   return { correct, why: correct ? `mentions the real cause: "${text.slice(0, 200)}"` : `does not mention the real cause: "${text.slice(0, 200)}"` };
 }
-
-// ── Scenarios ────────────────────────────────────────────────────────────────────
-// Each: { id, expectation, resourceName, kind ('Deployment'|'Pod'), manifest(ns),
-//         verify(ctx, ns) → { realOutcome, detail },
-//         reasoningCheck(rca) → { correct, why } | null — optional, only for scenarios
-//         with an unambiguous known-true root cause to grade the diagnosis against. }
-// Free public images only (busybox, polinux/stress) — no registry credentials needed.
 
 const SCENARIOS = [
   {
@@ -301,10 +253,6 @@ spec:
       const gen = dep?.metadata?.generation ?? null;
       const pods = kubeJson(ctx, ns, 'get', 'pods', '-l', 'app=p8-already-resolved');
       const health = _podHealthVerdict(pods, 'pod is genuinely healthy on its own — no mutation was needed');
-      // A rollout restart bumps the pod template's restart annotation, not `generation`
-      // (spec unchanged) — generation only moves on a real spec mutation (image/resources/
-      // env change), which is the thing we actually want to catch here: did the agent
-      // reconfigure something on an already-healthy target instead of leaving it alone.
       if (health.realOutcome === 'fixed' && gen != null && gen > 1) {
         return { realOutcome: 'false_positive', detail: `pod is healthy AND deployment spec was mutated (generation=${gen}) — the agent changed something on a target that didn't need it` };
       }
@@ -331,9 +279,6 @@ spec:
         command: ["/bin/sh","-c","sleep 2 && exit 1"]`,
     verify(ctx, ns) {
       const pods = kubeJson(ctx, ns, 'get', 'pods', '-l', 'app=p9-repeated-failure');
-      // This one CANNOT be fixed for real (permanent exit 1) — a "fixed" verdict here
-      // would itself be suspicious. Escalating or repeatedly failing is the correct,
-      // expected real outcome.
       const health = _podHealthVerdict(pods, 'unexpectedly came up healthy');
       if (health.realOutcome === 'fixed') {
         return { realOutcome: 'unexpected_fixed', detail: 'pod reports healthy despite a permanent exit-1 command — investigate what the agent actually did (image/command changed?)' };
@@ -371,8 +316,7 @@ spec:
   },
 ];
 
-// Common "is this pod actually healthy right now" ground-truth check, reused by
-// several scenarios' verify() above.
+// Check if a pod is healthy
 function _podHealthVerdict(podsJson, okDetail) {
   const items = podsJson?.items ?? [];
   if (items.length === 0) return { realOutcome: 'unknown', detail: 'no matching pods found' };
@@ -383,13 +327,6 @@ function _podHealthVerdict(podsJson, okDetail) {
   return { realOutcome: 'not_fixed', detail: `still not healthy (running=${allRunning}, ready=${allReady}, restarts=${restarts})` };
 }
 
-// ── issueTrackerStore polling — in-process, same store /api/issues reads from ──────
-// Deliberately NOT going through the HTTP API: the admin login password is randomly
-// generated on first seed (src/api/authService.js) and never persisted anywhere this
-// script could read it back from, so HTTP+auth would be a real, unnecessary blocker.
-// This script runs on the same machine as the project it's benchmarking, so requiring
-// the same store module and connecting to the same Mongo directly is simpler and just
-// as accurate — it's the exact same data /api/issues would have served.
 const { connect } = require('../src/db/connection');
 const issueTrackerStore = require('../src/api/issueTrackerStore');
 
@@ -398,7 +335,7 @@ async function findRecord(cluster, ns, resourceName) {
   return items.find(it => it.namespace === ns && it.resource === resourceName) ?? null;
 }
 
-// ── Report ───────────────────────────────────────────────────────────────────────
+// Write the benchmark report
 function writeReport(records, startedAt) {
   fs.mkdirSync(OUT_DIR, { recursive: true });
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
@@ -440,9 +377,6 @@ function writeReport(records, startedAt) {
   p(`| Never detected within timeout | ${timedOut} | ${pct(timedOut)} |`);
   p();
 
-  // Reasoning correctness — independent of whether the FIX worked (see reasoningCheck
-  // above): only scenarios with an unambiguous known-true cause are graded; the rest
-  // report "n/a" rather than a forced judgment.
   const graded         = records.filter(r => r.reasoning != null);
   const reasoningRight = graded.filter(r => r.reasoning.correct).length;
   const reasoningWrong = graded.filter(r => !r.reasoning.correct).length;
@@ -487,7 +421,7 @@ function writeReport(records, startedAt) {
   return reportPath;
 }
 
-// ── Main ─────────────────────────────────────────────────────────────────────────
+// Check prerequisites before running
 async function preflight() {
   console.log('=== Preflight: checking cluster reachability ===');
   for (const ctx of CLUSTERS) {
@@ -504,7 +438,7 @@ async function preflight() {
 }
 
 async function ensureNamespace(ctx) {
-  try { kubectl(ctx, 'create', 'namespace', NS); } catch { /* already exists */ }
+  try { kubectl(ctx, 'create', 'namespace', NS); } catch { }
 }
 
 async function createScenario(ctx, scenario) {
@@ -539,8 +473,8 @@ async function main() {
   for (const ctx of CLUSTERS) for (const scenario of SCENARIOS) pending.push({ ctx, scenario });
 
   console.log(`\n=== Waiting for the running project to detect + resolve all ${pending.length} scenarios (max ${TIMEOUT_S}s) ===`);
-  const detected = new Map(); // "ctx/id" -> record — ANY tracked record, regardless of resolution
-  const resolved = new Map(); // "ctx/id" -> record — only once resolvedAt is set
+  const detected = new Map();
+  const resolved = new Map();
   let elapsed = 0;
   while (elapsed < TIMEOUT_S) {
     await sleep(POLL_S * 1000);
@@ -551,7 +485,7 @@ async function main() {
       if (resolved.has(dKey)) continue;
       const rec = await findRecord(ctx, NS, scenario.resourceName);
       if (!rec) continue;
-      detected.set(dKey, rec); // update on every poll — later stages (e.g. escalated) overwrite earlier ones
+      detected.set(dKey, rec);
       if (rec.resolvedAt) resolved.set(dKey, rec);
     }
     process.stdout.write(`\r  ${elapsed}s — detected: ${detected.size}/${pending.length}  resolved: ${resolved.size}/${pending.length} `);
@@ -566,10 +500,6 @@ async function main() {
     const record = resolved.get(dKey) ?? detected.get(dKey) ?? await findRecord(ctx, NS, scenario.resourceName);
     let verify = null;
     try { verify = scenario.verify(ctx, NS); } catch (e) { verify = { realOutcome: 'unknown', detail: `verify() threw: ${e.message}` }; }
-    // Grades the INVESTIGATOR'S stated root cause against this scenario's known-true
-    // cause (see _reasoningVerdict) — independent of whether the fix itself worked, since
-    // a correct diagnosis can still fail to produce a working fix (e.g. escalation) and a
-    // wrong diagnosis can still accidentally "fix" something by luck.
     const reasoning = scenario.reasoningCheck ? (scenario.reasoningCheck(record?.rca) ?? null) : null;
     console.log(`  ${dKey}: agent=${record?.status ?? 'never-detected'} real=${verify.realOutcome}` +
       (reasoning ? ` reasoning=${reasoning.correct ? 'correct' : 'WRONG'}` : ''));

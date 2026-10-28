@@ -2,32 +2,27 @@
 
 const { NODE_UNHEALTHY_TYPES } = require('./nodeConditions');
 
-// ── Change-relevant Kubernetes event reasons (mostly Normal type — dropped by EventAnalyzer) ──
 const DEPLOYMENT_CHANGE_REASONS = new Set([
-  'ScalingReplicaSet',  // Deployment controller scaling RS — most reliable rollout signal
-  'SuccessfulCreate',   // RS creating new pods during rollout
-  'SuccessfulDelete',   // RS deleting old pods as rollout completes
-  'DeploymentRollback', // Explicit kubectl rollout undo
-  'RollingUpdate',      // Rolling update in progress
+  'ScalingReplicaSet',
+  'SuccessfulCreate',
+  'SuccessfulDelete',
+  'DeploymentRollback',
+  'RollingUpdate',
 ]);
 
 const CONFIGMAP_SECRET_REASONS = new Set([
-  'Updated',   // ConfigMap / Secret updated
-  'Replaced',  // ConfigMap / Secret replaced
-  'Created',   // ConfigMap / Secret created (new mount)
+  'Updated',
+  'Replaced',
+  'Created',
 ]);
 
-// Correlation time windows (ms)
 const WINDOWS = {
-  HIGH:   5  * 60_000,  // ≤5 min  — strong signal
-  MEDIUM: 15 * 60_000,  // ≤15 min — plausible signal
-  LOW:    30 * 60_000,  // ≤30 min — weak signal; matches EventAnalyzer's max age
+  HIGH:   5  * 60_000,
+  MEDIUM: 15 * 60_000,
+  LOW:    30 * 60_000,
 };
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
-
-// Extract change-event candidates from the raw Kubernetes EventList JSON.
-// We read ALL event types here (not just Warning) because rollout events are Normal.
+// Extract change candidates from events
 function extractChangeCandidates(eventsJson, issue, detectedAt) {
   const items = eventsJson?.items;
   if (!Array.isArray(items) || items.length === 0) return [];
@@ -44,24 +39,19 @@ function extractChangeCandidates(eventsJson, issue, detectedAt) {
     const evNs   = ev.involvedObject?.namespace ?? ev.metadata?.namespace ?? '';
     const evName = ev.involvedObject?.name ?? '';
 
-    // Use firstTimestamp when available; fall back to lastTimestamp / eventTime
     const tsRaw = ev.firstTimestamp || ev.lastTimestamp || ev.eventTime;
     if (!tsRaw) continue;
     const tsMs = new Date(tsRaw).getTime();
     if (isNaN(tsMs)) continue;
 
-    // Only events that occurred BEFORE the incident within the max window
     const deltaMs = detectedMs - tsMs;
     if (deltaMs < 0 || deltaMs > WINDOWS.LOW) continue;
 
-    // ── Deployment / ReplicaSet rollout signals ──────────────────────────────
     if (DEPLOYMENT_CHANGE_REASONS.has(reason) &&
         (kind === 'Deployment' || kind === 'ReplicaSet' || kind === 'Pod')) {
 
-      // Namespace must match (empty namespace = cluster-scoped, allow through)
       if (evNs && evNs !== ns) continue;
 
-      // When we know the deployment, require the event to involve it or its RS
       if (deployment) {
         const nameMatch = evName === deployment ||
           evName.startsWith(deployment + '-') ||
@@ -81,7 +71,6 @@ function extractChangeCandidates(eventsJson, issue, detectedAt) {
       });
     }
 
-    // ── ConfigMap / Secret change signals (best-effort) ──────────────────────
     if (CONFIGMAP_SECRET_REASONS.has(reason) &&
         (kind === 'ConfigMap' || kind === 'Secret')) {
       if (evNs && evNs !== ns) continue;
@@ -98,13 +87,11 @@ function extractChangeCandidates(eventsJson, issue, detectedAt) {
     }
   }
 
-  // Sort closest-to-incident first so candidates[0] is the best temporal match
   candidates.sort((a, b) => b.tsMs - a.tsMs);
   return candidates;
 }
 
-// Parse the raw text from `kubectl rollout history` into a structured revision.
-// Output: { revision: number, changeCause: string } for the latest revision, or null.
+// Parse rollout history output
 function parseRolloutHistory(text) {
   if (!text) return null;
   const entries = text
@@ -117,12 +104,12 @@ function parseRolloutHistory(text) {
   return entries[0] ?? null;
 }
 
-// Return true if the pod's node has active pressure conditions.
+// Check if the pod's node has pressure
 function hasNodePressure(nodeIssues) {
   return Array.isArray(nodeIssues) && nodeIssues.some(n => NODE_UNHEALTHY_TYPES.includes(n.type));
 }
 
-// ── Deterministic confidence scorer — zero LLM involvement ────────────────────
+// Score a change candidate
 function scoreCandidate(candidate, { detectedAt, podMetrics, semanticMatches, nodeIssues, rolloutRevision }) {
   let score        = 0;
   const evidence   = [];
@@ -130,7 +117,6 @@ function scoreCandidate(candidate, { detectedAt, podMetrics, semanticMatches, no
   const deltaMs    = detectedMs - candidate.tsMs;
   const deltaMin   = Math.round(deltaMs / 60_000);
 
-  // Time-proximity signals (mutually exclusive; largest window that applies)
   if (deltaMs <= WINDOWS.HIGH) {
     score += 0.40;
     evidence.push(`${candidate.reason} on "${candidate.name}" occurred ${deltaMin}m before incident (≤5 min — strong correlation)`);
@@ -142,29 +128,24 @@ function scoreCandidate(candidate, { detectedAt, podMetrics, semanticMatches, no
     evidence.push(`${candidate.reason} on "${candidate.name}" occurred ${deltaMin}m before incident (≤30 min — weak correlation)`);
   }
 
-  // Rollout history confirms active revision change
   if (rolloutRevision && rolloutRevision.changeCause && rolloutRevision.changeCause !== '<none>') {
     score += 0.15;
     evidence.push(`rollout history: revision ${rolloutRevision.revision} — "${rolloutRevision.changeCause}"`);
   }
 
-  // Restart count elevated — consistent with a post-change regression
   if (podMetrics?.restarts?.count > 0) {
     score += 0.10;
     evidence.push(`restart count elevated (${podMetrics.restarts.count}) — consistent with post-change regression`);
   }
 
-  // No node pressure — failure is isolated to the application layer
   if (!hasNodePressure(nodeIssues)) {
     score += 0.10;
     evidence.push('no node pressure detected — failure isolated to application/deployment layer');
   } else {
-    // Node pressure is present — more likely infrastructure root cause
     score -= 0.15;
     evidence.push('node pressure detected — node conditions may be root cause; deployment change correlation weakened');
   }
 
-  // Similar past incident in episodic memory reinforces the pattern
   if (semanticMatches?.length > 0) {
     const topScore = semanticMatches[0]?.score ?? 0;
     if (topScore > 0.70) {
@@ -179,29 +160,9 @@ function scoreCandidate(candidate, { detectedAt, podMetrics, semanticMatches, no
   };
 }
 
-// ── ChangeCorrelationEngine ────────────────────────────────────────────────────
-
+// Finds the change that likely caused an incident
 class ChangeCorrelationEngine {
-  /**
-   * Find the most likely Kubernetes change that triggered an incident.
-   *
-   * Safe-by-default: returns null on any error so the pipeline continues unchanged.
-   * Gated by CHANGE_CORRELATION_ENABLED env flag.
-   *
-   * All input data is already collected by the ClusterAgent run cycle —
-   * this method makes ZERO additional kubectl or database calls.
-   *
-   * @param {object} opts
-   * @param {object} opts.issue            Pod issue object from PodAnalyzer
-   * @param {Date}   opts.detectedAt       Moment the ClusterAgent cycle started
-   * @param {object} opts.eventsJson       Raw Kubernetes EventList JSON (already fetched)
-   * @param {object} opts.podMetrics       Prometheus pod metrics or null
-   * @param {Array}  opts.semanticMatches  EpisodicMemory.findSemantic() hits
-   * @param {Array}  opts.nodeIssues       NodeAnalyzer issues for this pod's node
-   * @param {string} opts.rolloutHistory   Raw rollout history text (from _enrichEvidence, may be null)
-   *
-   * @returns {{ triggerType, triggerResource, triggerTimestamp, confidence, evidence[] } | null}
-   */
+  // Find the change most likely behind an incident
   async correlate({
     issue,
     detectedAt,
@@ -220,11 +181,9 @@ class ChangeCorrelationEngine {
       const rolloutRevision = parseRolloutHistory(rolloutHistory);
 
       if (candidates.length === 0) {
-        // No change events found in the correlation window for this deployment/namespace
         return null;
       }
 
-      // Score the best temporal match (already sorted closest-first)
       const top = candidates[0];
       const { score, evidence } = scoreCandidate(top, {
         detectedAt:     safeDetectedAt,
@@ -234,10 +193,8 @@ class ChangeCorrelationEngine {
         rolloutRevision,
       });
 
-      // Confidence below 0.15 is too weak to be actionable — suppress
       if (score < 0.15) return null;
 
-      // Build human-readable trigger label
       const changeCause = rolloutRevision?.changeCause && rolloutRevision.changeCause !== '<none>'
         ? rolloutRevision.changeCause
         : null;
@@ -246,9 +203,9 @@ class ChangeCorrelationEngine {
         : top.name;
 
       const result = {
-        triggerType:      top.type,          // "Deployment" | "ConfigMap" | "Secret"
-        triggerResource,                     // e.g. "checkout-6df @ image updated to v2.8.1"
-        triggerTimestamp: top.tsRaw,         // ISO string from Kubernetes event
+        triggerType:      top.type,
+        triggerResource,
+        triggerTimestamp: top.tsRaw,
         confidence:       Math.round(score * 100) / 100,
         evidence,
       };
@@ -257,7 +214,7 @@ class ChangeCorrelationEngine {
 
     } catch (err) {
       console.warn(`[CHANGE_CORRELATION] Correlation failed (non-blocking): ${err.message}`);
-      return null; // never let this block the main pipeline
+      return null;
     }
   }
 }

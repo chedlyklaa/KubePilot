@@ -35,7 +35,6 @@ export function AuthProvider({ children }) {
     else setUnauthorizedHandler(null)
   }, [user, token, logout])
 
-  // Auto-logout after 30 minutes of inactivity
   useEffect(() => {
     if (!user) return
     const INACTIVITY_MS = 30 * 60 * 1000

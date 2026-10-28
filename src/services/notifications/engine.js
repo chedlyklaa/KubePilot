@@ -3,7 +3,6 @@
 const { randomUUID } = require('crypto');
 const { decrypt }    = require('./crypto');
 
-// ── Provider registry ─────────────────────────────────────────────────────────
 const PROVIDERS = {
   teams:   require('./providers/teams'),
   email:   require('./providers/email'),
@@ -11,7 +10,6 @@ const PROVIDERS = {
   inApp:   require('./providers/inApp'),
 };
 
-// Stub for Phase 2 channels — config accepted but send is a no-op until implemented
 const STUB = {
   send:           async () => { throw new Error('Provider not yet implemented'); },
   testConnection: async () => { throw new Error('Provider not yet implemented'); },
@@ -21,7 +19,6 @@ PROVIDERS.telegram = STUB;
 PROVIDERS.discord  = STUB;
 PROVIDERS.webhook  = STUB;
 
-// ── Default routing (used when DB has no config yet) ─────────────────────────
 const DEFAULT_ROUTING = {
   INFO:     ['inApp'],
   WARNING:  ['inApp', 'teams'],
@@ -29,7 +26,6 @@ const DEFAULT_ROUTING = {
   CRITICAL: ['inApp', 'teams', 'email', 'slack'],
 };
 
-// ── Routing cache (60 s TTL — avoids DB hit on every notification) ────────────
 let _routingCache    = null;
 let _routingCacheAt  = 0;
 const CACHE_TTL_MS   = 60_000;
@@ -52,12 +48,7 @@ function invalidateRoutingCache() {
   _routingCacheAt = 0;
 }
 
-// ── Collect personal email recipients from user preferences ──────────────────
-// Returns array of email addresses for users who have email enabled.
-// Pass targetRole to restrict delivery to a specific role (e.g. 'admin').
-// Pass targetUserIds to restrict delivery to a specific, already-resource-scoped set of
-// users (e.g. escalationStore only resolves recipients who actually have access to the
-// affected cluster/namespace) — channel/category preferences still apply on top of it.
+// Get users who want email notifications
 async function _getPersonalEmailRecipients(category, targetRole = null, targetUserIds = null) {
   try {
     const { UserNotificationPreferences, User } = require('../../db/models');
@@ -68,14 +59,12 @@ async function _getPersonalEmailRecipients(category, targetRole = null, targetUs
       prefs = prefs.filter(p => allowed.has(p.userId?.toString()));
     }
 
-    // Batch-fetch all users in one query to avoid N+1 DB round-trips
     const userIds  = prefs.map(p => p.userId);
     const users    = await User.find({ _id: { $in: userIds } }).select('email active role').lean();
     const userMap  = new Map(users.map(u => [u._id.toString(), u]));
 
     const emails = [];
     for (const pref of prefs) {
-      // Skip if user has category filtering and this category is not in their list
       if (pref.categories?.length > 0 && category && !pref.categories.includes(category)) continue;
 
       const user = userMap.get(pref.userId?.toString());
@@ -84,20 +73,19 @@ async function _getPersonalEmailRecipients(category, targetRole = null, targetUs
 
       emails.push(pref.notifyEmail?.trim() || user.email);
     }
-    return [...new Set(emails.filter(Boolean))]; // deduplicate and drop empty
+    return [...new Set(emails.filter(Boolean))];
   } catch {
     return [];
   }
 }
 
-// ── Load enabled channels with decrypted config ───────────────────────────────
+// Load the enabled channels
 async function _getEnabledChannels() {
   try {
     const { NotificationChannelConfig } = require('../../db/models');
     const docs = await NotificationChannelConfig.find({ enabled: true }).lean();
     return docs.map(d => ({ type: d.type, config: decrypt(d.config) }));
   } catch {
-    // Fall back to env-based Teams config so existing deployments keep working
     const fallback = [];
     if (process.env.TEAMS_WEBHOOK_URL) {
       fallback.push({ type: 'teams', config: { webhookUrl: process.env.TEAMS_WEBHOOK_URL } });
@@ -107,7 +95,6 @@ async function _getEnabledChannels() {
   }
 }
 
-// ── Retry schedule (delays in ms) ────────────────────────────────────────────
 const RETRY_DELAYS = [30_000, 120_000, 300_000];
 
 async function _logDelivery(fields) {
@@ -125,7 +112,7 @@ async function _updateLog(id, fields) {
   } catch {}
 }
 
-// ── Core dispatch ─────────────────────────────────────────────────────────────
+// Send a notification to the channels
 async function _dispatch(notification, channelType, config, logId, attempt = 0) {
   const provider = PROVIDERS[channelType];
   if (!provider) return;
@@ -150,22 +137,7 @@ async function _dispatch(notification, channelType, config, logId, attempt = 0) 
   }
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
-
-/**
- * Emit a notification event. Agents and stores call this instead of sending
- * directly to any channel.
- *
- * @param {object} event
- * @param {string} event.severity   INFO | WARNING | ERROR | CRITICAL
- * @param {string} event.category   e.g. 'Incidents', 'Cluster Health'
- * @param {string} event.title
- * @param {string} event.message
- * @param {string} [event.namespace]
- * @param {string} [event.source]
- * @param {object} [event.metadata]
- * @param {string[]} [event.targetUserIds]  override for inApp delivery
- */
+// Emit a notification event
 async function emit(event) {
   const notification = {
     id:        randomUUID(),
@@ -186,14 +158,9 @@ async function emit(event) {
 
   const enabledByType = Object.fromEntries(channels.map(c => [c.type, c.config]));
 
-  // inApp is always dispatched regardless of routing rules (it's the fallback channel)
   const channelsToUse = new Set(targets);
   channelsToUse.add('inApp');
 
-  // Pre-fetch personal email recipients once (only if email channel is active).
-  // targetRole restricts delivery to a specific role (e.g. 'admin' for approvals);
-  // targetUserIds restricts it to an already resource-scoped set of users (e.g.
-  // escalations only resolving to admins + developers with access to that cluster).
   const personalEmails = channelsToUse.has('email') && enabledByType['email']
     ? await _getPersonalEmailRecipients(
         notification.category,
@@ -204,10 +171,8 @@ async function emit(event) {
 
   await Promise.all([...channelsToUse].map(async type => {
     const config = enabledByType[type];
-    // Skip external channels that are not enabled (inApp skips config check)
     if (type !== 'inApp' && !config) return;
 
-    // For email: merge system Default Recipients with personal preference addresses
     let effectiveConfig = config ?? {};
     if (type === 'email' && personalEmails.length > 0) {
       const systemRecipients = config.recipients

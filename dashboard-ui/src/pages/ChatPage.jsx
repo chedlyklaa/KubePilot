@@ -24,12 +24,12 @@ const CLUSTER_CHIPS = [
   'Give me a full cluster health report as PDF',
 ]
 
-// ── Memoized markdown renderer — only re-parses when content changes ──────
+// Memoized markdown renderer
 const MarkdownBubble = memo(function MarkdownBubble({ content }) {
   return <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
 })
 
-// ── Memoized message bubble — skips re-render for unchanged messages ───────
+// Memoized chat message bubble
 const MessageBubble = memo(function MessageBubble({ msg, i, isLast, busy, pdfGenerating, onPdf, onEnableLive }) {
   if (msg.role === 'assistant') {
     return (
@@ -70,8 +70,7 @@ const MessageBubble = memo(function MessageBubble({ msg, i, isLast, busy, pdfGen
   )
 })
 
-// ── Input box lives in its own component — its state changes are isolated ──
-// This prevents every keystroke from re-rendering the message list above.
+// Chat input box
 const ChatInput = memo(function ChatInput({ onSend, busy, withClusterContext }) {
   const [input, setInput] = useState('')
 
@@ -276,7 +275,7 @@ export default function ChatPage() {
           ...currentMsgs.slice(-1),
           { role: 'user', content: `[LIVE CLUSTER DATA]\n${snapshot}\n\n[MY QUESTION]\n${text}${suffix}` },
         ]
-      } catch { /* cluster unreachable */ }
+      } catch { }
     }
 
     let assistantContent = ''

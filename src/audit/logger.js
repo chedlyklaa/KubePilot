@@ -1,15 +1,9 @@
-// src/audit/logger.js
 'use strict';
 
 let AuditEvent;
 try { ({ AuditEvent } = require('../db/models')); } catch {}
 
-/**
- * Audit Logger
- * Writes to the AuditEvent Mongo collection (queried by /api/audit) — the
- * sole source of truth. Writes are fire-and-forget so a slow or unavailable
- * DB never blocks the calling agent/policy code.
- */
+// Writes audit events to MongoDB
 class AuditLogger {
   log(event) {
     const auditEntry = {
@@ -47,23 +41,17 @@ class AuditLogger {
     }
   }
 
-  /**
-   * Log successful execution
-   */
+  // Log a successful execution
   success(event) {
     this.log({ ...event, status: 'success' });
   }
 
-  /**
-   * Log failed execution
-   */
+  // Log a failed execution
   failure(event) {
     this.log({ ...event, status: 'failed' });
   }
 
-  /**
-   * Log blocked action
-   */
+  // Log a blocked action
   blocked(event) {
     this.log({ ...event, status: 'blocked' });
   }

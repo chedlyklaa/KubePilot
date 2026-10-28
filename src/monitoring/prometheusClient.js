@@ -2,54 +2,48 @@
 
 const axios = require('axios');
 
-// ── Phase 6: Predefined PromQL query templates ────────────────────────────────
 const QUERIES = {
-  // CPU usage rate (cores) for a pod across all containers
+  // Pod CPU usage query
   cpuUsage: (ns, pod) =>
     `rate(container_cpu_usage_seconds_total{namespace="${ns}",pod="${pod}",container!=""}[5m])`,
 
-  // Memory working set in bytes (excludes page-cache, closest to actual usage)
+  // Pod memory usage query
   memoryUsage: (ns, pod) =>
     `container_memory_working_set_bytes{namespace="${ns}",pod="${pod}",container!=""}`,
 
-  // Total restart count across all containers in the pod
+  // Pod restart count query
   restartCount: (ns, pod) =>
     `sum(kube_pod_container_status_restarts_total{namespace="${ns}",pod="${pod}"})`,
 
-  // OOMKilled detection — returns 1 if any container last terminated with OOMKilled
+  // OOMKilled check query
   oomKilledCheck: (ns, pod) =>
     `kube_pod_container_status_last_terminated_reason{namespace="${ns}",pod="${pod}",reason="OOMKilled"}`,
 
-  // Node pressure conditions (MemoryPressure, DiskPressure, PIDPressure)
+  // Node pressure query
   nodePressure: (node) =>
     `kube_node_status_condition{node="${node}",condition=~"MemoryPressure|DiskPressure|PIDPressure",status="true"}`,
 
-  // Node CPU usage (all modes except idle)
+  // Node CPU usage query
   nodeCpu: (node) =>
     `sum(rate(node_cpu_seconds_total{instance=~"${node}.*",mode!="idle"}[5m]))`,
 
-  // Node memory consumption (total - available)
+  // Node memory usage query
   nodeMemory: (node) =>
     `node_memory_MemTotal_bytes{instance=~"${node}.*"} - node_memory_MemAvailable_bytes{instance=~"${node}.*"}`,
 };
 
-// ── PrometheusClient ──────────────────────────────────────────────────────────
-
-// How long to wait before retrying a failed Prometheus connection (ms)
 const RECONNECT_COOLDOWN_MS = 30_000;
 
 class PrometheusClient {
-  /**
-   * @param {string} [baseUrl]  Prometheus base URL (default: PROMETHEUS_URL env or localhost:9090)
-   */
+  // Create the Prometheus client
   constructor(baseUrl = process.env.PROMETHEUS_URL || 'http://localhost:9090') {
     this.baseUrl      = baseUrl.replace(/\/$/, '');
     this.available    = false;
-    this._lastFailAt  = 0;       // timestamp of last failed probe
-    this._probing     = false;   // prevent concurrent re-probes
+    this._lastFailAt  = 0;
+    this._probing     = false;
   }
 
-  // ── Connectivity probe ──────────────────────────────────────────────────────
+  // Check Prometheus connectivity
   async initialize() {
     try {
       await axios.get(`${this.baseUrl}/-/healthy`, { timeout: 3000 });
@@ -64,7 +58,7 @@ class PrometheusClient {
     return this.available;
   }
 
-  // Re-probe in the background if the cooldown has elapsed. Non-blocking.
+  // Reconnect in the background if needed
   _maybeReconnect() {
     if (this.available || this._probing) return;
     if (Date.now() - this._lastFailAt < RECONNECT_COOLDOWN_MS) return;
@@ -72,7 +66,7 @@ class PrometheusClient {
     this.initialize().finally(() => { this._probing = false; });
   }
 
-  // ── Instant query  GET /api/v1/query ────────────────────────────────────────
+  // Run an instant query
   async query(promql) {
     this._maybeReconnect();
     if (!this.available) return null;
@@ -90,7 +84,7 @@ class PrometheusClient {
     }
   }
 
-  // ── Range query   GET /api/v1/query_range ───────────────────────────────────
+  // Run a range query
   async queryRange(promql, start, end, step = '60s') {
     this._maybeReconnect();
     if (!this.available) return null;
@@ -105,7 +99,7 @@ class PrometheusClient {
     }
   }
 
-  // ── Pod metrics bundle (last 15 min) ────────────────────────────────────────
+  // Get metrics for a pod
   async getPodMetrics(namespace, podName) {
     const now    = Math.floor(Date.now() / 1000);
     const ago15m = now - 900;
@@ -120,7 +114,7 @@ class PrometheusClient {
     return { cpuRange, memRange, restarts, oomCheck, namespace, podName };
   }
 
-  // ── Node metrics bundle (last 15 min) ───────────────────────────────────────
+  // Get metrics for a node
   async getNodeMetrics(nodeName) {
     const now    = Math.floor(Date.now() / 1000);
     const ago15m = now - 900;

@@ -13,10 +13,6 @@ function _clusterContext(name) {
   return cluster.context;
 }
 
-// Admin-only — quota usage and security posture are sensitive info some orgs restrict
-// to platform/security teams, not every developer (same reasoning as gating cluster
-// kubeconfig downloads to admins only).
-// GET /api/policies/overview?cluster=NAME
 router.get('/api/policies/overview', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
   const { cluster } = req.query;
   if (!cluster) return res.status(400).json({ error: 'cluster is required' });
@@ -45,8 +41,6 @@ router.get('/api/policies/overview', requireAuth, requireAdmin, asyncHandler(asy
       disruptionsAllowed:  p.status?.disruptionsAllowed  ?? null,
     })),
     podSecurity: namespaces
-      // Skip system namespaces — their PodSecurity posture is rarely what an admin is
-      // auditing for, and it clutters a normally short, actionable list.
       .filter(ns => !['kube-system', 'kube-public', 'kube-node-lease'].includes(ns.metadata?.name))
       .map(ns => ({
         namespace: ns.metadata?.name,

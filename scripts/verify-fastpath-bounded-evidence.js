@@ -1,22 +1,9 @@
 'use strict';
-// Plain Node script, not a Vitest test — same require()-cache-sharing pattern as the
-// other verify-*.js scripts. fastPath.js destructures `runStructuredLLMCall` at its own
-// top-level require(), so that mock must be installed before fastPath.js is first
-// required (see verify-rootcausefit-advisory.js's header for why this ordering matters —
-// this script got it right the first time, having learned from that one).
-//
-// §Fix-FastPathBoundedEvidence (Phase 6, 2026-09-18) — proves the bounded evidence
-// selection actually replaces the fixed-profile mapping: the LLM's requested commands
-// go through the real read-only execution layer (allowlist + secret-block, shared with
-// Investigator/Planner), the MAX_EVIDENCE_REQUESTS cap is enforced deterministically
-// even when the model asks for more, and the overall accept/escalate contract
-// (evidenceSufficient/confidence/requiresDeepInvestigation) is unchanged from before
-// Phase 6. No real LLM/kubectl call happens.
 
 process.env.OPENAI_API_KEY      ??= 'test-only-key';
 process.env.OPENAI_MODEL        ??= 'test-model';
 process.env.NOTIFICATION_SECRET ??= 'test-only-secret-not-a-real-value-0123456789';
-process.env.FASTPATH_MAX_EVIDENCE_REQUESTS = '3'; // pin the cap explicitly for this script, independent of any .env override
+process.env.FASTPATH_MAX_EVIDENCE_REQUESTS = '3';
 
 const assert = require('assert');
 
@@ -50,7 +37,6 @@ function diagnosisResponse(overrides = {}) {
 
 async function scenario_capEnforcedWhenModelAsksForMore() {
   realCommandsRun.length = 0;
-  // Model asks for 5 commands — only MAX_EVIDENCE_REQUESTS (3) should actually run.
   callQueue = [
     evidenceSelection([
       { command: 'describe pod app-1 -n default', reasoning: 'a' },
@@ -83,7 +69,7 @@ async function scenario_writeCommandRejectedByExecutionLayerNotFastPathItself() 
 async function scenario_zeroCommandsRequestedStillReachesDiagnosis() {
   realCommandsRun.length = 0;
   callQueue = [
-    evidenceSelection([]), // model decides nothing more is needed
+    evidenceSelection([]),
     diagnosisResponse({ supportingEvidence: ['restartCount=4 and type=CrashLoopBackOff already fully describe this'] }),
   ];
   const result = await fastPath.diagnose(ISSUE, CLUSTER_CONFIGS);

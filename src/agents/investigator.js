@@ -13,61 +13,7 @@ const { loadConfig }  = require('../config');
 const { runStructuredLLMCall } = require('../resilience/llmCircuitBreaker');
 const { InvestigationReportSchema } = require('../orchestrator/schemas');
 const { issueKey: _issueKey } = require('../orchestrator/issueKey');
-
-// ── Investigator ─────────────────────────────────────────────────────────────
-// Standalone from the rest of the v5 pipeline on purpose (architecture-doc §3.2):
-// its only external dependencies are kubectl (tools), config (env), ReflectionAgent
-// (the sole gateway to historical incidents/rules — §3.7), and Short Memory (live
-// investigation state) — all plain function-call boundaries today, so this file can
-// become its own process later with only its transport layer changing.
-//
-// The legacy src/agents/investigatorAgent.js is untouched — it still serves
-// ClusterAgent's pipeline (no longer reachable from the main entrypoint, but its
-// files are untouched).
-//
-// §Fix-ConvergenceSimplification (2026-09-18) — this file previously layered a
-// ring-based scoping ladder (investigatorRings.js) and a hypothesis-convergence
-// tracker (investigatorConvergence.js) on top of the base loop: a separate
-// `submit_ring_assessment` checkpoint tool, a hard gate blocking
-// `submit_investigation_report` until a ring assessment cleared a SEPARATE
-// (0.85) confidence threshold, and code-computed "is this hypothesis better than
-// the last one" / "does this final answer regress from the tracked best" checks.
-// That was three deterministic layers deciding WHEN the model was allowed to
-// conclude, on top of the base confidence/evidenceSufficiency gate. Removed after
-// the architecture review's Phase 7 (regression tests added first — see
-// scripts/verify-investigator-loop.js and investigatorConvergence.test.js, both
-// passing against the prior implementation before this rewrite) confirmed the
-// intended target shape:
-//   LLM decides:  DIAGNOSIS_READY (call submit_investigation_report whenever it
-//                 believes it has enough) / INVESTIGATE_MORE (keep calling the
-//                 read-only tool) — no more separate checkpoint tool or hard
-//                 ring-unlock gate standing between the model and its own belief
-//                 that it's done.
-//   Code enforces: the existing self-report ceiling (confidence AND
-//                 evidenceSufficiency >= CONFIDENCE_TARGET, checked against the
-//                 PARSED value, not trusted blindly), a NEW minimum-evidence floor
-//                 (at least one real, non-dedup tool call must have actually run
-//                 before ANY submission is accepted — closes a real gap: nothing
-//                 previously stopped a zero-evidence submission from being
-//                 accepted purely on an inflated self-reported score), a NEW
-//                 evidence-QUALITY floor (the final report's own `evidence` array
-//                 must cite something concrete, reusing the same narrow
-//                 generic-evidence regex the old ring-assessment gate used — the
-//                 backstop against "the pod seems unhealthy"-style filler is kept,
-//                 just applied to the one real submission gate instead of a
-//                 removed intermediate checkpoint), the existing turn cap
-//                 (SAFETY_MAX_ITERATIONS), and a NEW wall-clock cap
-//                 (SAFETY_MAX_DURATION_MS) — "maximum duration" was named in the
-//                 target architecture and wasn't previously enforced at all
-//                 (only turn COUNT was).
-// The 11-layer taxonomy (CANONICAL_LAYERS) is unaffected — it was always for
-// CLASSIFYING findings, never for restricting investigation order, so removing
-// the ring ladder (which WAS about order) doesn't touch it.
-//
-// Retrieves NO evidence automatically. It starts with only the bare incident
-// description + historical context, and gathers everything else itself, on demand,
-// via the read-only execution layer below — deciding what to look at, how many times,
-// and when it has enough, rather than following a fixed checklist of layers.
+const { filterToolOutput, truncateToolOutput, withDefaultLogTail, compactToolHistory } = require('./contextBudget');
 
 const policyEngine = new PolicyEngine();
 
@@ -86,22 +32,12 @@ const baseLlm = new ChatOpenAI({
 const usingDedicated = !!(_config.INVESTIGATOR_API_KEY && _config.INVESTIGATOR_MODEL);
 console.log(`[INVESTIGATOR] LLM: ${usingDedicated ? `dedicated (${INVESTIGATOR_MODEL})` : `shared fallback (${INVESTIGATOR_MODEL})`}`);
 
-const CONFIDENCE_TARGET      = 0.5; // both confidence AND evidenceSufficiency must clear this
-const SAFETY_MAX_ITERATIONS  = 40;  // runaway-protection ceiling on TURN COUNT, NOT a normal
-                                     // operating limit — a well-evidenced investigation should
-                                     // converge well before this
-const SAFETY_MAX_DURATION_MS = Number(process.env.INVESTIGATOR_MAX_DURATION_MS ?? 10 * 60 * 1000); // 10 min wall-clock ceiling
-const MIN_REAL_TOOL_CALLS_BEFORE_SUBMIT = 1; // a submission with zero real evidence gathered is never accepted, regardless of self-reported confidence
-const MAX_TOOL_OUTPUT_CHARS  = 4_000;
-const SUBMIT_TOOL_NAME       = 'submit_investigation_report';
+const CONFIDENCE_TARGET      = 0.5;
+const SAFETY_MAX_ITERATIONS  = 40;
+const SAFETY_MAX_DURATION_MS = Number(process.env.INVESTIGATOR_MAX_DURATION_MS ?? 10 * 60 * 1000);
+const MIN_REAL_TOOL_CALLS_BEFORE_SUBMIT = 1;
+const SUBMIT_TOOL_NAME      = 'submit_investigation_report';
 
-// Reference taxonomy (architecture-doc §3.2) for CLASSIFYING findings, not a checklist
-// gating what the model may go inspect, and not (since §Fix-ConvergenceSimplification)
-// tied to any ring/order concept either — the execution layer below is, and always
-// was, fully free-form regardless of this list. Kept as plain strings (not a zod enum)
-// on InvestigationReportSchema.layer/perLayerFindings so the model can name a layer
-// outside this list when a finding genuinely doesn't fit one of the 11 — "add further
-// layers dynamically when the incident requires it," per the report.
 const CANONICAL_LAYERS = [
   ['application', 'app logs, crashes, exit codes'],
   ['image',       'image pull errors, registry, tags'],
@@ -117,22 +53,11 @@ const CANONICAL_LAYERS = [
 ];
 const LAYER_LIST_TEXT = CANONICAL_LAYERS.map(([name, desc]) => `  ${name} — ${desc}`).join('\n');
 
-// §Fix-ConvergenceSimplification — moved in from the retired investigatorRings.js
-// (that file's only other exports were ring-ladder plumbing that no longer has a
-// caller). A narrow, cheap backstop against the specific known failure mode the
-// original design called out ("the pod seems unhealthy") — not a general-purpose
-// evidence-quality classifier. Same pattern as graph.js's RESOLUTION_CLAIM_PATTERN/
-// EXTERNAL_OUTAGE_ROOT_CAUSE_RE: a prompt-only instruction to "cite concrete
-// evidence" is not trusted to hold on its own in this codebase's experience, so a
-// narrow deterministic pattern catches the common vague-filler phrasing without
-// trying to fully judge evidence quality in code. Applied below directly against the
-// FINAL submission's own `evidence` array (InvestigationReportSchema), since there is
-// no more separate ring-assessment checkpoint to apply it to.
 const GENERIC_EVIDENCE_RE = /^(the\s+)?(pod|node|service|deployment|container|app|application|workload|resource)?\s*(seems|looks|appears|is)\s+(unhealthy|wrong|broken|off|bad|not\s+right|fine|okay|ok)\.?$/i;
 
 function _isGenericEvidence(entry) {
   const text = String(entry ?? '').trim();
-  if (text.length < 15) return true; // too short to be citing anything concrete
+  if (text.length < 15) return true;
   return GENERIC_EVIDENCE_RE.test(text);
 }
 
@@ -208,6 +133,15 @@ command (or a trivially rephrased equivalent) earlier in this investigation — 
 answer wouldn't have changed, don't repeat it; either try something genuinely different
 or submit with the evidence you already have.
 
+KEEP OUTPUTS SMALL: every result stays in your context for the rest of the investigation,
+and results are capped at a few thousand characters (longer ones are cut in the middle).
+Prefer targeted commands: -o jsonpath='{...}' or -o custom-columns=... when you need
+specific fields; "logs --tail=100" (add --previous for a crash-looping container);
+"get events --field-selector type=Warning --sort-by=.lastTimestamp" over a broad events
+dump; describe/-o yaml on ONE named resource, never on a whole resource type. Older
+results may later be shortened to their first and last lines — re-run a command if you
+need its full output again.
+
 LAYER CLASSIFICATION — your report's "layer" field, and each entry in
 "perLayerFindings", must name which layer of the Kubernetes stack the finding belongs
 to. Use one of these 11 when it genuinely fits:
@@ -242,25 +176,22 @@ for this EXACT issue and it did not work (it names the command that was tried an
 was rejected or didn't verify fixed). This is real, relevant evidence — for example a
 command that ran but didn't resolve it may mean your root-cause diagnosis needs to change,
 not just that a different command should be tried for the same cause. Take it into account
-rather than re-investigating as if this were the first attempt.`;
+rather than re-investigating as if this were the first attempt.
 
-// ── Read-only execution layer ────────────────────────────────────────────────
-// The Investigator may run ANY command it wants — as long as it only reads. This is an
-// ALLOWLIST (not a denylist) of kubectl verbs: safer, since a denylist can always miss
-// a mutating subcommand kubectl adds later. This is the app-level layer of a defense-
-// in-depth design — the operator is expected to additionally bind the credentials this
-// process runs with to a read-only (Viewer) ClusterRole at the Kubernetes RBAC level
-// (architecture-doc §7.3's read-only ServiceAccount), so even a bug here can't mutate
-// the cluster.
+If the input includes "previousFindings", that earlier attempt's investigation already
+established these facts: its root cause, the evidence behind it, the commands it ran
+("commandsAlreadyRun") and the status of each layer it checked. Do not re-run those
+commands just to see the same output again — only re-check something if it may have
+changed since (e.g. after a fix was applied) or if you need a detail not captured here.
+The earlier root cause MAY BE WRONG: the fix built on it did not work. Use
+"previousAttemptFailure" to judge whether the diagnosis itself needs to change, and spend
+your commands on what the earlier attempt did NOT look at.`;
+
 const READONLY_VERBS = new Set([
   'get', 'describe', 'logs', 'top', 'explain',
   'api-resources', 'api-versions', 'version', 'cluster-info',
 ]);
-// Streaming/blocking flags — would hang the child process until kubectl.js's own
-// execFile timeout kills it; rejected outright instead of burning that timeout.
 const BLOCKED_FLAGS_RE = /(^|\s)(-f|--follow|-w|--watch)(\s|=|$)/;
-// Secret VALUES must never reach the LLM — block the resource noun entirely here and
-// point the model at the dedicated Config-layer summary (key names only) instead.
 const BLOCKED_RESOURCE_RE = /^secrets?$/i;
 
 function _isReadOnlyCommand(argsStr) {
@@ -275,17 +206,6 @@ function _isReadOnlyCommand(argsStr) {
   if (BLOCKED_FLAGS_RE.test(` ${trimmed} `)) {
     return { ok: false, reason: 'streaming flags (-f/--follow/-w/--watch) are not allowed' };
   }
-  // Check EVERY non-flag token, not just the first — checking only tokens.slice(1)'s
-  // FIRST non-flag entry let a flag's VALUE masquerade as the resource-type token
-  // whenever it happened to come first (e.g. "get -n kube-system secrets -o json":
-  // the first non-flag token is "kube-system", the -n value, not "secrets" — so the
-  // real resource type was never inspected and the command executed for real, found
-  // in review 2026-08-26). BLOCKED_RESOURCE_RE is an exact `^secrets?$` match, so this
-  // still doesn't false-positive on a namespace/label VALUE like "secret-storage" —
-  // only a token that IS exactly "secret"/"secrets" (bare, or as the type half of
-  // "secret/foo" or "pods,secrets") trips it, whichever position it's in. A namespace
-  // literally named "secret" would be a rare false positive; that's an acceptable
-  // trade for never letting a real Secret read slip through undetected.
   const resourceTypes = tokens.slice(1)
     .filter(t => !t.startsWith('-'))
     .flatMap(t => t.split(',').map(x => x.split('/')[0]));
@@ -295,9 +215,7 @@ function _isReadOnlyCommand(argsStr) {
   return { ok: true };
 }
 
-// `argsStr` is everything AFTER "kubectl" — the model never supplies "kubectl" or
-// "--context" itself, both are injected here, so a hallucinated or malicious context
-// value can never redirect the command at a different cluster.
+// Run a read-only kubectl command
 async function executeReadOnlyCommand(argsStr, context) {
   const gate = _isReadOnlyCommand(argsStr);
   if (!gate.ok) {
@@ -305,10 +223,7 @@ async function executeReadOnlyCommand(argsStr, context) {
     return `ERROR: command blocked — ${gate.reason}`;
   }
 
-  // Unquoted --context=, matching every other sanitizer-routed call site in this
-  // codebase — no functional need to quote it (context names are plain identifiers),
-  // and it keeps our own server-built prefix out of policyEngine's quote-balance check.
-  const fullCommand = `kubectl --context=${context} ${argsStr.trim()}`;
+  const fullCommand = `kubectl --context=${context} ${withDefaultLogTail(argsStr)}`;
   const { safe, command, reason } = policyEngine.sanitizeCommand(fullCommand);
   if (!safe) {
     console.warn(`[INVESTIGATOR] [EXEC-LAYER] blocked by sanitizer: "${argsStr}" — ${reason}`);
@@ -318,18 +233,13 @@ async function executeReadOnlyCommand(argsStr, context) {
   try {
     console.log(`[INVESTIGATOR] [EXEC-LAYER] running: ${command}`);
     const out = await kubectl.runCommand(command);
-    return out.length > MAX_TOOL_OUTPUT_CHARS ? out.slice(0, MAX_TOOL_OUTPUT_CHARS) + '\n...(truncated)' : out;
+    return truncateToolOutput(argsStr, filterToolOutput(argsStr, out));
   } catch (err) {
     return `ERROR: ${err.message}`;
   }
 }
 
-// `clusterConfigs` is the fleet map { [clusterName]: { context, tier, ... } } for every
-// cluster this investigation may need to touch. The model picks a clusterName per call
-// from a z.enum of the REAL, known cluster names — it never supplies a raw context/
-// kubeconfig value itself, so the safety property from before (the model can't redirect
-// a command at an arbitrary cluster) holds exactly as it did with a single fixed
-// context: it's just choosing which known cluster now, instead of there being only one.
+// Build the read-only kubectl tool
 function _buildReadOnlyTool(clusterConfigs) {
   const clusterNames = Object.keys(clusterConfigs);
   return tool(
@@ -356,11 +266,7 @@ function _buildReadOnlyTool(clusterConfigs) {
   );
 }
 
-// The "finish" tool — its arguments ARE the final report. No real side effect; the loop
-// below intercepts the call and decides whether to accept it (confidence AND
-// evidenceSufficiency both >= CONFIDENCE_TARGET, at least one real command already run,
-// and the cited evidence isn't generic filler) or reject it back to the model with an
-// explanation, via the normal tool-result channel, same as any other tool call.
+// Build the submit report tool
 function _buildSubmitTool() {
   return tool(
     async (args) => JSON.stringify(args),
@@ -374,9 +280,7 @@ function _buildSubmitTool() {
   );
 }
 
-// _issueKey imported above from ../orchestrator/issueKey — shared with
-// orchestratorAgent.js/graph.js/planner.js instead of reimplemented independently.
-
+// Fallback report when investigation fails
 function _fallback(issues) {
   const primary = issues[0];
   const type = primary.type ?? 'Unknown';
@@ -388,99 +292,60 @@ function _fallback(issues) {
     componentsInvolved: issues.map(i => i.deployment ?? i.podName ?? i.nodeName).filter(Boolean),
     confidence: 0, evidence: [], recommendedFocus: 'manual inspection required', riskLevel: 'medium',
     layersInspected: [], perLayerFindings: [], evidenceSufficiency: 0,
-    // No real investigation happened (thrown error, or the loop never got a usable
-    // submission) — severity/reasoning can't be genuinely assessed, so this stays a
-    // clearly-labeled placeholder rather than a guessed value dressed up as real judgment.
     severity: 'medium',
     reasoning: 'investigation unavailable — no evidence was gathered, this is a placeholder, not an assessment',
     suspected_cause: cause, recommended_focus: 'manual inspection required', risk_level: 'medium',
-    // Honest empty/derived defaults for the observability fields WorkflowTracer/Mongo
-    // schema still read (see §Fix-ConvergenceSimplification) — no ring investigation
-    // happened at all here (the loop never ran or threw before producing anything).
     layersInvestigated: [], investigationExhausted: true, investigationTurns: 0,
     stoppingOutcome: 'INCONCLUSIVE',
   };
 }
 
-// ── The investigation loop ──────────────────────────────────────────────────────
-// Starts with zero evidence. Every iteration the model either calls
-// run_readonly_kubectl_command (gather more) or submit_investigation_report (finish) —
-// a submission is only accepted once it clears all three deterministic floors below
-// (real evidence exists, evidence is concrete, confidence/evidenceSufficiency both meet
-// the bar); otherwise it's rejected back to the model as a normal tool result and the
-// loop continues. Bounded by SAFETY_MAX_ITERATIONS (turn count) and
-// SAFETY_MAX_DURATION_MS (wall clock) purely as runaway guards — the model itself
-// decides when it's ready to conclude; these never intervene before that point.
-// §Fix-4 (2026-08-28) — the exact-string repeat key below missed a real class of
-// duplicates: the model re-asking the SAME query with cosmetically different quoting
-// (e.g. -o jsonpath='{.spec...}' vs -o jsonpath={.spec...}). Confirmed live: single
-// cycles racked up 15-40 back-to-back repeats of what was functionally one query because
-// each quote variant looked like a "new" command to the old exact-match key. Stripping
-// quotes and collapsing whitespace before comparing catches that without needing to
-// understand kubectl's own quoting rules.
+// Normalize a command for duplicate detection
 function _normalizeCommandForDedup(command) {
   return String(command || '').replace(/['"]/g, '').replace(/\s+/g, ' ').trim();
 }
 
-// LangChain's ChatOpenAI reports usage on the response message rather than via the
-// raw OpenAI stream shape (usage_metadata.{input,output,total}_tokens, or the older
-// response_metadata.tokenUsage.{prompt,completion,total}Tokens) — neither matches
-// tokenStore.record's expected {prompt_tokens, completion_tokens, total_tokens},
-// which mirrors the raw OpenAI SDK usage object the other agents pass in directly.
-function _extractUsage(response) {
-  const um = response?.usage_metadata;
-  if (um) {
-    return {
-      prompt_tokens:     um.input_tokens  ?? 0,
-      completion_tokens: um.output_tokens ?? 0,
-      total_tokens:      um.total_tokens  ?? 0,
-    };
-  }
-  const tu = response?.response_metadata?.tokenUsage;
-  if (tu) {
-    return {
-      prompt_tokens:     tu.promptTokens     ?? 0,
-      completion_tokens: tu.completionTokens ?? 0,
-      total_tokens:      tu.totalTokens      ?? 0,
-    };
-  }
-  return null;
+const PRIOR_EVIDENCE_LIMIT = 8;
+const PRIOR_COMMAND_LIMIT  = 15;
+
+function summarizeFindings(rca) {
+  if (!rca?.rootCause) return null;
+  const commands = [...new Set((rca.commandsExecuted ?? []).map(c => c?.command).filter(Boolean))];
+  if (!commands.length && !(rca.evidence ?? []).length) return null;
+  const layersChecked = Object.fromEntries(
+    (rca.perLayerFindings ?? []).filter(f => f?.layer).map(f => [f.layer, f.status ?? 'unknown'])
+  );
+  return {
+    rootCause:          rca.rootCause,
+    layer:              rca.layer ?? null,
+    evidence:           (rca.evidence ?? []).slice(0, PRIOR_EVIDENCE_LIMIT),
+    commandsAlreadyRun: commands.slice(0, PRIOR_COMMAND_LIMIT),
+    layersChecked,
+  };
 }
 
-async function _runInvestigationLoop({ issues, clusterConfigs, reflexionContext, seed, previousAttemptFailure }) {
+async function _runInvestigationLoop({ issues, clusterConfigs, reflexionContext, seed, previousAttemptFailure, previousFindings }) {
   const clusterNames = [...new Set(issues.map(i => i.clusterName))];
   const commandLog = [];
-  // Counts repeats per normalized command, across the WHOLE investigation (not reset
-  // per-turn) — lets the short-circuit message escalate from a gentle nudge to a hard
-  // stop once a command has clearly stopped producing new information.
   const repeatCounts = new Map();
+  const fullResults = new Map();
+  let promptTokens = 0;
   const readOnlyTool   = _buildReadOnlyTool(clusterConfigs);
   const submitTool     = _buildSubmitTool();
   const modelWithTools = baseLlm.bindTools([readOnlyTool, submitTool]);
 
-  // Phase 2 (Fast Path) — `seed` is only ever present when this investigation is
-  // resuming after a fast-path escalation (see graph.js's investigatorNode), and only
-  // ever for a length-1 `issues` array (a SIMPLE incident is always dispatched solo).
-  // Handed to the model as "fastPathContext" — see SYSTEM_PROMPT's paragraph on it —
-  // so the model has a stated starting hypothesis instead of nothing.
   const fastPathContext = seed
     ? { evidenceAlreadyGathered: seed.evidenceBundle, priorDiagnosis: seed.diagnosis }
     : undefined;
 
   const messages = [
     new SystemMessage(SYSTEM_PROMPT),
-    // issues each carry their own clusterName already — no single "cluster" field to
-    // pass, just the full list of clusters this investigation may touch.
-    new HumanMessage(JSON.stringify({ issues, clusters: clusterNames, historicalContext: reflexionContext, fastPathContext, previousAttemptFailure })),
+    new HumanMessage(JSON.stringify({ issues, clusters: clusterNames, historicalContext: reflexionContext, fastPathContext, previousAttemptFailure, previousFindings: previousFindings ?? undefined })),
   ];
 
   let lastCandidate = null;
-  // Every turn of the loop below is exactly one modelWithTools.invoke() call, so this
-  // doubles as the LLM-call count for the whole investigation — tracked outside the
-  // for-loop (not read from its own scoped `i`) so it's still correct whichever way
-  // the loop exits (natural cap, wall-clock cap, or the early `break` on a failed LLM call).
   let turnsUsed = 0;
-  let realCommandCount = 0; // §Fix-ConvergenceSimplification — the minimum-evidence floor's counter
+  let realCommandCount = 0;
   const loopStartedAt = Date.now();
 
   for (let i = 0; i < SAFETY_MAX_ITERATIONS; i++) {
@@ -490,6 +355,9 @@ async function _runInvestigationLoop({ issues, clusterConfigs, reflexionContext,
     }
     turnsUsed = i + 1;
 
+    const compacted = compactToolHistory(messages);
+    if (compacted) console.log(`[INVESTIGATOR] [CONTEXT] compacted ${compacted} older tool result(s) before turn ${i + 1}`);
+
     let response;
     try {
       response = await runStructuredLLMCall(() => modelWithTools.invoke(messages));
@@ -498,7 +366,10 @@ async function _runInvestigationLoop({ issues, clusterConfigs, reflexionContext,
       break;
     }
     messages.push(response);
-    tokenStore.record('investigator', _extractUsage(response));
+    const usage = tokenStore.usageFrom(response);
+    tokenStore.record('investigator', usage);
+    promptTokens += usage?.prompt_tokens ?? 0;
+    if (usage) console.log(`[INVESTIGATOR] [TOKENS] turn ${i + 1}: input=${usage.prompt_tokens} (cached=${usage.cached_tokens}) output=${usage.completion_tokens}`);
 
     const toolCalls = response.tool_calls ?? [];
     if (toolCalls.length === 0) {
@@ -508,22 +379,8 @@ async function _runInvestigationLoop({ issues, clusterConfigs, reflexionContext,
       continue;
     }
 
-    // §7.1 — when one LLM turn issues several tool calls at once (e.g. inspecting two
-    // clusters' evidence in the same step), run them CONCURRENTLY rather than one at a
-    // time — this is still a single agentic loop with one LLM per turn (not 11 parallel
-    // LLM threads, the anti-pattern §7.1 warns against), just with the read-only kubectl
-    // calls within a turn overlapping. Tool results are matched back to their call by
-    // tool_call_id, not by array position, so push order here doesn't need to match
-    // toolCalls' order.
     let submission = null;
     const toolMessages = [];
-    // Snapshot of everything already run BEFORE this turn — used to short-circuit an
-    // exact (post-normalization) repeat instead of re-executing it. Confirmed live
-    // (2026-08-28): without this, the model can re-issue the identical command a dozen+
-    // times across iterations (e.g. "get namespaces" repeated 15 times in one
-    // investigation) while stuck, burning real kubectl round-trips and iteration budget
-    // for zero new information — a snapshot taken once per turn (not re-checked
-    // mid-batch) is sufficient since same-turn duplicates are rare in practice.
     const alreadyRun = new Set(commandLog.map(c => `${c.clusterName}::${_normalizeCommandForDedup(c.command)}`));
     await Promise.all(toolCalls.map(async call => {
       if (call.name === SUBMIT_TOOL_NAME) { submission = call; return; }
@@ -531,25 +388,21 @@ async function _runInvestigationLoop({ issues, clusterConfigs, reflexionContext,
       const repeatKey = `${call.args?.clusterName}::${_normalizeCommandForDedup(call.args?.command)}`;
       let result;
       if (alreadyRun.has(repeatKey)) {
-        // §Fix-4 — the first repeat gets a gentle nudge; confirmed live that a single
-        // nudge often isn't enough to stop the model re-asking the same thing several
-        // more times, so the message escalates to a hard stop from the second repeat on.
         const priorRepeats = repeatCounts.get(repeatKey) ?? 1;
         repeatCounts.set(repeatKey, priorRepeats + 1);
         result = priorRepeats >= 2
           ? `(you have now asked this exact command ${priorRepeats + 1} times in this investigation — the answer will not change. Stop repeating it: run a genuinely different command, or call ${SUBMIT_TOOL_NAME} now with the evidence you already have.)`
-          : '(already ran this exact command earlier in this investigation, even if quoted slightly differently — see the earlier result above; try a different command or submit with what you have)';
+          : '(already ran this exact command earlier in this investigation, even if quoted slightly differently — its result is repeated below and will not change; try a different command next, or submit with what you have)' +
+            (fullResults.has(repeatKey) ? `\n\n${fullResults.get(repeatKey)}` : '');
       } else {
         repeatCounts.set(repeatKey, 1);
-        realCommandCount += 1; // §Fix-ConvergenceSimplification — feeds the minimum-evidence floor below
-        // Logged BEFORE the command runs — this is the model's own stated reason for
-        // picking this command, captured because it's a required tool argument (see
-        // _buildReadOnlyTool), not something the prompt merely asks for and hopes holds.
+        realCommandCount += 1;
         if (call.args?.reasoning) console.log(`[INVESTIGATOR] [REASONING] ${call.args.reasoning}`);
         const cfg = clusterConfigs[call.args?.clusterName];
         result = cfg
           ? await executeReadOnlyCommand(call.args?.command, cfg.context)
           : `ERROR: unknown clusterName "${call.args?.clusterName}" — must be one of: ${Object.keys(clusterConfigs).join(', ')}`;
+        fullResults.set(repeatKey, result);
       }
       commandLog.push({ clusterName: call.args?.clusterName, command: call.args?.command, reasoning: call.args?.reasoning ?? null, result: result.length > 500 ? result.slice(0, 500) + '...' : result });
       toolMessages.push(new ToolMessage({ content: String(result), tool_call_id: call.id }));
@@ -568,14 +421,6 @@ async function _runInvestigationLoop({ issues, clusterConfigs, reflexionContext,
 
     lastCandidate = candidate;
 
-    // §Fix-ConvergenceSimplification — three deterministic floors, checked in order of
-    // how fundamental the gap is: no evidence at all, evidence that IS present but is
-    // vague filler, then the existing self-reported confidence/evidenceSufficiency
-    // ceiling. None of these decide WHAT the root cause is or WHEN the model should
-    // feel ready — they only verify objective, checkable facts about what actually
-    // happened in this conversation (a real command ran; the cited text isn't a
-    // known-vague phrase; the model's own scores clear a bar), same enforcement/
-        // decision split as every other floor in this codebase.
     if (realCommandCount < MIN_REAL_TOOL_CALLS_BEFORE_SUBMIT) {
       messages.push(new ToolMessage({
         content: `Not accepted — you haven't gathered any real evidence yet. Call run_readonly_kubectl_command ` +
@@ -596,7 +441,7 @@ async function _runInvestigationLoop({ issues, clusterConfigs, reflexionContext,
     const meetsConfidenceGate = candidate.confidence >= CONFIDENCE_TARGET && candidate.evidenceSufficiency >= CONFIDENCE_TARGET;
     if (meetsConfidenceGate) {
       console.log(`[INVESTIGATOR] [REASONING] ${candidate.reasoning}`);
-      return { report: candidate, commandLog, reachedTarget: true, turnsUsed };
+      return { report: candidate, commandLog, reachedTarget: true, turnsUsed, promptTokens };
     }
 
     messages.push(new ToolMessage({
@@ -607,36 +452,17 @@ async function _runInvestigationLoop({ issues, clusterConfigs, reflexionContext,
   }
 
   console.warn(`[INVESTIGATOR][${clusterNames.join(',')}] hit the ${SAFETY_MAX_ITERATIONS}-iteration/${SAFETY_MAX_DURATION_MS}ms safety cap without reaching confidence/evidenceSufficiency >= ${CONFIDENCE_TARGET}`);
-  return { report: lastCandidate, commandLog, reachedTarget: false, turnsUsed };
+  return { report: lastCandidate, commandLog, reachedTarget: false, turnsUsed, promptTokens };
 }
 
-// Small local resolver, deliberately not shared with graph.js's _clusterFor — this file
-// stays standalone on purpose (see file header), its own external dependencies are
-// plain function-call boundaries, not a shared internal helper module.
+// Get the tier of a cluster
 function _tierFor(clusterConfigs, clusterName) {
   return clusterConfigs?.[clusterName]?.tier ?? 'dev';
 }
 
 class Investigator {
-  // `issues` is an array — usually one incident, but may be several grouped by
-  // namespace (architecture-doc §7.6/§9.1: OrchestratorAgent dispatches one workflow
-  // per namespace, not per incident — now potentially spanning clusters too). One
-  // agentic loop investigates the whole group together, since this file (unlike the
-  // ported Planner/Guardian/Reflection) is where genuine cross-incident (and now
-  // cross-cluster) reasoning belongs — see AGENTIC/SYSTEM_PROMPT above.
-  // `seed` (Phase 2, optional) — { evidenceBundle, diagnosis } from a fast-path
-  // escalation (src/agents/fastPath.js via graph.js's investigatorNode). Only ever
-  // present for a length-1 `issues` array; threaded straight through to
-  // _runInvestigationLoop, which folds it into the model's initial message as
-  // "fastPathContext" (see SYSTEM_PROMPT's paragraph on it) rather than making the
-  // model re-gather what Fast Path already found.
-  // `previousAttemptFailure` (§Fix-RetryContext, 2026-09-14, optional) — a plain string
-  // from graph.js's WorkflowState.lastAttemptFailure, describing what an earlier
-  // automated attempt at fixing this exact issue tried and why it didn't work. Only
-  // present on a re-diagnose retry; folded into the model's initial message so it can be
-  // taken into account rather than re-investigating blind (see SYSTEM_PROMPT's paragraph
-  // on it).
-  async investigate(issues, clusterConfigs, seed = null, previousAttemptFailure = null) {
+  // Investigate one or more issues
+  async investigate(issues, clusterConfigs, seed = null, previousAttemptFailure = null, previousFindings = null) {
     const clusterNames = [...new Set(issues.map(i => i.clusterName))];
     const keys = issues.map(_issueKey);
 
@@ -645,11 +471,6 @@ class Investigator {
     ));
 
     try {
-      // Reflexion context merged across every DISTINCT issue type in the group — a
-      // mixed-type group (e.g. CrashLoopBackOff + OOMKilled in the same namespace)
-      // gets rules/history for both, not just whichever issue happened to be first.
-      // Deliberately NOT cluster-scoped (see reflectionAgent's fingerprint) — a learned
-      // rule from one cluster should still surface as relevant history on another.
       const distinctTypes = [...new Set(issues.map(i => i.type))];
       const queryText = issues.map(i => `${i.type} ${i.podName ?? i.nodeName ?? ''} ${i.namespace ?? ''}`).join('; ').trim();
       const contexts = await Promise.all(distinctTypes.map(issueType => {
@@ -666,20 +487,13 @@ class Investigator {
         semanticMatches:   contexts.flatMap(c => c.semanticMatches),
       };
 
-      const { report, commandLog, reachedTarget, turnsUsed } =
-        await _runInvestigationLoop({ issues, clusterConfigs, reflexionContext, seed, previousAttemptFailure });
+      const { report, commandLog, reachedTarget, turnsUsed, promptTokens } =
+        await _runInvestigationLoop({ issues, clusterConfigs, reflexionContext, seed, previousAttemptFailure, previousFindings });
       const finalReport = report ?? _fallback(issues);
       if (!reachedTarget) {
         console.warn(`[INVESTIGATOR][${clusterNames.join(',')}] returning best-effort report — never reached the confidence/evidence target (confidence=${finalReport.confidence}, evidenceSufficiency=${finalReport.evidenceSufficiency})`);
       }
 
-      // §Fix-ConvergenceSimplification — honest, lightweight derivations for the
-      // observability fields WorkflowTracer/the WorkflowTrace Mongo schema still read
-      // (see workflowTracer.js's attachInvestigatorResult, which already treats every
-      // one of these as optional via `?? default`) — no ring/convergence machinery
-      // computes these anymore, so they're derived directly from what actually
-      // happened in this run rather than removed outright, to avoid every historical
-      // dashboard field silently going blank.
       const layersInvestigated = [...new Set((finalReport.perLayerFindings ?? []).map(f => f.layer).filter(Boolean))];
       const stoppingOutcome = reachedTarget
         ? 'DIAGNOSIS_READY'
@@ -687,27 +501,19 @@ class Investigator {
 
       const result = {
         ...finalReport,
-        commandsExecuted: commandLog, // what the execution layer actually ran — not model self-report
+        commandsExecuted: commandLog,
         reachedConfidenceTarget: reachedTarget,
-        // Legacy-compatible flat fields — PlannerAgent.plan()/GuardianAgent.review()
-        // (ported as-is) read these, not the multi-layer shape above.
         suspected_cause:   finalReport.rootCause,
         recommended_focus: finalReport.recommendedFocus,
         risk_level:        finalReport.riskLevel,
         layersInvestigated,
         investigationExhausted: !reachedTarget,
         stoppingOutcome,
-        // Measurement (Phase 1) — every loop turn is exactly one LLM call (see
-        // _runInvestigationLoop), so this doubles as the investigator's LLM-call count.
-        // 0 when investigate() failed before the loop ever ran (see the catch block below).
         investigationTurns: turnsUsed ?? 0,
       };
 
-      console.log(`[INVESTIGATOR][${clusterNames.join(',')}] ${result.rootCause} (layer=${result.layer}, severity=${result.severity}, conf=${result.confidence.toFixed(2)}, evidence=${result.evidenceSufficiency.toFixed(2)}, commands run=${commandLog.length}, incidents=${issues.length})`);
+      console.log(`[INVESTIGATOR][${clusterNames.join(',')}] ${result.rootCause} (layer=${result.layer}, severity=${result.severity}, conf=${result.confidence.toFixed(2)}, evidence=${result.evidenceSufficiency.toFixed(2)}, commands run=${commandLog.length}, incidents=${issues.length}, turns=${turnsUsed}, prompt tokens=${promptTokens})`);
 
-      // Same combined report attached under each incident's own key, so per-app
-      // status stays independently readable even though they were investigated as a
-      // group — mirrors how graph.js keeps per-item issueTrackerStore keys.
       await Promise.all(keys.map((key, i) =>
         shortMemory.upsertIncident(key, { stage: 'investigated', issue: issues[i], report: result, completedAt: new Date().toISOString() })
       ));
@@ -725,12 +531,9 @@ class Investigator {
 }
 
 module.exports = new Investigator();
-// Exposed directly (alongside the primary .investigate() API) so the read-only gate —
-// the security-critical piece of the execution layer — can be verified on its own,
-// without going through a full (LLM-driven) investigation.
 module.exports._isReadOnlyCommand    = _isReadOnlyCommand;
 module.exports.executeReadOnlyCommand = executeReadOnlyCommand;
 module.exports._hasConcreteEvidence  = _hasConcreteEvidence;
 module.exports._isGenericEvidence    = _isGenericEvidence;
-// Single source of truth for the 11 canonical layer NAMES.
+module.exports.summarizeFindings     = summarizeFindings;
 module.exports.CANONICAL_LAYER_NAMES = CANONICAL_LAYERS.map(([name]) => name);

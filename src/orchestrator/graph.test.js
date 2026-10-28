@@ -1,9 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 
-// graph.js transitively requires ../config (OPENAI_API_KEY/OPENAI_MODEL/
-// NOTIFICATION_SECRET) and guardianAgent.js (constructs an OpenAI client at module
-// load) — same pattern as escalationStore.test.js/shortMemory.test.js: set required
-// env vars before the module graph loads, via a dynamic (non-hoisted) import.
 process.env.OPENAI_API_KEY      ??= 'test-only-key';
 process.env.OPENAI_MODEL        ??= 'test-model';
 process.env.NOTIFICATION_SECRET ??= 'test-only-secret-not-a-real-value-0123456789';
@@ -17,10 +13,6 @@ beforeAll(async () => {
 
 describe('_toIssue', () => {
   it('carries clusterName through from the incident', () => {
-    // Regression test: _toIssue() used to silently drop clusterName even though the
-    // incident carried it — escalationStore.escalate()/approvalStore.requestApproval()
-    // both read issue?.clusterName and got `undefined` from every graph.js-originated
-    // issue as a result. Also now load-bearing for issueKey()'s cluster-prefixed keys.
     const issue = _toIssue({ type: 'CrashLoopBackOff', scope: 'pod', clusterName: 'cluster-a', namespace: 'payments', podName: 'api-1' });
     expect(issue.clusterName).toBe('cluster-a');
   });
@@ -39,12 +31,6 @@ describe('_clusterFor', () => {
   });
 
   it('returns context: null for an unknown cluster rather than throwing OR guessing a real context', () => {
-    // Regression test: an earlier version fell back to context=clusterName (reusing the
-    // untrusted, LLM-derived name itself as a kubectl context) — a live two-cluster test
-    // (2026-08-26) showed the classifier can hallucinate an incident under a clusterName
-    // that happens to match a REAL cluster outside this workflow's scope, which that old
-    // fallback would have used verbatim as a real kubectl --context value. context must
-    // stay null so every call site is forced to check and skip rather than attempt it.
     const result = _clusterFor(clusterConfigs, 'cluster-missing');
     expect(result).toEqual({ name: 'cluster-missing', context: null, tier: 'dev' });
   });
@@ -65,10 +51,6 @@ describe('_issueForStep', () => {
     expect(_issueForStep(step, [issueA, issueB])).toBe(issueA);
   });
 
-  // Regression test: found in review 2026-08-26 — plannerNode uses the returned
-  // issue's clusterName to route the step's real execution context, so silently
-  // falling back to an arbitrary issue when the group spans multiple clusters could
-  // route a step's execution to the WRONG cluster.
   it('nulls out clusterName instead of guessing when the group spans multiple clusters', () => {
     const step = { issueKeys: [], target: { kind: 'Deployment', name: 'no-such-deployment', namespace: 'payments' } };
     const result = _issueForStep(step, [issueA, issueC]);
@@ -77,10 +59,6 @@ describe('_issueForStep', () => {
 });
 
 describe('_actionCannotAddressRootCause (§Fix-RootCauseGate / §Fix-ExecutorHonesty)', () => {
-  // Real rootCause/command pairs pulled from live 20-incident test runs
-  // (test-output/20-incidents/) — the whole point of this gate is these EXACT cases,
-  // which Guardian approved before the gate existed.
-
   it('blocks a restart proposed for a confirmed third-party outage (P10, both clusters)', () => {
     const reason = _actionCannotAddressRootCause({
       rootCause: 'Application startup failure due to a third-party outage: DNS resolution is failing for the external payment processor API (api.stripe-processor-external.example.com), which is confirmed as an external service disruption.',
@@ -117,9 +95,6 @@ describe('_actionCannotAddressRootCause (§Fix-RootCauseGate / §Fix-ExecutorHon
     expect(reason).toBeNull();
   });
 
-  // Control case (P1, transient-crash) — must NOT be blocked. This is the exact
-  // persona/action pair the gate must never touch: a genuine transient-dependency
-  // restart, no outage/code-crash language anywhere in the diagnosis.
   it('control case: does NOT block a transient-crash restart (P1)', () => {
     const reason = _actionCannotAddressRootCause({
       rootCause: 'Application startup failure due to timeout when connecting to a downstream dependency. The dependency is either temporarily unavailable or too slow to respond during the pod\'s initialization phase, causing it to exceed retry limits and crash. Previous restarts of the same pod have succeeded, indicating a transient or timing-dependent issue rather than a persistent misconfiguration.',
@@ -129,9 +104,6 @@ describe('_actionCannotAddressRootCause (§Fix-RootCauseGate / §Fix-ExecutorHon
     expect(reason).toBeNull();
   });
 
-  // Control case: an internal-only "unavailable"/"outage"-adjacent word without an
-  // external/third-party qualifier must not trip the outage rule — otherwise ordinary
-  // internal dependency issues (P6-style) would get wrongly blocked too.
   it('control case: does NOT block on "outage"-adjacent language without an external/third-party qualifier', () => {
     const reason = _actionCannotAddressRootCause({
       rootCause: 'The cache pod is crashing because it cannot connect to the redis-master service; the dependency appears unavailable within the cluster.',
@@ -156,9 +128,6 @@ describe('_actionCannotAddressRootCause (§Fix-RootCauseGate / §Fix-ExecutorHon
 });
 
 describe('routeAfterPlanner', () => {
-  // "noop" is no longer a fixed action name to match — the Planner writes free-form
-  // commands now, so an empty `command` is what signals "nothing to do" (see planner.js's
-  // SYSTEM_PROMPT: "leave this EMPTY... if there is genuinely no safe automated fix").
   it('routes a single-step plan with no command straight to reflexion, skipping Guardian', () => {
     expect(routeAfterPlanner({ items: [{ step: { action: 'no fix available', command: '' } }] })).toBe('reflexion');
   });
@@ -193,9 +162,6 @@ describe('shouldEscalate', () => {
 });
 
 describe('requiresApproval', () => {
-  // No more fixed high-risk action set — the Planner writes free-form commands (see
-  // schemas.js's v5 PlanStepSchema), so risk tier / Guardian's own flag / reversibility
-  // are the only signals left to gate on.
   it('requires approval when risk is HIGH regardless of reversibility', () => {
     expect(requiresApproval('HIGH', false, true)).toBe(true);
   });
@@ -229,6 +195,10 @@ describe('routeAfterPolicy', () => {
   it('routes a clean approval through to executor', () => {
     expect(routeAfterPolicy({ outcome: null, blockReason: null })).toBe('executor');
   });
+
+  it('routes to reflexion when every issue was resolved as already healthy (§Fix-AlreadyHealthyResolve)', () => {
+    expect(routeAfterPolicy({ items: [], outcome: 'fixed', blockReason: 'stale' })).toBe('reflexion');
+  });
 });
 
 describe('routeAfterExecutor (§Fix-RetryLoop)', () => {
@@ -258,9 +228,6 @@ describe('_issueResolution', () => {
     expect(result.resolved).toBe(true);
   });
 
-  // Regression test (found in review 2026-08-26): a multi-step plan (e.g. a node's
-  // cordon->drain->uncordon) must not be marked resolved just because its FIRST step
-  // succeeded — every actionable step must have succeeded.
   it('is unresolved if any actionable step in a multi-step plan failed, even if the first one succeeded', () => {
     const steps = [
       { executionOutcome: 'fixed' },

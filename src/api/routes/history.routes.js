@@ -17,10 +17,7 @@ function parsePaging(query) {
 
 function toArray(v) { return v == null ? [] : [].concat(v); }
 
-// Matches a "who" field (e.g. decidedBy.email) against a list of emails, with a
-// '__unassigned__' sentinel meaning "field missing/null" — mirrors the client-side
-// filter semantics this replaces (`x.email ?? '__unassigned__'`). In Mongo,
-// { field: null } already matches both missing and explicitly-null values.
+// Build a filter on a user email field
 function whoFilter(field, values) {
   if (!values.length) return null;
   const emails = values.filter(v => v !== '__unassigned__');
@@ -81,7 +78,6 @@ router.get('/api/history/escalations', requireAuth, asyncHandler(async (req, res
   res.json({ docs, total, page, pages: Math.max(1, Math.ceil(total / limit)) });
 }));
 
-// Unfiltered totals for the tab badges — cheap, independent of the current page/filters.
 router.get('/api/history/counts', requireAuth, asyncHandler(async (_req, res) => {
   const [approvals, escalations] = await Promise.all([
     ApprovalHistory.countDocuments(),

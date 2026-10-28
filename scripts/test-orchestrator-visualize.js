@@ -1,23 +1,4 @@
 #!/usr/bin/env node
-// =============================================================================
-// scripts/test-orchestrator-visualize.js — generate a synthetic multi-namespace
-// cluster snapshot, run it through the REAL OrchestratorAgent classification +
-// dispatch pipeline, and write out a structured report (JSON) plus a human-readable
-// HTML visualization — without touching kubectl, shortMemory, or runWorkflow.
-//
-// Pairs with scripts/generate-pod-fixtures.js (the pod/namespace generator) and
-// benchmark/scenarios/orchestrator-classify.yaml (hand-written fixed scenarios) —
-// this script is for the "throw a lot of pods across many namespaces at it and see
-// what happens" case, where you don't want to hand-write every pod.
-//
-// Usage:
-//   node scripts/test-orchestrator-visualize.js
-//   node scripts/test-orchestrator-visualize.js --namespaces=6 --perNamespace=4 --failureRate=0.6 --seed=7
-//
-// Output:
-//   benchmark/results/orchestrator-visualize-<timestamp>.json  (structured, diffable)
-//   benchmark/results/orchestrator-visualize-<timestamp>.html  (open in a browser)
-// =============================================================================
 'use strict';
 
 require('dotenv').config({ override: true });
@@ -38,7 +19,7 @@ const args = Object.fromEntries(process.argv.slice(2).map(a => {
 
 const SEVERITY_COLOR = { critical: '#c0392b', high: '#e67e22', medium: '#d4ac0d', low: '#7f8c8d' };
 
-// ── Run ──────────────────────────────────────────────────────────────────────
+// Run the test
 async function main() {
   const fixture = generateFixture({
     namespaceCount:   args.namespaces   ? Number(args.namespaces)   : undefined,
@@ -73,7 +54,7 @@ async function main() {
   }));
   const priorities = OrchestratorAgent._computeGroupPriorities(survivors);
 
-  const groups = new Map(); // dispatchKey -> incident[]
+  const groups = new Map();
   for (const { incident, dispatchKey } of survivors) {
     if (!groups.has(dispatchKey)) groups.set(dispatchKey, []);
     groups.get(dispatchKey).push(incident);
@@ -87,13 +68,10 @@ async function main() {
       podCount:       fixture.pods.items.length,
       namespaceCount: new Set(fixture.manifest.map(m => m.namespace)).size,
       nodeCount:      fixture.nodes.items.length,
-      manifest:       fixture.manifest, // what we generated (ground truth, incl. intended failure mode)
+      manifest:       fixture.manifest,
     },
-    signals, // what actually reached the LLM after summarization
+    signals,
     incidents,
-    // Per group: exactly what runWorkflow({ incidents, clusterConfig }) would build and
-    // hand to investigatorNode -> investigator.investigate(issues, clusterConfig) — same
-    // _toIssue() mapping graph.js itself uses (src/orchestrator/graph.js:79).
     dispatchGroups: [...groups.entries()].map(([dispatchKey, groupIncidents]) => ({
       dispatchKey,
       priority: priorities.get(dispatchKey),
@@ -116,7 +94,7 @@ async function main() {
   console.log(`\nWrote:\n  ${jsonPath}\n  ${htmlPath}`);
 }
 
-// ── HTML report ──────────────────────────────────────────────────────────────
+// Escape HTML
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }

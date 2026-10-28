@@ -16,7 +16,6 @@ export default function NotificationPanel({ onClose, bellRef }) {
     })
   }, [])
 
-  // Close on outside click, ignoring the bell button itself
   useEffect(() => {
     const handler = e => {
       if (panelRef.current && !panelRef.current.contains(e.target) &&
@@ -28,7 +27,6 @@ export default function NotificationPanel({ onClose, bellRef }) {
     return () => document.removeEventListener('mousedown', handler)
   }, [onClose, bellRef])
 
-  // Subscribe to live notifications
   useEffect(() => {
     let es, cancelled = false
     openSSE('/api/notifications/stream').then(s => {

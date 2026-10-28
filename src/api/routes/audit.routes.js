@@ -6,7 +6,6 @@ const { asyncHandler } = require('../middleware/asyncHandler');
 
 const router = express.Router();
 
-// ── Audit log endpoint ────────────────────────────────────────────────────
 router.get('/api/audit', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
   const limit   = Math.min(500, parseInt(req.query.limit  ?? '200', 10));
   const cluster = req.query.cluster  || null;

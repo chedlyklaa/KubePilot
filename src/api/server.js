@@ -2,10 +2,6 @@
 const express = require('express');
 const cors    = require('cors');
 
-// Route modules — one per domain, each mounting its own full "/api/..." paths.
-// Mount order below only matters within a shared path prefix (e.g. all "/api/users/*"
-// routes stay in their original relative order inside users.routes.js); there is no
-// path overlap across different domain files, so cross-file order is unconstrained.
 const authRoutes          = require('./routes/auth.routes');
 const logsRoutes          = require('./routes/logs.routes');
 const approvalsRoutes     = require('./routes/approvals.routes');

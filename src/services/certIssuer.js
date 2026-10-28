@@ -7,7 +7,7 @@ const { execFile } = require('child_process');
 const yamlLib   = require('js-yaml');
 const kubectl   = require('../tools/kubectl');
 const rbacSync  = require('./rbacSync');
-const notifCrypto = require('./notifications/crypto'); // generic AES-256-GCM encrypt/decrypt, reused here
+const notifCrypto = require('./notifications/crypto');
 const { User, UserCertificate } = require('../db/models');
 const { getClusters } = require('../config/clusterConfig');
 
@@ -24,9 +24,7 @@ function _execFile(bin, args) {
   });
 }
 
-// Generates a fresh RSA keypair + PKCS#10 CSR for the given CN, entirely in a
-// per-call temp directory that's removed immediately after reading the results —
-// the private key never touches disk longer than the few ms this takes.
+// Generate a key and CSR
 async function _generateKeyAndCsr(commonName) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kp-cert-'));
   const keyPath = path.join(dir, 'client.key');
@@ -43,8 +41,7 @@ async function _generateKeyAndCsr(commonName) {
   }
 }
 
-// K8s issues the signed cert asynchronously after approval — poll briefly rather
-// than assuming it's instantly ready.
+// Wait for the signed certificate
 async function _pollForCertificate(csrName, context, { attempts = 10, delayMs = 500 } = {}) {
   for (let i = 0; i < attempts; i++) {
     const certB64 = await kubectl.getCsrCertificate(csrName, context);
@@ -59,10 +56,6 @@ function _buildKubeconfig({ context, clusterInfo, commonName, certPemB64, keyPem
     ? { server: clusterInfo.server, 'certificate-authority-data': clusterInfo.caData }
     : { server: clusterInfo.server, 'insecure-skip-tls-verify': true };
 
-  // Prefixed rather than reusing the source cluster's own context/cluster name —
-  // if a user merges this file into their own existing ~/.kube/config (which may
-  // already have an entry with that exact name), reusing the name would silently
-  // overwrite one or the other depending on merge order.
   const kpClusterName = `kubepilot-${clusterInfo.clusterName}`;
   const kpContextName = `kubepilot-${context}`;
 
@@ -82,17 +75,7 @@ function _resolveContext(clusterName) {
   return entry.context;
 }
 
-// Issues a fresh client certificate for a user on one cluster:
-//   1. syncs their current system permissions into K8s RoleBindings (subject
-//      kind:User name:email) — the same bindings that already authorize
-//      `kubectl --as=email` impersonation now also authorize this cert, since
-//      its CN is the user's email too
-//   2. generates a keypair + CSR, gets it signed via the K8s CSR API
-//   3. stores the cert + encrypted private key (replaces any previous one for
-//      this user+cluster)
-// Returns the kubeconfig text for immediate download — the plaintext private key
-// is never returned again after this call; re-download later goes through
-// getStoredKubeconfig(), which decrypts the stored copy.
+// Issue a client certificate for a user
 async function issueCertificate(userId, clusterName) {
   const user = await User.findById(userId).lean();
   if (!user) throw new Error('User not found');
@@ -110,13 +93,10 @@ async function issueCertificate(userId, clusterName) {
     await kubectl.approveCsr(csrName, context);
     certB64 = await _pollForCertificate(csrName, context);
   } catch (err) {
-    // Don't leave an unsigned/orphaned CSR object behind on failure — otherwise every
-    // failed attempt (e.g. the agent lacking `approve` permission on the signer)
-    // accumulates a stuck CSR until Kubernetes' own expiry cleans it up.
     await kubectl.deleteCsr(csrName, context).catch(() => {});
     throw err;
   }
-  kubectl.deleteCsr(csrName, context).catch(() => {}); // best-effort cleanup, already have what we need
+  kubectl.deleteCsr(csrName, context).catch(() => {});
   const certPem = Buffer.from(certB64, 'base64').toString('utf8');
 
   await UserCertificate.findOneAndUpdate(
@@ -139,9 +119,7 @@ async function issueCertificate(userId, clusterName) {
   return { certPem, kubeconfig };
 }
 
-// Rebuilds the kubeconfig for a previously issued certificate, using the CURRENT
-// cluster server/CA info (so it stays correct even if the cluster endpoint changed
-// since issuance) and the stored, decrypted private key.
+// Get the kubeconfig of an issued certificate
 async function getStoredKubeconfig(userId, clusterName) {
   const record = await UserCertificate.findOne({ userId: String(userId), cluster: clusterName }).lean();
   if (!record) throw new Error('No certificate has been issued for this user on this cluster');

@@ -1,24 +1,11 @@
-// src/risk/engine.js
-
-/**
- * Risk Engine
- * Scores every action before execution
- *
- * Final score:
- * 0.0 → safe
- * 1.0 → dangerous
- */
-
+// Scores the risk of an action
 class RiskEngine {
   constructor() {
-    // Risk thresholds
     this.LOW_RISK_THRESHOLD = 0.3;
     this.HIGH_RISK_THRESHOLD = 0.7;
   }
 
-  /**
-   * Main scoring function
-   */
+  // Calculate the risk score
   calculateRisk(actionData) {
     const {
       action,
@@ -29,46 +16,23 @@ class RiskEngine {
       costImpact,
     } = actionData;
 
-    // ==========================
-    // Base action risk
-    // ==========================
     const actionRisk = this.getActionRisk(action);
 
-    // ==========================
-    // Cluster tier multiplier
-    // ==========================
     const tierMultiplier =
       this.getClusterTierMultiplier(clusterTier);
 
-    // ==========================
-    // Blast radius normalization
-    // ==========================
     const normalizedBlastRadius =
       blastRadius / 10;
 
-    // ==========================
-    // Reversibility impact
-    // lower reversibility = higher risk
-    // ==========================
     const reversibilityRisk =
       1 - reversibility;
 
-    // ==========================
-    // Confidence penalty
-    // low confidence = higher risk
-    // ==========================
     const confidencePenalty =
       1 - llmConfidence;
 
-    // ==========================
-    // Cost normalization
-    // ==========================
     const normalizedCost =
       Math.min(costImpact / 1000, 1);
 
-    // ==========================
-    // Final weighted score
-    // ==========================
     let score =
       actionRisk * 0.35 +
       normalizedBlastRadius * 0.2 +
@@ -76,10 +40,8 @@ class RiskEngine {
       confidencePenalty * 0.15 +
       normalizedCost * 0.15;
 
-    // Apply environment multiplier
     score *= tierMultiplier;
 
-    // Clamp score
     score = Math.max(0, Math.min(score, 1));
 
     return {
@@ -88,9 +50,7 @@ class RiskEngine {
     };
   }
 
-  /**
-   * Risk associated with action type
-   */
+  // Risk of an action type
   getActionRisk(action) {
     const riskMap = {
       inspect: 0.05,
@@ -123,9 +83,7 @@ class RiskEngine {
     return riskMap[action] || 0.5;
   }
 
-  /**
-   * Environment sensitivity
-   */
+  // Risk multiplier for a cluster tier
   getClusterTierMultiplier(tier) {
     const tiers = {
       dev: 0.7,
@@ -136,9 +94,7 @@ class RiskEngine {
     return tiers[tier] || 1;
   }
 
-  /**
-   * Final policy decision
-   */
+  // Get the decision for a score
   getDecision(score) {
     if (score < this.LOW_RISK_THRESHOLD) {
       return 'AUTONOMOUS';

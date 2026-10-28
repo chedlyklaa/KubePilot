@@ -18,15 +18,13 @@ class VectorStore {
     });
 
     this.embeddingModel = process.env.EMBEDDING_MODEL || 'bge-multilingual-gemma2';
-    this.vectorSize     = null;   // discovered at init from a live embedding call
+    this.vectorSize     = null;
     this.ready          = false;
   }
 
-  // ── Startup ────────────────────────────────────────────────────────────────
+  // Connect to Qdrant and set up the collection
   async initialize() {
     try {
-      // Step 1: ask the model itself how many dimensions it produces
-      // 10-second timeout — if the embedding API is unreachable at boot, degrade gracefully
       console.log(`[VectorStore] Probing embedding model "${this.embeddingModel}"…`);
       const probe = await Promise.race([
         this.generateEmbedding('kubernetes pod issue probe'),
@@ -37,17 +35,14 @@ class VectorStore {
       this.vectorSize = probe.length;
       console.log(`[VectorStore] Embedding dimension: ${this.vectorSize}`);
 
-      // Step 2: check if the collection already exists
       const { collections } = await this.client.getCollections();
       const existing = collections.find(c => c.name === COLLECTION);
 
       if (existing) {
-        // Fetch the collection's configured vector size
         const info        = await this.client.getCollection(COLLECTION);
         const storedSize  = info.config?.params?.vectors?.size ?? null;
 
         if (storedSize !== null && storedSize !== this.vectorSize) {
-          // Dimension mismatch — delete and recreate so every vector is consistent
           console.warn(`[VectorStore] Dimension mismatch: collection=${storedSize}, model=${this.vectorSize} — recreating collection`);
           await this.client.deleteCollection(COLLECTION);
           await this._createCollection();
@@ -72,7 +67,7 @@ class VectorStore {
     console.log(`[VectorStore] Collection "${COLLECTION}" created (dim=${this.vectorSize})`);
   }
 
-  // ── Generate embedding vector ──────────────────────────────────────────────
+  // Generate an embedding vector
   async generateEmbedding(text) {
     const res = await this.embedClient.embeddings.create({
       model: this.embeddingModel,
@@ -81,7 +76,7 @@ class VectorStore {
     return res.data[0].embedding;
   }
 
-  // ── Build rich text from a stored episode (used at write time) ─────────────
+  // Build text from an episode
   episodeToText(episode) {
     const f = episode.fingerprint || {};
     const c = episode.context     || {};
@@ -96,7 +91,7 @@ class VectorStore {
     ].filter(Boolean).join('\n');
   }
 
-  // ── Build query text from a live issue (used at search time) ──────────────
+  // Build query text from an issue
   issueToQueryText(issue, podLogs = '') {
     return [
       `issueType:${issue.type} oomKilled:${issue.oomKilled ?? false} exitCode:${issue.exitCode ?? 'none'} tier:${issue.tier || 'dev'}`,
@@ -105,7 +100,7 @@ class VectorStore {
     ].filter(Boolean).join('\n');
   }
 
-  // ── Upsert one episode vector ──────────────────────────────────────────────
+  // Upsert an episode vector
   async upsert(qdrantId, episode) {
     if (!this.ready) return;
     try {
@@ -135,7 +130,7 @@ class VectorStore {
     }
   }
 
-  // ── Semantic similarity search ─────────────────────────────────────────────
+  // Search for similar episodes
   async search(queryText, limit = 4) {
     if (!this.ready) return [];
     try {

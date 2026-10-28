@@ -119,7 +119,6 @@ export default function AgentsPage() {
         <button className="btn-primary" onClick={load} disabled={loading}>{loading ? 'Loading...' : 'Refresh'}</button>
       </div>
 
-      {/* ── Status cards ────────────────────────────────────────────── */}
       <div className="ag-status-row">
         <div className="ag-status-card">
           <div className="ag-status-value">{agents.length}</div>
@@ -147,7 +146,6 @@ export default function AgentsPage() {
         </div>
       </div>
 
-      {/* ── Agent groups ────────────────────────────────────────────── */}
       {[['Core Agents', 'LLM-powered agents that plan, validate, and learn', coreAgents],
         ['Analyzers', 'Rule-based modules that detect issues from cluster state', analyzers],
         ['Engines', 'Specialized engines for correlation and forecasting', engines],
@@ -183,7 +181,6 @@ export default function AgentsPage() {
         </div>
       ))}
 
-      {/* ── Runtime Config ──────────────────────────────────────────── */}
       <div className="ag-section">
         <div className="ag-section-head">
           <h3 className="ag-section-title">Runtime Configuration</h3>
@@ -220,7 +217,6 @@ export default function AgentsPage() {
         </div>
       </div>
 
-      {/* ── Learned Rules ──────────────────────────────────────────── */}
       <div className="ag-section">
         <div className="ag-section-head">
           <div>
@@ -316,7 +312,6 @@ export default function AgentsPage() {
         )}
       </div>
 
-      {/* ── Monitored Clusters ──────────────────────────────────────── */}
       <div className="ag-section">
         <div className="ag-section-head">
           <h3 className="ag-section-title">Monitored Clusters</h3>

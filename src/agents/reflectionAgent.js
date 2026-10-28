@@ -7,7 +7,6 @@ const { loadConfig } = require('../config');
 const ruleEngine     = require('../memory/ruleEngine');
 const episodicMemory = require('../memory/episodicMemory');
 
-// Reuse the Guardian LLM (Mistral) — fast, structured JSON, different family from Planner
 const _config = loadConfig();
 const client = new OpenAI({
   apiKey:  _config.GUARDIAN_API_KEY  || _config.OPENAI_API_KEY,
@@ -27,12 +26,7 @@ const FALLBACK = {
 };
 
 class ReflectionAgent {
-  // ── Sole gateway to the Vector DB / learned-rule store (architecture-doc §3.7) ──
-  // Investigator (and, eventually, Guardian) request historical incidents and rules
-  // THROUGH Reflexion rather than reading ruleEngine/episodicMemory directly — this
-  // keeps the "single owner controls the knowledge base's schema and quality"
-  // property real instead of just a description in the report. `ruleEngine`/
-  // `episodicMemory` themselves are unchanged; this only adds one mediated read path.
+  // Get past episodes and rules for an issue
   async getContext({ fingerprint, queryText, issueType }) {
     const [rules, structuralMatches, semanticMatches] = await Promise.all([
       issueType ? ruleEngine.getRules(issueType) : Promise.resolve([]),
@@ -47,7 +41,6 @@ class ReflectionAgent {
       .map((t, i) => `  ${i + 1}. action=${t.action}  outcome=${t.outcome}${t.note ? `  (${t.note})` : ''}`)
       .join('\n');
 
-    // Look up any override feedback the admin provided when rejecting this incident
     const overrideStore = require('../api/overrideStore');
     const issueKey      = `${issue.type}:${issue.deployment ?? issue.podName}:${issue.namespace ?? 'default'}`;
     const overrideData  = overrideStore.get(issueKey);
@@ -90,9 +83,6 @@ Note: confidence is 0.0–1.0 — how certain you are about the root cause given
     const t0 = Date.now();
 
     try {
-      // Routed through the same circuit breaker Planner/Guardian/Investigator use, so a
-      // degraded LLM endpoint trips the breaker for Reflection too instead of Reflection
-      // continuing to hammer it on its own schedule.
       const { raw, usage } = await runLLMCall(
         () => client.chat.completions.create({
           model:          MODEL,

@@ -5,12 +5,11 @@ const vectorStore      = require('./vectorStore');
 
 class EpisodicMemory {
   constructor() {
-    // Layer 1 — structural index: fingerprint key → Episode[] (in memory)
     this.byType = new Map();
     this.ready  = false;
   }
 
-  // "CrashLoopBackOff:false:1:dev" — enough to group structurally identical incidents
+  // Build the fingerprint key for an episode
   _key(fp) {
     return `${fp.issueType}:${fp.oomKilled}:${fp.exitCode ?? 'n'}:${fp.tier}`;
   }
@@ -20,10 +19,10 @@ class EpisodicMemory {
     if (!this.byType.has(key)) this.byType.set(key, []);
     const arr = this.byType.get(key);
     arr.push(episode);
-    if (arr.length > 50) arr.shift();   // keep newest 50 per fingerprint bucket
+    if (arr.length > 50) arr.shift();
   }
 
-  // ── Load all resolved episodes from MongoDB at startup ─────────────────────
+  // Load resolved episodes from MongoDB
   async initialize() {
     try {
       const episodes = await IncidentEpisode.find({ resolved: true })
@@ -38,30 +37,28 @@ class EpisodicMemory {
     }
   }
 
-  // ── Layer 1: fast structural lookup — exact fingerprint match ─────────────
+  // Find episodes with the same fingerprint
   findByFingerprint(fingerprint, limit = 5) {
     const key = this._key(fingerprint);
     const arr = this.byType.get(key) || [];
-    return arr.slice(-limit);  // return most recent first
+    return arr.slice(-limit);
   }
 
-  // ── Layer 2: semantic lookup via Qdrant ────────────────────────────────────
+  // Find similar episodes in Qdrant
   async findSemantic(queryText, limit = 3) {
     const hits = await vectorStore.search(queryText, limit);
     return hits.map(h => ({ score: h.score, payload: h.payload }));
   }
 
-  // ── Persist a completed episode to MongoDB + Qdrant ────────────────────────
+  // Save an episode to MongoDB and Qdrant
   async store(episodeData) {
     try {
       const qdrantId = randomUUID();
       const doc = new IncidentEpisode({ ...episodeData, qdrantId });
       await doc.save();
 
-      // Add to in-memory index immediately so same-session retrieval works
       this._index(doc.toObject());
 
-      // Push to Qdrant asynchronously — don't block the agent cycle
       if (episodeData.reflection?.rootCause) {
         vectorStore.upsert(qdrantId, { ...episodeData, qdrantId }).catch(() => {});
       }
@@ -74,7 +71,7 @@ class EpisodicMemory {
     }
   }
 
-  // ── Summary for logging ────────────────────────────────────────────────────
+  // Get episode stats
   stats() {
     let total = 0;
     for (const arr of this.byType.values()) total += arr.length;

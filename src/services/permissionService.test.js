@@ -3,10 +3,7 @@ import {
   checkAccess, classifyCommand, parseCommandScope, filterClusters, getEligibleRecipients,
 } from './permissionService.js';
 
-// Fake finders matching the real User.find(...).select(...).lean() / Group.find(...) shape,
-// passed via getEligibleRecipients' injectable `models` parameter — avoids mocking
-// require('../db/models') at the module level (Vitest's ESM-oriented vi.mock does not
-// reliably intercept a plain CJS require() call in a "type": "commonjs" project).
+// Fake User and Group models
 function fakeModels(users, groups = []) {
   const finder = result => ({ select() { return this; }, lean: () => Promise.resolve(result) });
   return {
@@ -37,11 +34,6 @@ describe('permissionService.checkAccess', () => {
     expect(checkAccess(perms, 'staging', 'team-a', 'read-only')).toBe(false);
   });
 
-  // Regression test for H1: a permission scoped to ONE namespace must not authorize
-  // cluster-scoped operations (namespace === null, e.g. cordon_node/drain_node/get nodes).
-  // Before the fix, `!namespace` short-circuited the namespace check to true for ANY
-  // permission entry on the right cluster, letting a namespace-scoped grant cordon/drain
-  // nodes cluster-wide. See src/services/permissionService.js:78.
   it('REGRESSION (H1): a namespace-scoped grant does NOT authorize cluster-scoped ops', () => {
     const perms = [{ cluster: 'prod', namespace: 'team-a', role: 'admin' }];
     expect(checkAccess(perms, 'prod', null, 'destructive')).toBe(false);
@@ -59,7 +51,7 @@ describe('permissionService.checkAccess', () => {
 
   it('grants access at exactly the minimum required role rank', () => {
     const perms = [{ cluster: 'prod', namespace: '*', role: 'editor' }];
-    expect(checkAccess(perms, 'prod', 'default', 'scaling')).toBe(true); // scaling requires editor
+    expect(checkAccess(perms, 'prod', 'default', 'scaling')).toBe(true);
   });
 
   it('grants access if ANY permission entry matches, even if others do not', () => {
@@ -128,15 +120,6 @@ describe('permissionService.parseCommandScope', () => {
     expect(parseCommandScope('kubectl get pods -n default').category).toBe('read-only');
   });
 
-  // REGRESSION (fixed): classifyCommand() used to only strip a literal "kubectl "
-  // prefix before matching a verb — it did not skip --context=... first. Every command
-  // this system actually generates puts --context immediately after "kubectl" and
-  // before the verb (see interpretGraph.js's own prompt template: "kubectl
-  // --context=CTX get pods -n NS", etc.), so in real usage this ALWAYS fell through to
-  // the 'destructive' default regardless of the real verb — requiring admin role for
-  // every command a non-admin submitted, including harmless reads. Fixed by stripping
-  // recognized global flags (--context, -n/--namespace, --as/--as-group) before
-  // verb-matching. See src/services/permissionService.js's _GLOBAL_FLAG_RE.
   it('REGRESSION: --context before the verb no longer defeats verb detection', () => {
     expect(parseCommandScope('kubectl --context=prod get pods -n team-a').category).toBe('read-only');
     expect(parseCommandScope('kubectl --context=prod logs mypod -n team-a').category).toBe('read-only');
@@ -213,8 +196,6 @@ describe('permissionService.getEligibleRecipients', () => {
       { _id: 'dev-cluster', role: 'developer', permissions: [{ cluster: 'prod', namespace: '*',       role: 'viewer' }], group: null },
     ]);
     const targets = await getEligibleRecipients('prod', null, 'read-only', models);
-    // dev-scoped's namespace-only grant must not qualify for a cluster-scoped notification —
-    // same invariant as the H1 fix in checkAccess().
     expect(targets).toEqual(['dev-cluster']);
   });
 });

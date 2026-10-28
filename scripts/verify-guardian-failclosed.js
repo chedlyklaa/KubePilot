@@ -1,18 +1,4 @@
 'use strict';
-// Plain Node script, not a Vitest test — this repo's Vitest can't reliably mock nested
-// require() calls between plain CJS files (see project memory / graph.js's test
-// history, and scripts/test-fastpath-live.js's header for the same pattern). Guardian's
-// LLM call goes through llmCircuitBreaker.runLLMCall, which guardianAgent.js destructures
-// at its own top-level `require()` — so the mock must be installed on the
-// llmCircuitBreaker module object BEFORE guardianAgent.js is first required, relying on
-// the shared CommonJS require() cache to hand guardianAgent.js our patched function
-// instead of the real one.
-//
-// §Fix-GuardianFailClosed (2026-09-18) — drives GuardianAgent.review() through every
-// failure path named in the review (LLM timeout/API error/streaming failure/unexpected
-// exception all surface identically as a thrown error from runLLMCall; malformed JSON;
-// an invalid verdict string) plus the MODIFY-without-suggestedCommand case, and asserts
-// NONE of them produce an autonomous APPROVE.
 
 process.env.OPENAI_API_KEY ??= 'test-only-key';
 process.env.OPENAI_MODEL   ??= 'test-model';
@@ -36,10 +22,7 @@ function rawResponse(raw) {
 }
 
 async function scenarioLLMThrows_timeoutOrApiErrorOrStreamingFailure() {
-  // runLLMCall itself throwing covers every one of: LLM timeout, raw API error, a
-  // streaming failure mid-response, and any other unexpected exception — they're all
-  // indistinguishable by the time they reach guardianAgent.js's outer catch, since
-  // llmCircuitBreaker.js's own retry/backoff has already exhausted its attempts by then.
+  // Simulate an LLM timeout
   nextRunLLMCall = async () => { throw new Error('simulated LLM timeout'); };
   const result = await guardian.review(BASE_PARAMS);
   assert.notStrictEqual(result.verdict, 'APPROVE', 'LLM-throws: must never autonomously APPROVE');
@@ -81,8 +64,7 @@ async function scenarioModifyWithoutSuggestedCommand() {
   console.log('PASS scenarioModifyWithoutSuggestedCommand:', result.verdict, '-', result.reason);
 }
 
-// ── Control cases — confirm the fail-closed changes did NOT break normal operation ──
-
+// Control case: valid approve
 async function scenarioControl_validApprove() {
   nextRunLLMCall = rawResponse(JSON.stringify({
     verdict: 'APPROVE', classification: 'SAFE', reason: 'a scoped restart is correct for a transient crash',

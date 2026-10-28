@@ -1,17 +1,3 @@
-// Issue tracker store — persists the full detect → investigate → approve → fix →
-// validate lifecycle of a remediation episode, so a user who clicks Approve (or just
-// watches the agent work) can look up "what happened to that error" afterwards.
-//
-// Unlike approvalStore/escalationStore, this store has no in-memory "active" map —
-// every call goes straight to MongoDB. It exists purely for observability (nothing
-// reads it back to make a decision), so there's no correctness reason to keep a
-// parallel in-memory copy, and going straight to Mongo means a server restart can't
-// desync it from the database the way an unrestored in-memory map could.
-//
-// Writes are fire-and-forget from the caller's perspective (clusterAgent never awaits
-// track()/resolve()) and never throw — a slow or unavailable DB must not block or
-// break the remediation loop, exactly like audit/logger.js.
-
 'use strict';
 
 const { IssueTracker } = require('../db/models');
@@ -24,19 +10,18 @@ function _resourceOf(issue) {
   return issue?.controllerName ?? issue?.deployment ?? issue?.podName ?? issue?.nodeName ?? null;
 }
 
-// Maps a timeline stage/outcome pair to the record's top-level status.
+// Map a stage and outcome to a status
 function _statusFor(stage, outcome) {
   if (stage === 'detected')          return 'detected';
   if (stage === 'investigated')      return 'investigating';
   if (stage === 'awaiting_approval') return 'awaiting_approval';
   if (stage === 'approved')          return 'approved';
   if (stage === 'escalated')         return 'escalated';
-  if (stage === 'progress')          return outcome ?? 'failed'; // blocked | skipped | failed | success
+  if (stage === 'progress')          return outcome ?? 'failed';
   return 'detected';
 }
 
-// Seed the display-id counter from whatever's already in Mongo so ids stay
-// monotonic across restarts (same pattern as approvalStore/escalationStore's `seq`).
+// Load the id counter from MongoDB
 async function init() {
   try {
     const top = await IssueTracker.findOne().sort({ seq: -1 }).select('seq').lean();
@@ -47,11 +32,7 @@ async function init() {
   }
 }
 
-// Records one lifecycle event for `issueKey`. `stage` drives both the timeline
-// entry and the record's status — see _statusFor. Creates a new tracked episode on
-// the first 'detected' call for a key (or if no still-open episode exists for it,
-// e.g. after a server restart mid-episode), and appends to the existing open one
-// otherwise — mirrors how clusterAgent's own episodeTimelines Map is keyed.
+// Record a lifecycle event for an issue
 async function track(issueKey, ctx = {}) {
   const { stage, cluster, tier, issue, diagnosis, guardian, outcome, note, rca, fingerprint, workflowId } = ctx;
   const status = _statusFor(stage, outcome);
@@ -65,10 +46,6 @@ async function track(issueKey, ctx = {}) {
   };
 
   try {
-    // Look for the currently-open (non-fixed) episode for this key. Covers both
-    // "first detection" (nothing open yet → create) and "server restarted mid-
-    // episode, agent re-detects" (an open doc already exists → append instead of
-    // creating a duplicate record).
     let doc = await IssueTracker.findOne({ issueKey, status: { $ne: 'fixed' } }).sort({ createdAt: -1 });
 
     if (!doc) {
@@ -104,7 +81,7 @@ async function track(issueKey, ctx = {}) {
   }
 }
 
-// Marks the currently-open episode for `issueKey` as terminally resolved.
+// Mark an issue as resolved
 async function resolve(issueKey, outcome = 'fixed', note = null) {
   try {
     const doc = await IssueTracker.findOne({ issueKey, status: { $ne: 'fixed' } }).sort({ createdAt: -1 });
@@ -145,12 +122,7 @@ async function getBySeq(seqId) {
   }
 }
 
-// Resolves an issueKey to its tracked display id (seq) — used to link an approval
-// card back to its Issue Tracking page entry. Most-recent doc for the key, regardless
-// of status: by the time an admin sees the approval, track() has already recorded at
-// least a 'detected'/'awaiting_approval' entry for it (see clusterAgent.js), so this
-// only returns null if that write genuinely never happened (DB hiccup) — callers use
-// that to skip showing a link rather than linking to a page with nothing on it.
+// Get the display id for an issue key
 async function getSeqForIssueKey(issueKey) {
   try {
     const doc = await IssueTracker.findOne({ issueKey }).sort({ createdAt: -1 }).select('seq').lean();

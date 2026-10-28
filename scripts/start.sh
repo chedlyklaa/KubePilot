@@ -1,22 +1,12 @@
 #!/usr/bin/env bash
-# =============================================================================
-# start.sh — Start the KubePilot minikube cluster and monitoring stack
+# Start the minikube cluster, Qdrant, Redis and the monitoring stack
 #
-# Starts the main minikube profile only (the extra profiles — cluster2,
-# staging-cluster, cluster3 — are left untouched), installs Prometheus + Grafana on the main minikube cluster, and opens
-# port-forwards for the dashboard .env to consume.
-#
-# Usage:
-#   chmod +x scripts/start.sh
-#   ./scripts/start.sh [--no-monitoring] [--skip-existing]
-#
-# Options:
+# Usage: ./scripts/start.sh [--no-monitoring] [--skip-existing]
 #   --no-monitoring   Skip Prometheus + Grafana installation
-#   --skip-existing   Skip clusters that are already Running (faster restarts)
-# =============================================================================
+#   --skip-existing   Skip clusters that are already running
 set -euo pipefail
 
-# ── Flags ────────────────────────────────────────────────────────────────────
+# Flags
 INSTALL_MONITORING=true
 SKIP_EXISTING=false
 
@@ -27,7 +17,7 @@ for arg in "$@"; do
   esac
 done
 
-# ── Colors ───────────────────────────────────────────────────────────────────
+# Colors
 RED='\033[0;31m'; GRN='\033[0;32m'; YLW='\033[1;33m'
 BLU='\033[0;34m'; CYN='\033[0;36m'; DIM='\033[2m'; NC='\033[0m'
 BOLD='\033[1m'
@@ -43,7 +33,7 @@ sep()     { echo -e "${DIM}─────────────────�
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# ── Prerequisites check ───────────────────────────────────────────────────────
+# Prerequisites check
 section "Prerequisites"
 
 check_cmd() {
@@ -59,10 +49,7 @@ check_cmd minikube "minikube version --short"
 check_cmd kubectl   "kubectl version --client --short"
 check_cmd helm      "helm version --short"
 
-# ── Qdrant (vector store) ─────────────────────────────────────────────────────
-# Started early and independently of the minikube/Helm steps below — it has no
-# Kubernetes dependency, and we don't want a slow/failed cluster or Helm install
-# (which can hit `set -e` and abort the script) to prevent Qdrant from starting.
+# Qdrant (vector store)
 section "Qdrant"
 
 QDRANT_CONTAINER="qdrant"
@@ -103,8 +90,7 @@ else
   fi
 fi
 
-# ── Redis (short-term memory: dedup / namespace grouping / dispatch queue / locks) ──
-# Same independent-of-minikube rationale as Qdrant above.
+# Redis (short-term memory)
 section "Redis"
 
 REDIS_CONTAINER="redis"
@@ -144,15 +130,12 @@ else
   fi
 fi
 
-# ── Cluster definitions ───────────────────────────────────────────────────────
-# Each entry: "profile|cpus|memory|disk"
-# Only the main minikube cluster is started. To bring the others back, re-add e.g.
-#   "cluster2|2|2048|10g"  "staging-cluster|2|2048|10g"  "cluster3|2|2048|10g"
+# Cluster definitions: profile|cpus|memory|disk
 CLUSTERS=(
   "minikube|4|4096|20g"
 )
 
-# ── Helper: start one minikube profile ────────────────────────────────────────
+# Start one minikube profile
 start_cluster() {
   local profile="$1" cpus="$2" memory="$3" disk="$4"
 
@@ -192,7 +175,7 @@ start_cluster() {
   ok "${profile} started"
 }
 
-# ── Start clusters ────────────────────────────────────────────────────────
+# Start clusters
 section "Starting Clusters"
 
 for entry in "${CLUSTERS[@]}"; do
@@ -202,7 +185,7 @@ for entry in "${CLUSTERS[@]}"; do
   start_cluster "${profile}" "${cpus}" "${memory}" "${disk}"
 done
 
-# ── Verify all contexts exist in kubeconfig ───────────────────────────────────
+# Verify all contexts exist in kubeconfig
 section "Kubeconfig Contexts"
 
 for entry in "${CLUSTERS[@]}"; do
@@ -215,11 +198,11 @@ for entry in "${CLUSTERS[@]}"; do
   fi
 done
 
-# ── Switch active context to minikube (main cluster) ─────────────────────────
+# Switch active context to minikube (main cluster)
 kubectl config use-context minikube &>/dev/null
 ok "active context → minikube"
 
-# ── Install Prometheus + Grafana on minikube ──────────────────────────────────
+# Install Prometheus + Grafana on minikube
 if [[ "${INSTALL_MONITORING}" == "true" ]]; then
   section "Monitoring Stack (minikube)"
 
@@ -238,7 +221,7 @@ if [[ "${INSTALL_MONITORING}" == "true" ]]; then
   helm repo update 2>/dev/null
   ok "Helm repo ready"
 
-  # Create namespace — explicit check then create, no silent failures
+  # Create namespace
   if kubectl get namespace "${NAMESPACE}" &>/dev/null; then
     ok "namespace '${NAMESPACE}' already exists"
   else
@@ -290,7 +273,7 @@ if [[ "${INSTALL_MONITORING}" == "true" ]]; then
     | awk '{printf "     %-45s %s\n", $1, $3}'
 fi
 
-# ── Port-forwards ─────────────────────────────────────────────────────────────
+# Port-forwards
 section "Port-Forwards"
 
 LOG_DIR="${ROOT_DIR}/.pf-logs"
@@ -300,16 +283,14 @@ mkdir -p "${LOG_DIR}"
 pkill -f "kubectl port-forward.*monitoring" 2>/dev/null || true
 sleep 1
 
-# pf_watch SERVICE LOCAL_PORT SVC_PORT LABEL LOG_FILE
-# Runs a self-restarting port-forward in the background.
+# Run a self-restarting port-forward in the background
 pf_watch() {
   local svc="$1" local_port="$2" svc_port="$3" ns="$4" logfile="$5"
   (
     while true; do
       kubectl port-forward "${svc}" -n "${ns}" "${local_port}:${svc_port}" \
         >> "${logfile}" 2>&1
-      # If it exits for any reason (pod restart, lost connection), wait briefly
-      # then reconnect — this handles the Grafana init-restart silently.
+      # Reconnect after a short wait if the port-forward exits
       sleep 2
     done
   ) &
@@ -352,9 +333,7 @@ if [[ "${INSTALL_MONITORING}" == "true" ]]; then
   fi
 fi
 
-# ── Qdrant connectivity check ─────────────────────────────────────────────────
-# The container itself was already started in the Prerequisites section above,
-# before anything that could trip `set -e` and abort the script early.
+# Qdrant connectivity check
 if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${QDRANT_CONTAINER}$"; then
   log "Waiting for Qdrant to accept connections..."
   if wait_port "${QDRANT_PORT}" "qdrant" 30; then
@@ -362,7 +341,7 @@ if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${QDRANT_CONTAINER}$"
   fi
 fi
 
-# ── Redis connectivity check ──────────────────────────────────────────────────
+# Redis connectivity check
 if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${REDIS_CONTAINER}$"; then
   log "Waiting for Redis to accept connections..."
   if wait_port "${REDIS_PORT}" "redis" 30; then
@@ -370,7 +349,7 @@ if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${REDIS_CONTAINER}$";
   fi
 fi
 
-# ── Cluster status summary ────────────────────────────────────────────────────
+# Cluster status summary
 section "Cluster Status"
 
 for entry in "${CLUSTERS[@]}"; do
@@ -384,7 +363,7 @@ for entry in "${CLUSTERS[@]}"; do
   fi
 done
 
-# ── .env reminder ─────────────────────────────────────────────────────────────
+# .env reminder
 section "Environment"
 echo ""
 echo -e "  Add / verify these in your ${BOLD}.env${NC}:"
@@ -404,7 +383,7 @@ for entry in "${CLUSTERS[@]}"; do
 done
 echo ""
 
-# ── Stop helper reminder ──────────────────────────────────────────────────────
+# Stop helper reminder
 sep
 echo -e "  To stop everything:  ${DIM}./scripts/stop.sh${NC}"
 echo -e "  To deploy test pods: ${DIM}./scripts/reset-test-pods.sh${NC}"

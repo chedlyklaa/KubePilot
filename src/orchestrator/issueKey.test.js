@@ -25,10 +25,6 @@ describe('issueKey', () => {
     expect(issueKey({ scope: 'pod', namespace: 'payments', podName: 'api-1' })).toBe('unknown/payments/api-1');
   });
 
-  // Regression test: before the multi-cluster redesign, issueKey() had no cluster
-  // segment at all, so two different clusters sharing an identically-named
-  // namespace+resource collided on the exact same Redis key — same incident state,
-  // cooldown, attempt count, and lock shared across two genuinely unrelated incidents.
   it('produces DIFFERENT keys for identical namespace/resource across different clusters', () => {
     const a = issueKey({ scope: 'pod', clusterName: 'cluster-a', namespace: 'backend', podName: 'api-1' });
     const b = issueKey({ scope: 'pod', clusterName: 'cluster-b', namespace: 'backend', podName: 'api-1' });

@@ -15,7 +15,6 @@ function _clusterContext(name) {
   return cluster.context;
 }
 
-// GET /api/extensions/crds?cluster=NAME
 router.get('/api/extensions/crds', requireAuth, asyncHandler(async (req, res) => {
   const { cluster } = req.query;
   if (!cluster) return res.status(400).json({ error: 'cluster is required' });
@@ -35,7 +34,6 @@ router.get('/api/extensions/crds', requireAuth, asyncHandler(async (req, res) =>
   });
 }));
 
-// GET /api/extensions/helm?cluster=NAME
 router.get('/api/extensions/helm', requireAuth, asyncHandler(async (req, res) => {
   const { cluster } = req.query;
   if (!cluster) return res.status(400).json({ error: 'cluster is required' });
@@ -60,13 +58,10 @@ router.get('/api/extensions/helm', requireAuth, asyncHandler(async (req, res) =>
       })),
     });
   } catch (err) {
-    // helm is installed but the list command itself failed (e.g. bad kube-context) —
-    // surface it, but don't 500 the whole page over it.
     res.json({ available: true, releases: [], error: err.message });
   }
 }));
 
-// POST /api/extensions/helm/:release/rollback  { cluster, namespace }
 router.post('/api/extensions/helm/:release/rollback', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
   const { cluster, namespace } = req.body;
   if (!cluster || !namespace) return res.status(400).json({ error: 'cluster and namespace are required' });

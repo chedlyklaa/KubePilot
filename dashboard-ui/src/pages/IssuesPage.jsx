@@ -14,7 +14,7 @@ const STATUS_FILTER_OPTS = [
   { value: 'fixed', label: 'Fixed' },
 ]
 
-// ── Timeline stage → icon/label ──────────────────────────────────────────────
+// Icon and label for a timeline stage
 function stageMeta(entry) {
   switch (entry.stage) {
     case 'detected':          return { icon: '●', cls: 'tl-info',    label: 'Detected' }
@@ -38,7 +38,7 @@ function StatusBadge({ status }) {
   return <span className={`issue-badge issue-badge-${meta.color}`}>{meta.label}</span>
 }
 
-// ── Detail panel — fetched lazily the first time a row is expanded ──────────
+// Issue detail panel
 function IssueDetail({ id }) {
   const [detail,  setDetail]  = useState(null)
   const [loading, setLoading] = useState(true)
@@ -127,10 +127,7 @@ function IssueDetail({ id }) {
   )
 }
 
-// ── Deep-linked issue — landed here via a link elsewhere (e.g. an approval card's
-// issue id chip) with ?open=<seq>. Shown as its own pinned panel above the regular
-// list/filters so the target issue is always visible regardless of what page, status
-// tab, or search term the list underneath happens to be on. ─────────────────────
+// Pinned panel for a deep-linked issue
 function DeepLinkedIssue({ seq, onDismiss }) {
   const [item,  setItem]  = useState(null)
   const [error, setError] = useState(null)
@@ -161,7 +158,7 @@ function DeepLinkedIssue({ seq, onDismiss }) {
   )
 }
 
-// ── Page ──────────────────────────────────────────────────────────────────────
+// Issues page
 export default function IssuesPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const openSeq = searchParams.get('open')
@@ -173,7 +170,7 @@ export default function IssuesPage() {
   const [page,     setPage]     = useState(1)
   const [status,   setStatus]   = useState('')
   const [search,   setSearch]   = useState('')
-  const [expanded, setExpanded] = useState(null) // seq of the currently open row
+  const [expanded, setExpanded] = useState(null)
 
   const fetchIssues = useCallback(async () => {
     setLoading(true); setError(null)
@@ -191,8 +188,6 @@ export default function IssuesPage() {
 
   useEffect(() => { fetchIssues() }, [fetchIssues])
 
-  // Live updates — upsert by seq. New/updated issues can arrive out of band while
-  // the page is open; we merge them into the current page rather than refetching.
   useEffect(() => {
     let es, cancelled = false
     openSSE('/api/issues/stream').then(s => {

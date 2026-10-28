@@ -32,7 +32,6 @@ export default function ApprovalCard({ approval, onSettle }) {
   const notify     = useNotify()
   const navigate   = useNavigate()
   const [busy, setBusy]                       = useState(false)
-  // denyMode: null | 'choose' | 'silence' | 'override'
   const [denyMode, setDenyMode]               = useState(null)
   const [selectedReasons, setSelectedReasons] = useState([])
   const [preferredAction, setPreferredAction] = useState('')
@@ -44,7 +43,6 @@ export default function ApprovalCard({ approval, onSettle }) {
   const { id, payload, createdAt } = approval
   const { issue, diagnosis, rca }  = payload
 
-  // Key that matches the agent's _handle key format
   const silenceKey = `${issue?.type}:${issue?.deployment ?? issue?.podName}:${issue?.namespace ?? 'default'}`
 
   function toggleReason(reason) {
@@ -135,7 +133,6 @@ export default function ApprovalCard({ approval, onSettle }) {
 
       {rca && <RcaCard rca={rca} />}
 
-      {/* ── Deny mode state machine ─────────────────────────────────────── */}
       {user.role === 'admin' && denyMode === 'choose' && (
         <div className="override-panel">
           <div className="override-section-label">What do you want to do?</div>
@@ -261,7 +258,6 @@ export default function ApprovalCard({ approval, onSettle }) {
         </div>
       )}
 
-      {/* ── Default action bar ──────────────────────────────────────────── */}
       {denyMode === null && (
         <div className="card-actions">
           {user.role === 'admin'

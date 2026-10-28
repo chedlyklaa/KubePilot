@@ -1,17 +1,3 @@
-// benchmark/runner/run.js
-//
-// Deterministic regression benchmark for the PolicyEngine + RiskEngine decision layer.
-// For each fixture in benchmark/scenarios/scenarios.yaml, builds the same { plan, context }
-// shape ClusterAgent builds in src/agents/clusterAgent.js, calls the REAL
-// PolicyEngine.validate() and RiskEngine.calculateRisk(), and asserts the outcome against
-// the scenario's expected action/status/decision.
-//
-// This intentionally does NOT exercise PlannerAgent's LLM output, real kubectl execution,
-// or a live cluster — it is fast and fully deterministic on purpose, so it can run in CI
-// with no external dependencies. For end-to-end coverage against a real minikube cluster
-// and a running API server, see benchmark/agent-benchmark-advanced1.js or
-// scripts/test-agent-decisions.sh.
-
 'use strict';
 
 const fs   = require('fs');
@@ -21,8 +7,6 @@ const yaml = require('js-yaml');
 const PolicyEngine = require('../../src/policy/policyEngine');
 const RiskEngine    = require('../../src/risk/engine');
 
-// Mirrors ACTION_RISK_PARAMS in src/agents/clusterAgent.js — kept in sync manually.
-// If PolicyEngine's ALLOWED_ACTIONS gains a new action, add its risk params here too.
 const ACTION_RISK_PARAMS = {
   restart:         { engineAction: 'restart_deployment', blastRadius: 2, reversibility: 0.9, costImpact: 0   },
   rollback:        { engineAction: 'apply_manifest',     blastRadius: 3, reversibility: 0.8, costImpact: 0   },
@@ -34,8 +18,6 @@ const ACTION_RISK_PARAMS = {
   uncordon_node:   { engineAction: 'scale_small',        blastRadius: 1, reversibility: 1.0, costImpact: 0   },
 };
 
-// Actions that always require human approval regardless of computed risk score —
-// mirrors HIGH_RISK_ACTIONS in src/agents/clusterAgent.js.
 const HIGH_RISK_ACTIONS = new Set(['increase_memory', 'drain_node']);
 
 class BenchmarkRunner {
@@ -74,8 +56,7 @@ class BenchmarkRunner {
     return this.results.every(r => r.pass);
   }
 
-  // Builds the real PolicyEngine plan/context shape and runs it through the real
-  // policy + risk pipeline, mirroring ClusterAgent._handle()'s own wiring.
+  // Run one scenario through the policy and risk pipeline
   runScenario(scenario) {
     const startTime = Date.now();
 
@@ -105,8 +86,6 @@ class BenchmarkRunner {
 
     const policyResult = this.policyEngine.validate(plan, ctx);
 
-    // Risk engine only runs when the policy engine actually approved/modified an
-    // executable action — same short-circuit ClusterAgent applies for a noop/rejected result.
     let riskResult = null;
     if (policyResult.status !== 'rejected' && policyResult.action !== 'noop') {
       const params = ACTION_RISK_PARAMS[policyResult.action];
@@ -122,9 +101,6 @@ class BenchmarkRunner {
       }
     }
 
-    // Overall decision — mirrors ClusterAgent's own logic: a rejected plan blocks outright,
-    // a noop needs no further approval routing, HIGH_RISK_ACTIONS always require a human
-    // regardless of score, otherwise the risk engine's own decision governs.
     let decision;
     if (policyResult.status === 'rejected')            decision = 'BLOCK';
     else if (policyResult.action === 'noop')            decision = 'NOOP';
@@ -186,7 +162,7 @@ class BenchmarkRunner {
   }
 }
 
-// ── Export for index.js --benchmark ──────────────────────────────────────────
+// Run all benchmark scenarios
 async function runBenchmark() {
   const runner = new BenchmarkRunner();
   return runner.run();
@@ -194,14 +170,6 @@ async function runBenchmark() {
 
 module.exports = { runBenchmark };
 
-// Allow running directly: node benchmark/runner/run.js
-// PolicyEngine.validate() fires an unawaited audit write to MongoDB on every call
-// (src/policy/policyEngine.js _audit) — with no DB connected, each one hangs on
-// Mongoose's command buffer for its full timeout before failing. That's harmless in
-// the real running app (Mongo is connected), but would otherwise leave this
-// intentionally dependency-free benchmark hanging for tens of seconds after its own
-// results are already printed. Exit explicitly once the benchmark itself is done
-// instead of waiting for those unrelated dangling writes to settle.
 if (require.main === module) {
   runBenchmark().then(passed => process.exit(passed ? 0 : 1));
 }

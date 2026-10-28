@@ -7,6 +7,7 @@ const kubectl             = require('../tools/kubectl');
 const escalationStore     = require('../api/escalationStore');
 const approvalStore       = require('../api/approvalStore');
 const metricsCollector    = require('../monitoring/metricsCollector');
+const tokenStore          = require('../api/tokenStore');
 const { loadConfig }      = require('../config');
 
 const CONFIG_PATH = path.join(__dirname, '../../config/clusters.yaml');
@@ -183,10 +184,6 @@ async function streamChat(req, res, { llm, chatTools }) {
   if (!Array.isArray(messages) || messages.length === 0)
     return res.status(400).json({ error: 'messages array required' });
 
-  // Always the shared, admin-configured client (src/api/llmClient.js) — this used to
-  // accept a per-request apiKey/baseURL override from the request body, but nothing in
-  // the dashboard ever sent one, and it let a caller redirect conversation content
-  // (including injected cluster context) to an arbitrary endpoint.
   const client = llm;
 
   const systemPrompt = withClusterContext ? CLUSTER_SYSTEM_PROMPT : CHAT_SYSTEM_PROMPT;
@@ -206,6 +203,7 @@ async function streamChat(req, res, { llm, chatTools }) {
         model:       loadConfig().OPENAI_MODEL,
         temperature: 0.7,
         stream:      true,
+        stream_options: { include_usage: true },
         messages:    conversationMessages,
       };
       if (useTools && round < MAX_TOOL_ROUNDS) createParams.tools = chatTools.CHAT_TOOLS;
@@ -218,14 +216,13 @@ async function streamChat(req, res, { llm, chatTools }) {
       let roundContent = '';
 
       for await (const chunk of stream) {
+        if (chunk.usage) tokenStore.record('chat', chunk.usage);
         const delta = chunk.choices[0]?.delta;
         if (!delta) continue;
 
         if (delta.content) {
           hasContent = true;
           if (useTools) {
-            // Buffer when in tool mode — we only flush once we know this is the final answer round.
-            // This prevents raw <tool_call> XML or preamble text from leaking into the UI.
             roundContent += delta.content;
           } else {
             res.write(`data: ${JSON.stringify({ content: delta.content })}\n\n`);
@@ -251,7 +248,6 @@ async function streamChat(req, res, { llm, chatTools }) {
       toolCalls = toolCalls.filter(Boolean);
 
       if (toolCalls.length === 0) {
-        // Final answer round — flush buffered content, strip any leftover tool_call XML
         if (roundContent) {
           const cleaned = roundContent
             .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
@@ -292,10 +288,6 @@ async function streamChat(req, res, { llm, chatTools }) {
 
     res.write(`data: ${JSON.stringify({ done: true, elapsed: Date.now() - t0 })}\n\n`);
   } catch (err) {
-    // err.message alone (relayed to the client) is often just "403 Forbidden" with no
-    // indication of *why* — the OpenAI SDK's APIError carries the provider's actual
-    // response body in err.error, which is where the real reason lives (e.g. "model
-    // does not support tool calling", "invalid_api_key", plan/feature restrictions).
     console.error('[CHAT] LLM stream error:', err?.status ?? '', err?.message, err?.error ?? '');
     res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
   }
@@ -307,8 +299,6 @@ async function chatNonStreaming(req, res, llm) {
   if (!Array.isArray(messages) || messages.length === 0)
     return res.status(400).json({ error: 'messages array required' });
 
-  // Always the shared, admin-configured client — see streamChat() above for why a
-  // per-request apiKey/baseURL/model override is no longer accepted here.
   const client = llm;
 
   const t0 = Date.now();
@@ -317,6 +307,7 @@ async function chatNonStreaming(req, res, llm) {
       model:       loadConfig().OPENAI_MODEL,
       temperature: 0.7,
       stream:      true,
+      stream_options: { include_usage: true },
       messages: [
         { role: 'system', content: CHAT_SYSTEM_PROMPT },
         ...messages,
@@ -324,6 +315,7 @@ async function chatNonStreaming(req, res, llm) {
     });
     let content = '';
     for await (const chunk of stream) {
+      if (chunk.usage) tokenStore.record('chat', chunk.usage);
       content += chunk.choices[0]?.delta?.content ?? '';
     }
     res.json({ content, elapsed: Date.now() - t0 });
@@ -380,6 +372,7 @@ Required schema:
         { role: 'user',   content: userInstruction },
       ],
     });
+    tokenStore.record('chat', completion.usage);
     const raw   = completion.choices[0]?.message?.content ?? '';
     const match = raw.match(/\{[\s\S]*\}/);
     if (!match) return res.status(422).json({ error: 'LLM returned unparseable report structure' });

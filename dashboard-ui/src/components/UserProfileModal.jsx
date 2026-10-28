@@ -34,7 +34,6 @@ export default function UserProfileModal({ userId, onClose }) {
 
         {data && (
           <div className="upm-body">
-            {/* Header */}
             <div className="upm-header">
               <div className="profile-avatar-lg upm-avatar">{initials}</div>
               <div className="upm-info">
@@ -50,7 +49,6 @@ export default function UserProfileModal({ userId, onClose }) {
               </div>
             </div>
 
-            {/* Stats */}
             <div className="upm-stats">
               <StatCard icon="🔺" label="Handled"  value={data.stats.escalationsHandled} color="danger"  small />
               <StatCard icon="✓"  label="Fixed"    value={data.stats.escalationsFixed}   color="success" small />
@@ -59,10 +57,8 @@ export default function UserProfileModal({ userId, onClose }) {
               <StatCard icon="⌘"  label="Commands" value={data.stats.commandsRun}        color="info"    small />
             </div>
 
-            {/* 30-day chart */}
             {data.stats.daily && <ActivityChart daily={data.stats.daily} />}
 
-            {/* Activity lists */}
             <div className="activity-tabs">
               <button className={`activity-tab ${actTab === 'escalations' ? 'active' : ''}`} onClick={() => setActTab('escalations')}>
                 Escalations

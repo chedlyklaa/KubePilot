@@ -4,8 +4,7 @@ const nodemailer = require('nodemailer');
 
 const DASHBOARD_URL = process.env.DASHBOARD_URL || 'http://localhost:5173';
 
-// Admin-configured email channel (Notification Settings UI) takes priority;
-// EMAIL_* env vars are the fallback for deployments that haven't configured it there yet.
+// Get the SMTP config
 async function _getSmtpConfig() {
   try {
     const { NotificationChannelConfig } = require('../db/models');
@@ -15,7 +14,7 @@ async function _getSmtpConfig() {
       const config = decrypt(doc.config);
       if (config.smtpHost && config.smtpUser && config.smtpPass) return config;
     }
-  } catch { /* fall through to env vars below */ }
+  } catch { }
 
   if (process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASS) {
     return {
@@ -33,7 +32,7 @@ async function _getSmtpConfig() {
   );
 }
 
-// Whether either config source (DB channel or env vars) is usable right now.
+// Check if email is configured
 async function isConfigured() {
   try {
     await _getSmtpConfig();

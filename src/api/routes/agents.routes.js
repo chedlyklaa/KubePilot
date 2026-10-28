@@ -9,7 +9,6 @@ const { asyncHandler } = require('../middleware/asyncHandler');
 
 const router = express.Router();
 
-// ── Agent Management (admin only) ──────────────────────────────────────────
 router.get('/api/agents', requireAuth, requireAdmin, asyncHandler(async (_req, res) => {
   const clusters = getClusters();
   const agents = [
@@ -42,7 +41,6 @@ router.put('/api/agents/config', requireAuth, requireAdmin, asyncHandler(async (
   res.json({ ok: true, key, value: String(value) });
 }));
 
-// ── Learned Rules (admin only) ────────────────────────────────────────────────
 router.get('/api/agents/rules', requireAuth, requireAdmin, asyncHandler(async (_req, res) => {
   const rules = await LearnedRule.find().sort({ updatedAt: -1 }).lean();
   res.json(rules);

@@ -1,43 +1,25 @@
-// src/tools/kubectl.js
-
 const { execFile } = require('child_process');
 const sessionManager = require('../services/sessionManager');
 const k8sClient = require('./k8sClient');
 
-// Split a command string into an argument array, respecting double-quoted segments.
-// Shell metacharacters (; | $ ` etc.) become harmless literal characters with execFile.
+// Split a command into arguments
 function _parseArgs(command) {
   const withoutBinary = command.replace(/^kubectl\s+/, '');
   const tokens = withoutBinary.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
   return tokens.map(t => {
-    // --flag="quoted value" or --flag='quoted value' → --flag=value
     const flagQuoted = t.match(/^(--?[\w-]+=)["'](.*)["']$/);
     if (flagQuoted) return flagQuoted[1] + flagQuoted[2];
-    // "standalone quoted token" → strip wrapping quotes
     return t.replace(/^["']|["']$/g, '');
   });
 }
 
-// Every kubectl.js helper below builds its command string with `--context=X` — that
-// context name is looked up here against sessionManager on every call (cheap: an
-// in-memory cache hit unless a credential was just rotated). If a per-cluster
-// credential exists, KUBECONFIG is pointed at its materialized temp file for just this
-// child process; otherwise env is left untouched and kubectl falls back to the
-// server's shared kubeconfig file, exactly as before this existed — that fallback is
-// what keeps every pre-existing cluster (context already in the shared file) working
-// unchanged.
-async function runCommand(command) {
-  // Restores the timeout this function had before a refactor collapsed its second
-  // (options) parameter without updating the body — every call was throwing
-  // "timeoutMs is not defined" (confirmed live: `kubectl version --client` failed with
-  // exactly that error). Original default was 60s via a destructured `{ timeoutMs = 60_000 }`
-  // parameter that nothing actually called with an override, so a plain constant here
-  // is behavior-equivalent, not a scope change.
+// Run a kubectl command
+async function runCommand(command, { impersonateAs = null } = {}) {
   const timeoutMs = 60_000;
   const args = _parseArgs(command);
-  // if (impersonateAs) {
-  //   args.unshift(`--as=${impersonateAs}`);
-  // }
+  if (impersonateAs) {
+    args.unshift(`--as=${impersonateAs}`);
+  }
 
   const ctxArg  = args.find(a => a.startsWith('--context='));
   const context = ctxArg ? ctxArg.slice('--context='.length) : null;
@@ -60,16 +42,8 @@ async function runCommand(command) {
   });
 }
 
-/**
- * Get all pods from a namespace
- */
+// Get pods in a namespace
 async function getPods(namespace = 'default', context, asJson = false) {
-  // Every caller of the JSON form goes through the long-lived API client
-  // instead of shelling out to `kubectl` — this is the hottest read in the
-  // app (called from clusterAgent, clusterService, chatService, interpretGraph,
-  // networkExposureEngine), so it's the one worth cutting the per-call
-  // process-spawn + kubeconfig-parse + TLS-handshake tax from. The non-JSON
-  // form (unused today, kept for compatibility) still goes through kubectl.
   if (asJson) {
     const api  = await k8sClient.getCoreV1Api(context);
     const list = namespace === '*'
@@ -77,33 +51,26 @@ async function getPods(namespace = 'default', context, asJson = false) {
       : await api.listNamespacedPod({ namespace });
     return { items: list.items ?? [] };
   }
-  // "*" means all namespaces — maps to --all-namespaces flag
   const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
   const cmd = `kubectl --context=${context} get pods ${nsFlag}`;
   return await runCommand(cmd);
 }
 
-/**
- * Describe a pod
- */
+// Describe a pod
 async function describePod(podName, namespace = 'default', context) {
   const cmd = `kubectl --context=${context} describe pod ${podName} -n ${namespace}`;
 
   return await runCommand(cmd);
 }
 
-/**
- * Get pod logs
- */
+// Get pod logs
 async function getLogs(podName, namespace = 'default', context) {
   const cmd = `kubectl --context=${context} logs ${podName} -n ${namespace} --tail=50`;
 
   return await runCommand(cmd);
 }
 
-/**
- * Restart deployment
- */
+// Restart a deployment
 async function restartDeployment(
   deployment,
   namespace = 'default',
@@ -114,18 +81,13 @@ async function restartDeployment(
   return await runCommand(cmd);
 }
 
-/**
- * Scale deployment
- */
+// Scale a deployment
 async function scaleDeployment(
   deployment,
   replicas,
   namespace = 'default',
   context
 ) {
-  // Pre-flight: confirm the Deployment actually exists before scaling.
-  // Without this, kubectl emits two concatenated stderr lines that look like
-  // "no objects passed to scale deployments.apps "<name>" not found".
   try {
     await runCommand(`kubectl --context=${context} get deployment/${deployment} -n ${namespace} --no-headers`);
   } catch {
@@ -139,58 +101,26 @@ async function scaleDeployment(
   return await runCommand(cmd);
 }
 
-/**
- * Delete pod
- */
+// Delete a pod
 async function deletePod(podName, namespace = 'default', context) {
   const cmd = `kubectl --context=${context} delete pod ${podName} -n ${namespace}`;
 
   return await runCommand(cmd);
 }
 
-/**
- * Get all nodes
- */
+// Get all nodes
 async function getNodes(context) {
   const out = await runCommand(`kubectl --context=${context} get nodes -o json`);
   return JSON.parse(out);
 }
 
-/**
- * Get Kubernetes events (all namespaces)
- */
+// Get events in all namespaces
 async function getEvents(context) {
   const out = await runCommand(`kubectl --context=${context} get events --all-namespaces -o json`);
   return JSON.parse(out);
 }
 
-/**
- * Cordon a node — mark unschedulable
- */
-async function cordonNode(nodeName, context) {
-  return await runCommand(`kubectl --context=${context} cordon ${nodeName}`);
-}
-
-/**
- * Uncordon a node — re-enable scheduling
- */
-async function uncordonNode(nodeName, context) {
-  return await runCommand(`kubectl --context=${context} uncordon ${nodeName}`);
-}
-
-/**
- * Drain a node — evict all non-DaemonSet pods
- */
-async function drainNode(nodeName, context, { deleteEmptyDir = false, gracePeriod = 60 } = {}) {
-  const deleteFlag = deleteEmptyDir ? ' --delete-emptydir-data' : '';
-  return await runCommand(
-    `kubectl --context=${context} drain ${nodeName}` +
-    ` --ignore-daemonsets${deleteFlag} --timeout=${gracePeriod}s`
-  );
-}
-
-// ── RBAC reads ────────────────────────────────────────────────────────────────
-
+// Get roles in a namespace
 async function getRoles(namespace = 'default', context) {
   const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
   const out = await runCommand(`kubectl --context=${context} get roles ${nsFlag} -o json`);
@@ -224,8 +154,7 @@ async function getNamespaces(context) {
   return (JSON.parse(out).items ?? []).map(ns => ns.metadata.name);
 }
 
-// ── RBAC writes ───────────────────────────────────────────────────────────────
-
+// Apply a manifest
 async function applyManifest(yamlContent, context) {
   const os   = require('os');
   const path = require('path');
@@ -233,7 +162,6 @@ async function applyManifest(yamlContent, context) {
   const tmp  = path.join(os.tmpdir(), `kp-rbac-${Date.now()}.yaml`);
   fs.writeFileSync(tmp, yamlContent, 'utf8');
   try {
-    // Quote the path so spaces in os.tmpdir() don't split the argument on Windows/Linux
     return await runCommand(`kubectl --context="${context}" apply -f "${tmp}"`);
   } finally {
     try { fs.unlinkSync(tmp); } catch {}
@@ -268,11 +196,7 @@ async function deleteRbacResource(kind, name, namespace, context) {
   return await runCommand(`kubectl --context="${context}" delete ${kind} "${name}" ${nsFlag}`);
 }
 
-// ── CertificateSigningRequest (client-cert issuance for direct kubectl access) ──
-
-// Submit a CSR using the cluster's built-in client-cert signer — works on managed
-// clusters (AKS) as well as self-hosted ones, unlike signing directly with a local
-// ca.key file (which managed clusters don't expose).
+// Submit a certificate signing request
 async function submitCsr(name, csrPemBase64, context) {
   const yamlLib  = require('js-yaml');
   const manifest = {
@@ -292,7 +216,7 @@ async function approveCsr(name, context) {
   return runCommand(`kubectl --context="${context}" certificate approve "${name}"`);
 }
 
-// Returns the base64 DER certificate from status.certificate, or null if not yet issued.
+// Get the certificate of a CSR
 async function getCsrCertificate(name, context) {
   const out = await runCommand(`kubectl --context="${context}" get csr "${name}" -o json`);
   const csr = JSON.parse(out);
@@ -303,22 +227,13 @@ async function deleteCsr(name, context) {
   return runCommand(`kubectl --context="${context}" delete csr "${name}" --ignore-not-found`);
 }
 
-// Exports a self-contained kubeconfig for one context, using whatever credentials
-// this server itself already has for it (--raw undoes the DATA+OMITTED redaction,
-// --minify keeps only this context's cluster/user/context, --flatten inlines
-// cert/key data so the file works standalone on another machine).
+// Export the kubeconfig of a context
 async function getRawKubeconfig(context) {
   return await runCommand(`kubectl --context="${context}" config view --raw --minify --flatten -o yaml`);
 }
 
-// Resolve a context's cluster server URL + CA data — needed to build a standalone
-// kubeconfig for a user's client cert. Parses the whole raw kubeconfig as JSON rather
-// than a jsonpath filter expression, since _parseArgs' tokenizer isn't built to survive
-// jsonpath's own quoting/bracket syntax.
+// Get the server URL and CA of a context
 async function getClusterConnectionInfo(context) {
-  // Doesn't go through the `--context=` sniffing in runCommand (this reads the whole
-  // config, not one context), so a credential-backed cluster needs its kubeconfig
-  // pointed at explicitly here rather than relying on the KUBECONFIG env fallback.
   const kubeconfigPath = await sessionManager.getKubeconfigPath(context);
   const flag = kubeconfigPath ? `--kubeconfig="${kubeconfigPath}"` : '';
   const out = await runCommand(`kubectl ${flag} config view --raw -o json`.trim());
@@ -336,9 +251,7 @@ async function getClusterConnectionInfo(context) {
   };
 }
 
-// ── Wait for a fix to settle (replaces blind sleep after _applyFix) ──────────
-// Dispatches the right kubectl wait/rollout-status variant based on action type.
-// Rejects on timeout — callers should catch and fall through to _validateFix.
+// Wait for a fix to settle
 async function waitForFix(issue, action, context, timeoutSecs = parseInt(process.env.KUBECTL_WAIT_TIMEOUT ?? '120', 10)) {
   const ns  = issue.namespace ?? 'default';
   const dep = issue.deployment;
@@ -363,12 +276,10 @@ async function waitForFix(issue, action, context, timeoutSecs = parseInt(process
       return;
 
     default:
-      // noop, cordon_node, etc. — no pod-level wait needed
   }
 }
 
-// ── Network reads ─────────────────────────────────────────────────────────────
-
+// Get network policies in a namespace
 async function getNetworkPolicies(namespace = 'default', context) {
   const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
   const out = await runCommand(`kubectl --context="${context}" get networkpolicies ${nsFlag} -o json`);
@@ -386,14 +297,6 @@ async function getIngresses(namespace = 'default', context) {
   const out = await runCommand(`kubectl --context="${context}" get ingresses ${nsFlag} -o json`);
   return JSON.parse(out).items ?? [];
 }
-
-async function getEndpoints(namespace = 'default', context) {
-  const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
-  const out = await runCommand(`kubectl --context="${context}" get endpoints ${nsFlag} -o json`);
-  return JSON.parse(out).items ?? [];
-}
-
-// ── Network writes ────────────────────────────────────────────────────────────
 
 const NETWORK_KINDS = new Set(['networkpolicy', 'service', 'ingress']);
 
@@ -420,9 +323,6 @@ module.exports = {
   deletePod,
   getNodes,
   getEvents,
-  cordonNode,
-  uncordonNode,
-  drainNode,
   getRoles,
   getClusterRoles,
   getRoleBindings,
@@ -441,7 +341,6 @@ module.exports = {
   getNetworkPolicies,
   getServices,
   getIngresses,
-  getEndpoints,
   deleteNetworkResource,
   getPersistentVolumes,
   getPersistentVolumeClaims,
@@ -469,9 +368,7 @@ async function getPersistentVolumeClaims(context) {
   return JSON.parse(out).items ?? [];
 }
 
-// ── Policy objects (read-only) — used by PolicyEngine to check headroom/blast-radius
-// before approving an action, not just after it fails ────────────────────────────
-
+// Get resource quotas in a namespace
 async function getResourceQuotas(namespace, context) {
   const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
   const out = await runCommand(`kubectl --context="${context}" get resourcequota ${nsFlag} -o json`);
@@ -484,16 +381,14 @@ async function getPodDisruptionBudgets(namespace, context) {
   return JSON.parse(out).items ?? [];
 }
 
-// ── Autoscaling ──────────────────────────────────────────────────────────────
-
+// Get HPAs in a namespace
 async function getHPAs(namespace, context) {
   const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
   const out = await runCommand(`kubectl --context="${context}" get hpa ${nsFlag} -o json`);
   return JSON.parse(out).items ?? [];
 }
 
-// Uses --patch-file (like applyManifest uses -f) rather than an inline -p JSON string —
-// _parseArgs' tokenizer isn't built to survive escaped quotes inside a quoted argument.
+// Patch an HPA
 async function patchHPA(name, namespace, { minReplicas, maxReplicas }, context) {
   const os   = require('os');
   const path = require('path');
@@ -511,8 +406,7 @@ async function patchHPA(name, namespace, { minReplicas, maxReplicas }, context) 
   }
 }
 
-// Cheap discovery probe — HPAs silently do nothing if the metrics API isn't being
-// served, which is a common, otherwise-invisible failure mode.
+// Check if metrics-server is available
 async function isMetricsServerAvailable(context) {
   try {
     await runCommand(`kubectl --context="${context}" get --raw /apis/metrics.k8s.io/v1beta1`);
@@ -522,28 +416,19 @@ async function isMetricsServerAvailable(context) {
   }
 }
 
-// ── CRDs / namespace metadata ─────────────────────────────────────────────────
-
+// Get CRDs
 async function getCRDs(context) {
   const out = await runCommand(`kubectl --context="${context}" get crd -o json`);
   return JSON.parse(out).items ?? [];
 }
 
-// Full namespace objects (unlike getNamespaces, which only returns name strings) —
-// needed for reading Pod Security Admission labels off each namespace.
+// Get full namespace objects
 async function getNamespacesFull(context) {
   const out = await runCommand(`kubectl --context="${context}" get namespace -o json`);
   return JSON.parse(out).items ?? [];
 }
 
-// ── Workload specs (read-only) — cluster-wide sweeps for security posture scanning.
-// Unlike per-issue single-object reads elsewhere (e.g. investigatorAgent.js fetching
-// one Deployment while diagnosing a specific pod), these fetch every object of a kind
-// so a detector can scan pod templates for hardening findings independent of any
-// live incident. Findings are keyed off the controller (not the ephemeral Pod names
-// it creates), so scanning the controller's template directly — rather than every
-// live Pod — keeps a finding's identity stable across restarts/redeploys.
-
+// Get full deployment objects
 async function getDeploymentsFull(namespace, context) {
   const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
   const out = await runCommand(`kubectl --context="${context}" get deployments ${nsFlag} -o json`);
@@ -562,17 +447,14 @@ async function getDaemonSetsFull(namespace, context) {
   return JSON.parse(out).items ?? [];
 }
 
-// ── Config layer (Investigator) ───────────────────────────────────────────────
-
+// Get config maps in a namespace
 async function getConfigMaps(namespace, context) {
   const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
   const out = await runCommand(`kubectl --context="${context}" get configmaps ${nsFlag} -o json`);
   return JSON.parse(out).items ?? [];
 }
 
-// Secret KEYS only — never returns `.data`/`.stringData` values. The Investigator's
-// Config-layer inspection only ever needs to know a key exists (e.g. "the app expects
-// API_KEY but this Secret only has DB_PASSWORD"), never the secret's actual value.
+// Get secret keys without values
 async function getSecretsMetadata(namespace, context) {
   const nsFlag = namespace === '*' ? '--all-namespaces' : `-n ${namespace}`;
   const out = await runCommand(`kubectl --context="${context}" get secrets ${nsFlag} -o json`);

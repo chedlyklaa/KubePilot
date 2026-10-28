@@ -1,16 +1,3 @@
-// Scope note: sessionManager.js hard-imports the real ClusterCredential Mongoose model
-// (no injectable seam, unlike permissionService.getEligibleRecipients), so the
-// DB-touching functions (storeCredential, getKubeconfigPath, invalidate,
-// deleteCredential) aren't covered here — they'd need a real MongoDB connection or a
-// module-level mock, which this codebase's existing tests deliberately avoid (see the
-// comment in permissionService.test.js). What's covered instead is the part that's
-// actually most bug-prone and fully deterministic: parsing/validating an uploaded
-// kubeconfig and the connectivity check's fail-fast-before-any-network-call behavior.
-//
-// sessionManager.js requires NOTIFICATION_SECRET at import time (via
-// notifications/crypto.js). Static `import` is hoisted above any top-level code in ESM,
-// so setting process.env before a static import wouldn't actually run first — the
-// module under test is loaded dynamically in beforeAll() instead, after the env var is set.
 import { describe, it, expect, beforeAll } from 'vitest';
 import yaml from 'js-yaml';
 
@@ -18,9 +5,6 @@ let canonicalContext, normalizeKubeconfig, testConnection;
 
 beforeAll(async () => {
   process.env.NOTIFICATION_SECRET ||= 'test-secret-not-for-production-use-only';
-  // sessionManager.js pulls in the full db/models barrel (mongoose schema registration
-  // across 5 files) on first import, which is slow enough on a cold run to need more
-  // than vitest's default 10s hook timeout.
   ({ canonicalContext, normalizeKubeconfig, testConnection } = await import('./sessionManager.js'));
 }, 30_000);
 
@@ -109,7 +93,7 @@ describe('sessionManager.normalizeKubeconfig', () => {
   it('rejects a context that references a cluster entry which does not exist', () => {
     const raw = yaml.dump({
       apiVersion: 'v1', kind: 'Config',
-      clusters: [], // referenced cluster "missing-cluster" is not defined here
+      clusters: [],
       users:    [{ name: 'u', user: {} }],
       contexts: [{ name: 'ctx', context: { cluster: 'missing-cluster', user: 'u' } }],
     });
@@ -120,7 +104,7 @@ describe('sessionManager.normalizeKubeconfig', () => {
     const raw = yaml.dump({
       apiVersion: 'v1', kind: 'Config',
       clusters: [{ name: 'c', cluster: { server: 'https://a' } }],
-      users:    [], // referenced user "missing-user" is not defined here
+      users:    [],
       contexts: [{ name: 'ctx', context: { cluster: 'c', user: 'missing-user' } }],
     });
     expect(() => normalizeKubeconfig(raw, 'ctx')).toThrow(/missing the cluster or user entry/i);
@@ -132,10 +116,6 @@ describe('sessionManager.normalizeKubeconfig', () => {
 });
 
 describe('sessionManager.testConnection', () => {
-  // These only exercise the structural-validation gate, which runs and throws before
-  // any temp file is written or kubectl is spawned — no real cluster or network access
-  // needed. The "successfully connects" happy path needs a live cluster and belongs in
-  // an integration test, not here.
   it('rejects a multi-context kubeconfig without attempting to connect', async () => {
     const raw = yaml.dump({
       apiVersion: 'v1', kind: 'Config',

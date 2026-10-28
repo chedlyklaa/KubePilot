@@ -15,10 +15,6 @@ const { notify, subscribe } = createPubSub();
 async function requestApproval(payload) {
   const id = String(++seq);
 
-  // Resolves to the Issue Tracking page's display id for this issueKey, if one's
-  // already been recorded (see clusterAgent.js — issueTrackerStore.track() fires just
-  // before this is called) — lets the approval card link straight to that issue's
-  // timeline. null when no tracked episode exists yet; the card just omits the link.
   const issueSeq = await issueTrackerStore.getSeqForIssueKey(payload.issueKey).catch(() => null);
   const enrichedPayload = { ...payload, issueSeq };
 
@@ -30,7 +26,7 @@ async function requestApproval(payload) {
     namespace:  payload.issue?.namespace,
     source:     `ClusterAgent/${payload.issue?.clusterName ?? '—'}`,
     metadata:   { issueKey: payload.issueKey, action: payload.diagnosis?.action, risk: payload.diagnosis?.risk },
-    targetRole: 'admin', // email only goes to users with role=admin
+    targetRole: 'admin',
   }).catch(() => {});
 
   return new Promise(resolve => {
@@ -77,7 +73,6 @@ async function _saveHistory(entry, decision, user, overrideData = {}) {
   } catch (err) {
     console.error('[ApprovalStore] DB save failed:', err.message);
   }
-  // Make override feedback available to ReflectionAgent when the episode is later stored
   if (decision === 'denied' && (overrideData.overrideReasons?.length || overrideData.preferredAction)) {
     overrideStore.set(entry.payload.issueKey, overrideData);
   }

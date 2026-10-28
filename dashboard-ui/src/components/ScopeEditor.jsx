@@ -1,7 +1,3 @@
-// Shared cluster/namespace/role permission-scope editor — used by RbacPage.jsx for both
-// group permissions and per-user permissions. Previously duplicated: the original copy
-// lived in the now-deleted TeamsPage.jsx (dead code, zero imports) while RbacPage.jsx
-// carried its own near-identical inline copy.
 import { useState, useEffect } from 'react'
 import { apiFetch } from '../lib/api'
 

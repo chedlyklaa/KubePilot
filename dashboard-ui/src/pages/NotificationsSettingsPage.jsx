@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { apiFetch } from '../lib/api'
 
-// ── Constants ──────────────────────────────────────────────────────────────────
 const CATEGORIES = [
   'Cluster Health', 'Resource Usage', 'Security', 'Deployments',
   'Cost Optimization', 'Autoscaling', 'Incidents', 'Agent Actions',
@@ -12,13 +11,11 @@ const SEVERITIES = ['INFO', 'WARNING', 'ERROR', 'CRITICAL']
 const SEV_COLOR  = { INFO: '#2563eb', WARNING: '#d97706', ERROR: '#ea580c', CRITICAL: '#dc2626' }
 const STATUS_COLOR = { SENT: '#059669', FAILED: '#dc2626', RETRYING: '#d97706', PENDING: '#6b7280' }
 
-// Channels available for personal subscription (not system-config channels)
 const PERSONAL_CHANNELS = [
   { type: 'inApp', label: 'In-App',  icon: '🔔', alwaysOn: true },
   { type: 'email', label: 'Email',   icon: '📧' },
 ]
 
-// System channels (admin config: webhook URLs, SMTP, etc.)
 const SYSTEM_CHANNELS = [
   { type: 'teams',    label: 'Microsoft Teams',  icon: '🟦', phase: 1,
     fields: [{ key: 'webhookUrl', label: 'Team Webhook URL', secret: true,
@@ -52,7 +49,6 @@ const SYSTEM_CHANNELS = [
     ] },
 ]
 
-// ── Channel setup guides ───────────────────────────────────────────────────────
 const CHANNEL_GUIDES = {
   inApp: {
     title: 'In-App Notifications',
@@ -175,7 +171,7 @@ const CHANNEL_GUIDES = {
   },
 }
 
-// ── Help Modal ─────────────────────────────────────────────────────────────────
+// Help modal
 function HelpModal({ guide, onClose }) {
   if (!guide) return null
   return (
@@ -219,7 +215,7 @@ function HelpModal({ guide, onClose }) {
   )
 }
 
-// ── Shared helpers ─────────────────────────────────────────────────────────────
+// Toggle switch
 function Toggle({ checked, onChange, disabled }) {
   return (
     <button
@@ -232,9 +228,7 @@ function Toggle({ checked, onChange, disabled }) {
   )
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 1 — Personal Preferences (all users)
-// ═══════════════════════════════════════════════════════════════════════════════
+// Personal notification preferences tab
 function PersonalPreferencesTab({ readOnly = false, prefData = null, onSaved }) {
   const { user }            = useAuth()
   const [prefs,           setPrefs]           = useState(null)
@@ -292,7 +286,6 @@ function PersonalPreferencesTab({ readOnly = false, prefData = null, onSaved }) 
   return (
     <div className="nc-section">
       {helpGuide && <HelpModal guide={helpGuide} onClose={() => setHelpGuide(null)} />}
-      {/* Channels */}
       <div className="nc-pref-block">
         <div className="nc-pref-block-title">Notification Channels</div>
         <div className="nc-pref-block-desc">Choose how you want to receive notifications.</div>
@@ -319,7 +312,6 @@ function PersonalPreferencesTab({ readOnly = false, prefData = null, onSaved }) 
         </div>
       </div>
 
-      {/* Personal email override */}
       {(prefs.channels.includes('email') || readOnly) && (
         <div className="nc-pref-block">
           <div className="nc-pref-block-title">Notification Email</div>
@@ -347,7 +339,6 @@ function PersonalPreferencesTab({ readOnly = false, prefData = null, onSaved }) 
         </div>
       )}
 
-      {/* Categories */}
       <div className="nc-pref-block">
         <div className="nc-pref-block-title">Event Categories</div>
         <div className="nc-pref-block-desc">
@@ -382,9 +373,7 @@ function PersonalPreferencesTab({ readOnly = false, prefData = null, onSaved }) 
   )
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 2 — System Channels (admin only)
-// ═══════════════════════════════════════════════════════════════════════════════
+// System channel settings card
 function SystemChannelCard({ def, data, onSaved }) {
   const [enabled,    setEnabled]    = useState(data?.enabled ?? false)
   const [config,     setConfig]     = useState(data?.config  ?? {})
@@ -393,7 +382,6 @@ function SystemChannelCard({ def, data, onSaved }) {
   const [testing,    setTesting]    = useState(false)
   const [testResult, setTestResult] = useState(null)
   const [showHelp,   setShowHelp]   = useState(false)
-  // email system guide key differs from channel type to avoid collision with personal email guide
   const guideKey = def.type === 'email' ? 'email_system' : def.type
 
   useEffect(() => { setEnabled(data?.enabled ?? false); setConfig(data?.config ?? {}) }, [data])
@@ -494,9 +482,7 @@ function SystemChannelsTab({ channels, onSaved }) {
   )
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 3 — Routing Rules (admin only)
-// ═══════════════════════════════════════════════════════════════════════════════
+// Routing rules tab
 function RoutingTab() {
   const [routing, setRouting] = useState(null)
   const [saving,  setSaving]  = useState(false)
@@ -556,12 +542,10 @@ function RoutingTab() {
   )
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 4 — All Users' Preferences (admin only)
-// ═══════════════════════════════════════════════════════════════════════════════
+// All users' preferences tab
 function UsersPreferencesTab() {
   const [users,    setUsers]    = useState([])
-  const [selected, setSelected] = useState(null) // { userId, name, prefs }
+  const [selected, setSelected] = useState(null)
   const [saving,   setSaving]   = useState(false)
 
   const load = useCallback(() => {
@@ -648,9 +632,7 @@ function UsersPreferencesTab() {
   )
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 5 — Delivery History (admin only)
-// ═══════════════════════════════════════════════════════════════════════════════
+// Delivery history tab
 function HistoryTab() {
   const [data,          setData]    = useState(null)
   const [page,          setPage]    = useState(1)
@@ -726,9 +708,7 @@ function HistoryTab() {
   )
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Main page
-// ═══════════════════════════════════════════════════════════════════════════════
+// Notification settings page
 export default function NotificationsSettingsPage() {
   const { user }                    = useAuth()
   const isAdmin                     = user?.role === 'admin'

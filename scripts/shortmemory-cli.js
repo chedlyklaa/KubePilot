@@ -1,18 +1,4 @@
 #!/usr/bin/env node
-// =============================================================================
-// scripts/shortmemory-cli.js — inspect or clear the v5 Orchestrator's Short Memory
-// (Redis-backed dedup/queue/locks/cooldowns/attempts — see src/memory/shortMemory.js)
-//
-// Talks to Redis directly rather than through shortMemory.js's own API, since that
-// module only exposes the specific operations the pipeline needs (enqueue, cooldown
-// checks, etc.) — nothing to list every key or wipe the namespace. This is a read/debug
-// tool, so it's fine for it to know the "sm:*" key layout directly instead.
-//
-// Usage:
-//   node scripts/shortmemory-cli.js                 status (default) — counts + queue + active workflows
-//   node scripts/shortmemory-cli.js --clear          delete every sm:* key (asks nothing — pass --dry-run first if unsure)
-//   node scripts/shortmemory-cli.js --clear --dry-run   preview how many keys would be deleted, deletes nothing
-// =============================================================================
 'use strict';
 
 require('dotenv').config();
@@ -26,8 +12,6 @@ const DRY_RUN = ARGS.includes('--dry-run');
 async function scanAll(client, pattern) {
   const keys = [];
   for await (const key of client.scanIterator({ MATCH: pattern, COUNT: 500 })) {
-    // node-redis's scanIterator yields one key per iteration normally, but can yield an
-    // array per batch depending on version/config — flatten either shape defensively.
     if (Array.isArray(key)) keys.push(...key);
     else keys.push(key);
   }
@@ -68,8 +52,6 @@ async function clearAll(client) {
     console.log('Nothing to delete.');
     return;
   }
-  // del() takes a variadic list — chunk to stay well under Redis's command-size limits
-  // on a namespace this could plausibly grow into the thousands of keys.
   const CHUNK = 500;
   let deleted = 0;
   for (let i = 0; i < keys.length; i += CHUNK) {

@@ -8,7 +8,7 @@ function _initModels() {
   if (MetricSnapshot) return;
   try {
     ({ MetricSnapshot, CapacityForecastCache } = require('../db/models'));
-  } catch { /* MongoDB unavailable — snapshots will be skipped */ }
+  } catch { }
 }
 
 function _getNotifEngine() {
@@ -18,29 +18,22 @@ function _getNotifEngine() {
   return _notifEngine;
 }
 
-// ── Constants ──────────────────────────────────────────────────────────────────
-
 const FORECAST_INTERVAL_CYCLES = parseInt(process.env.FORECAST_INTERVAL_CYCLES ?? '5', 10);
 const FORECAST_LOOKBACK_HOURS  = parseInt(process.env.FORECAST_LOOKBACK_HOURS  ?? '168', 10);
 const FORECAST_MIN_DATAPOINTS  = parseInt(process.env.FORECAST_MIN_DATAPOINTS  ?? '10',  10);
-const CONFIDENCE_GATE_MIN      = 12; // below this count, downgrade alert level by one step
+const CONFIDENCE_GATE_MIN      = 12;
 
-// Alert thresholds (percentage)
 const THRESHOLDS = {
   memory: { WARNING: 80, HIGH: 90, CRITICAL: 95 },
   cpu:    { WARNING: 75, HIGH: 85, CRITICAL: 92 },
   disk:   { WARNING: 70, HIGH: 82, CRITICAL: 90 },
 };
 
-// Hours-to-exhaustion alert bands
 const ETA_BANDS = { CRITICAL: 6, HIGH: 24, WARNING: 72 };
 
 const LEVEL_ORDER = { OK: 0, WARNING: 1, HIGH: 2, CRITICAL: 3 };
 const LEVEL_NAMES = ['OK', 'WARNING', 'HIGH', 'CRITICAL'];
 
-// ── Spike suppression ─────────────────────────────────────────────────────────
-// Drops any data point where the jump from the previous point exceeds SPIKE_THRESHOLD%.
-// This prevents a single CPU burst or batch job from distorting a long-window regression.
 const SPIKE_THRESHOLD = 30;
 
 function _despiked(snapshots, resourceKey) {
@@ -55,8 +48,7 @@ function _despiked(snapshots, resourceKey) {
   return clean;
 }
 
-// ── Weighted Linear Regression ─────────────────────────────────────────────────
-// Returns { slope (% / hour), currentPct, hoursToExhaustion, exhaustionAt } or null.
+// Weighted linear regression forecast
 function wlrForecast(snapshots, resourceKey) {
   const valid = _despiked(snapshots, resourceKey);
   if (valid.length < FORECAST_MIN_DATAPOINTS) return null;
@@ -97,16 +89,13 @@ function wlrForecast(snapshots, resourceKey) {
   return { slope: +slope.toFixed(4), currentPct, hoursToExhaustion, exhaustionAt, model: 'wlr' };
 }
 
-// ── EWMA short-window forecast ────────────────────────────────────────────────
-// Uses the last 6 hours of data with exponential smoothing (α = 0.3).
-// Detects rapid trends (memory leaks, runaway processes) that the 7-day WLR window misses.
+// Short window EWMA forecast
 function ewmaForecast(snapshots, resourceKey, alpha = 0.3) {
   const sixHoursAgo = Date.now() - 6 * 3_600_000;
   const raw    = snapshots.filter(s => s[resourceKey] != null && s.createdAt.getTime() >= sixHoursAgo);
-  const recent = _despiked(raw, resourceKey); // spike-suppress the short window too
+  const recent = _despiked(raw, resourceKey);
   if (recent.length < 3) return null;
 
-  // Build EWMA series
   const ewmaVals = [recent[0][resourceKey]];
   for (let i = 1; i < recent.length; i++) {
     ewmaVals.push(alpha * recent[i][resourceKey] + (1 - alpha) * ewmaVals[i - 1]);
@@ -114,7 +103,7 @@ function ewmaForecast(snapshots, resourceKey, alpha = 0.3) {
 
   const n = ewmaVals.length;
   const deltaHours = (recent[n - 1].createdAt.getTime() - recent[0].createdAt.getTime()) / 3_600_000;
-  if (deltaHours < 0.05) return null; // window too narrow — can't derive a reliable slope
+  if (deltaHours < 0.05) return null;
 
   const slope = (ewmaVals[n - 1] - ewmaVals[0]) / deltaHours;
   if (slope <= 0) return null;
@@ -132,7 +121,7 @@ function ewmaForecast(snapshots, resourceKey, alpha = 0.3) {
   };
 }
 
-// ── Alert level computation ────────────────────────────────────────────────────
+// Compute the alert level
 function computeAlertLevel(resource, currentPct, hoursToExhaustion) {
   const t = THRESHOLDS[resource] ?? THRESHOLDS.memory;
 
@@ -151,14 +140,14 @@ function computeAlertLevel(resource, currentPct, hoursToExhaustion) {
   return LEVEL_ORDER[forecastLevel] >= LEVEL_ORDER[stateLevel] ? forecastLevel : stateLevel;
 }
 
-// ── Confidence band ────────────────────────────────────────────────────────────
+// Compute data confidence
 function dataConfidence(count) {
   if (count >= 168) return 'HIGH';
   if (count >= 48)  return 'MEDIUM';
   return 'LOW';
 }
 
-// ── Human-readable absolute value ─────────────────────────────────────────────
+// Format bytes as a readable value
 function fmtAbs(bytes) {
   if (bytes == null) return null;
   if (bytes < 1024)       return `${bytes}B`;
@@ -167,9 +156,7 @@ function fmtAbs(bytes) {
   return `${(bytes / 1024 ** 3).toFixed(2)}Gi`;
 }
 
-// ── Hybrid forecast result ─────────────────────────────────────────────────────
-// Runs both WLR and EWMA, picks the more conservative (lower ETA) result.
-// Applies confidence gating (sparse data → downgrade alert level by one step).
+// Build the combined forecast result
 function buildForecastResult({ targetType, target, namespace, cluster, resource, snapshots, lookbackHours }) {
   const keyMap = { memory: 'memPct', cpu: 'cpuPct', disk: 'diskPct' };
   const absMap = { memory: 'memAbs', cpu: 'cpuAbs', disk: null };
@@ -181,7 +168,6 @@ function buildForecastResult({ targetType, target, namespace, cluster, resource,
 
   if (!wlr && !ewma) return null;
 
-  // Pick the model with lower (more urgent) ETA — conservative hybrid
   let chosen = wlr;
   if (ewma && (!wlr || ewma.hoursToExhaustion < (wlr.hoursToExhaustion ?? Infinity))) {
     chosen = ewma;
@@ -194,14 +180,11 @@ function buildForecastResult({ targetType, target, namespace, cluster, resource,
 
   let alertLevel = computeAlertLevel(resource, currentPct, hoursToExhaustion);
 
-  // Confidence gating: when data is sparse, downgrade alert level one step.
-  // Prevents a handful of noisy readings from generating false CRITICAL alerts.
   if (snapshots.length < CONFIDENCE_GATE_MIN && alertLevel !== 'OK') {
     const idx = LEVEL_NAMES.indexOf(alertLevel);
     alertLevel = LEVEL_NAMES[Math.max(0, idx - 1)];
   }
 
-  // Suppress weak signals that are not actionable
   if (alertLevel === 'OK' && (!hoursToExhaustion || hoursToExhaustion > 168)) return null;
 
   const absKey     = absMap[resource];
@@ -232,37 +215,36 @@ function buildForecastResult({ targetType, target, namespace, cluster, resource,
   };
 }
 
-// ── CapacityForecastEngine ─────────────────────────────────────────────────────
-
+// Forecasts CPU and memory capacity
 class CapacityForecastEngine {
   constructor() {
-    this._cycleCount  = 0;
-    this._running     = false; // prevents concurrent forecast runs
-    this._lastAlerted    = new Map(); // key → timestamp of last notification
-    this._lastAlertLevel = new Map(); // key → last alert level (for recovery detection)
-    this._hpasByCluster  = new Map(); // cluster → latest HPA list, to suppress alerts autoscaling already covers
+    this._cycleCount = new Map();
+    this._running = new Set();
+    this._lastAlerted    = new Map();
+    this._lastAlertLevel = new Map();
+    this._hpasByCluster  = new Map();
   }
 
-  // ── Called from ClusterAgent.run() — non-blocking, fire-and-forget ──────────
+  // Save a snapshot and compute forecasts
   async snapshotAndForecast({ cluster, allNodeMetrics, allPodMetrics, hpas }) {
     if (process.env.CAPACITY_FORECAST_ENABLED !== 'true') return;
     _initModels();
     if (hpas) this._hpasByCluster.set(cluster, hpas);
 
-    this._cycleCount++;
+    const cycle = (this._cycleCount.get(cluster) ?? 0) + 1;
+    this._cycleCount.set(cluster, cycle);
 
     this._snapshot(cluster, allNodeMetrics, allPodMetrics).catch(err =>
       console.warn(`[CAPACITY] Snapshot failed (non-blocking): ${err.message}`)
     );
 
-    if (this._cycleCount % FORECAST_INTERVAL_CYCLES !== 0) return;
+    if (cycle % FORECAST_INTERVAL_CYCLES !== 0) return;
 
-    // Skip this cycle if the previous forecast is still computing
-    if (this._running) {
+    if (this._running.has(cluster)) {
       console.log('[CAPACITY] Previous forecast still running — skipping cycle');
       return;
     }
-    this._running = true;
+    this._running.add(cluster);
 
     try {
       const { forecast, allForecasts } = await this._forecast(cluster);
@@ -293,12 +275,11 @@ class CapacityForecastEngine {
     } catch (err) {
       console.warn(`[CAPACITY] Forecast failed (non-blocking): ${err.message}`);
     } finally {
-      this._running = false;
+      this._running.delete(cluster);
     }
   }
 
-  // ── On-demand: save a snapshot from live metrics and compute a forecast ────
-  // Called from the capacity overview endpoint so data accumulates on every page load.
+  // Save a snapshot from live metrics and forecast
   async liveSnapshotAndForecast(cluster, nodeMetrics, podMetrics) {
     _initModels();
     if (!MetricSnapshot) return null;
@@ -314,7 +295,7 @@ class CapacityForecastEngine {
     } catch { return null; }
   }
 
-  // ── Get the latest cached forecast (for API + RCA injection) ───────────────
+  // Get the latest cached forecast
   async getForecast(cluster) {
     _initModels();
     if (!CapacityForecastCache) return null;
@@ -326,7 +307,7 @@ class CapacityForecastEngine {
     }
   }
 
-  // ── Get raw snapshots for a target (sparkline data) ─────────────────────────
+  // Get raw snapshots for a target
   async getHistory({ cluster, target, hours = 48 }) {
     _initModels();
     if (!MetricSnapshot) return [];
@@ -340,7 +321,7 @@ class CapacityForecastEngine {
     }
   }
 
-  // ── Persist one snapshot document per node + pod in this cycle ──────────────
+  // Save snapshots for nodes and pods
   async _snapshot(cluster, allNodeMetrics, allPodMetrics) {
     if (!MetricSnapshot) return;
 
@@ -383,7 +364,7 @@ class CapacityForecastEngine {
     await MetricSnapshot.insertMany(docs, { ordered: false }).catch(() => {});
   }
 
-  // ── Read snapshots and compute a full CapacityForecast ──────────────────────
+  // Compute a forecast from saved snapshots
   async _forecast(cluster) {
     if (!MetricSnapshot) return { forecast: null, allForecasts: [] };
 
@@ -445,18 +426,14 @@ class CapacityForecastEngine {
     return { forecast, allForecasts };
   }
 
-  // Namespace has an HPA that isn't maxed out yet — a CPU-pressure forecast there is
-  // exactly what that HPA already exists to handle on its own, without a human.
-  // Memory-only pressure isn't covered here: HPA's default metric is CPU, and inferring
-  // whether a given HPA also reacts to memory would need per-HPA metric introspection
-  // this doesn't attempt — safer to still alert than to silently assume coverage.
+  // Check if an HPA can still handle the pressure
   _hpaCoversPressure(cluster, namespace, resource) {
     if (resource !== 'cpu' || !namespace) return false;
     const hpas = this._hpasByCluster.get(cluster) ?? [];
     return hpas.some(h => h.namespace === namespace && (h.currentReplicas ?? 0) < (h.maxReplicas ?? 0));
   }
 
-  // ── Rate-limited notification ──────────────────────────────────────────────────
+  // Send a rate limited notification
   _maybeNotify(fc, notifEngine) {
     if (this._hpaCoversPressure(fc.cluster, fc.namespace, fc.resource)) {
       console.log(`[CAPACITY] Suppressing ${fc.alertLevel} alert for ${fc.target} — an HPA in "${fc.namespace}" still has headroom to scale`);
@@ -483,14 +460,12 @@ class CapacityForecastEngine {
     }).catch(() => {});
   }
 
-  // ── Alert recovery: fire a resolved notification when HIGH/CRITICAL drops to OK/WARNING ──
+  // Send resolved notifications for recovered alerts
   _checkRecoveries(cluster, allForecasts, notifEngine) {
     for (const [key, lastLevel] of this._lastAlertLevel) {
       if (!key.startsWith(`${cluster}:`)) continue;
-      if (LEVEL_ORDER[lastLevel] < 2) continue; // only track HIGH/CRITICAL recoveries
+      if (LEVEL_ORDER[lastLevel] < 2) continue;
 
-      // Parse key: "cluster:target:resource"
-      // target itself may contain ':' (e.g. "node:worker-1") so take last segment as resource
       const withoutCluster = key.slice(cluster.length + 1);
       const lastColon      = withoutCluster.lastIndexOf(':');
       const target   = withoutCluster.slice(0, lastColon);
@@ -511,7 +486,7 @@ class CapacityForecastEngine {
     }
   }
 
-  // ── Get the CRITICAL/HIGH forecast for a specific pod (for RCA injection) ────
+  // Get the high or critical forecast for a pod
   async getPodForecast(cluster, podName) {
     const forecast = await this.getForecast(cluster);
     if (!forecast) return null;

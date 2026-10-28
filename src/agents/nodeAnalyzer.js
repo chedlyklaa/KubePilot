@@ -5,23 +5,13 @@ const { loadConfig } = require('../config');
 
 const _config = loadConfig();
 
-// CPU saturation threshold (fraction, e.g. 0.90 = 90%)
 const CPU_SAT_THRESHOLD  = _config.NODE_CPU_SAT_THRESHOLD;
 const MEM_SAT_THRESHOLD  = _config.NODE_MEM_SAT_THRESHOLD;
-// Flapping: ≥ N Ready→NotReady transitions within the window
 const FLAP_TRANSITIONS   = _config.NODE_FLAP_TRANSITIONS;
 const FLAP_WINDOW_MS     = _config.NODE_FLAP_WINDOW_MS;
 
 class NodeAnalyzer {
-  /**
-   * Analyse raw `kubectl get nodes -o json` output.
-   *
-   * @param {object}  nodesData   - Parsed JSON from kubectl (items array)
-   * @param {object}  nodeHistory - Map of nodeName → { transitions: [{at, ready}] }
-   *                                Mutated in-place to track flapping.
-   * @param {object}  nodeMetrics - Optional map of nodeName → { cpu, memory } from Prometheus
-   * @returns {Array} issues
-   */
+  // Extract issues from node data
   static extractIssues(nodesData, nodeHistory = {}, nodeMetrics = {}) {
     const issues = [];
 
@@ -33,22 +23,18 @@ class NodeAnalyzer {
         labels['node-role.kubernetes.io/control-plane'] !== undefined ||
         labels['node-role.kubernetes.io/master']        !== undefined;
 
-      // ── Ready condition ─────────────────────────────────────────────────
       const readyCond  = conditions.find(c => c.type === 'Ready');
       const isReady    = readyCond?.status === 'True';
       const lastChange = readyCond?.lastTransitionTime;
 
-      // Track state history for flapping detection
       const hist = nodeHistory[name] ?? (nodeHistory[name] = { transitions: [] });
       const last = hist.transitions.at(-1);
       if (!last || last.ready !== isReady) {
         hist.transitions.push({ at: Date.now(), ready: isReady });
-        // Keep only transitions within 2× the window
         const cutoff = Date.now() - FLAP_WINDOW_MS * 2;
         hist.transitions = hist.transitions.filter(t => t.at >= cutoff);
       }
 
-      // NodeNotReady
       if (!isReady && readyCond) {
         issues.push({
           type:          'NodeNotReady',
@@ -60,10 +46,8 @@ class NodeAnalyzer {
         });
       }
 
-      // NodeFlapping — count Ready↔NotReady transitions inside the window
       const windowStart  = Date.now() - FLAP_WINDOW_MS;
       const recentTrans  = hist.transitions.filter(t => t.at >= windowStart);
-      // Count direction-changes (ignore the very first entry)
       const flipCount    = recentTrans.reduce((n, t, i) =>
         i > 0 && t.ready !== recentTrans[i - 1].ready ? n + 1 : n, 0);
       if (flipCount >= FLAP_TRANSITIONS) {
@@ -79,7 +63,6 @@ class NodeAnalyzer {
         });
       }
 
-      // Pressure conditions (MemoryPressure, DiskPressure, PIDPressure, NetworkUnavailable)
       for (const cond of conditions) {
         const issueType = CONDITION_ISSUE[cond.type];
         if (!issueType) continue;
@@ -95,7 +78,6 @@ class NodeAnalyzer {
         });
       }
 
-      // CPU / Memory saturation from Prometheus
       const m = nodeMetrics[name];
       if (m) {
         if (m.cpu?.avgPct != null && m.cpu.avgPct / 100 > CPU_SAT_THRESHOLD) {
@@ -126,7 +108,7 @@ class NodeAnalyzer {
     return issues;
   }
 
-  /** Build a quick nodeName → { isReady, isControlPlane, conditions } lookup. */
+  // Build a node name lookup map
   static buildNodeMap(nodesData) {
     const map = {};
     for (const node of nodesData.items ?? []) {

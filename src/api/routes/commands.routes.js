@@ -14,22 +14,16 @@ const PolicyEngine = require('../../policy/policyEngine');
 const router = express.Router();
 const policyEngine = new PolicyEngine();
 
-// A command with no --context is only safe to run if the caller is unrestricted
-// (full wildcard admin) — otherwise we can't tell which cluster it targets, so the
-// scope check below can't be evaluated and must deny rather than skip.
+// Check if the user has unrestricted access
 function hasUnrestrictedAccess(permissions) {
   return (permissions ?? []).some(p => p.cluster === '*' && p.namespace === '*' && p.role === 'admin');
 }
 
-// parseCommandScope() pulls the raw kubectl context out of "--context=X" (that's what
-// kubectl itself needs), but permission scopes are keyed by the clusters.yaml friendly
-// name everywhere else (filterClusters, rbacSync, certIssuer) — translate before any
-// checkAccess() call or it silently compares two different identifier spaces.
+// Get the cluster name for a kubectl context
 function _clusterNameForContext(context, clusters) {
   return clusters.find(c => c.context === context)?.name ?? context;
 }
 
-// ── Command history (per-user, persisted in MongoDB) ─────────────────────
 router.get('/api/command/history', requireAuth, asyncHandler(async (req, res) => {
   const doc = await CommandHistory.findOne({ userId: req.user.id });
   res.json({ turns: doc?.turns ?? [] });
@@ -40,7 +34,7 @@ router.put('/api/command/history', requireAuth, asyncHandler(async (req, res) =>
   if (!Array.isArray(turns)) return res.status(400).json({ error: 'turns array required' });
   await CommandHistory.findOneAndUpdate(
     { userId: req.user.id },
-    { turns: turns.slice(-50) },   // cap at 50 turns per user
+    { turns: turns.slice(-50) },
     { upsert: true }
   );
   res.json({ ok: true });
@@ -51,25 +45,14 @@ router.delete('/api/command/history', requireAuth, asyncHandler(async (req, res)
   res.json({ ok: true });
 }));
 
-// ── Manual command orders (Orders chat panel) ────────────────────────────────
-//
-// Routing:
-//   pendingRequest == null  →  raw string  →  LLM1 (intent extraction)
-//   pendingRequest != null  →  JSON object →  LLM2 (parameter merging)
-//
-// Both LLMs use the same model; their CRAFT+CoT system prompts differ.
-// Retry (up to 3 attempts) on JSON parse / Zod validation failures.
-// ─────────────────────────────────────────────────────────────────────────
 router.post('/api/command/interpret', requireAuth, loadPerms, asyncHandler(async (req, res) => {
   const { order, pendingRequest = null, conversationHistory = [] } = req.body;
   if (!order?.trim()) return res.status(400).json({ error: 'order is required' });
 
-  // ── Cluster provisioning — intercept before LLM (fresh turns only) ───────
   if (!pendingRequest) {
     const PROVISION_RE = /\b(create|start|provision|spin\s*up|add|new)\s+(cluster|minikube)\s+(?:named?\s+)?([a-z0-9][a-z0-9\-]*)/i;
     const pm = PROVISION_RE.exec(order.trim());
     if (pm) {
-      // Check provision permission before proceeding
       if (req.user.role !== 'admin') {
         const u = await User.findById(req.user.id).select('canProvision').lean();
         if (!u?.canProvision) {
@@ -96,11 +79,9 @@ router.post('/api/command/interpret', requireAuth, loadPerms, asyncHandler(async
     }
   }
 
-  // ── Build cluster context — scoped to user's permissions ────────────────
   const clusters = getClusters();
   const scopedClusters = permissionService.filterClusters(req.permissions, clusters);
 
-  // Early denial: if the user mentions a real cluster/namespace they can't access, tell them directly
   if (req.user.role !== 'admin') {
     const allClusterNames = clusters.map(c => c.name);
     const scopedNames     = new Set(scopedClusters.map(c => c.name));
@@ -113,11 +94,10 @@ router.post('/api/command/interpret', requireAuth, loadPerms, asyncHandler(async
         missingFields: ['permission'], request: null, action: null,
       });
     }
-    // Check namespace: if a specific namespace is mentioned and the user has cluster access but not that namespace
     const nsMatch = order.match(/\b(?:namespace|ns|-n)\s+([a-z0-9][a-z0-9-]*)/i) ?? order.match(/\bin\s+(?:the\s+)?([a-z0-9][a-z0-9-]+)(?:\s+namespace)/i);
     if (nsMatch) {
       const mentionedNs = nsMatch[1];
-      const targetCluster = [...scopedNames][0]; // best guess if only one
+      const targetCluster = [...scopedNames][0];
       if (targetCluster && !permissionService.checkAccess(req.permissions, targetCluster, mentionedNs, 'read-only')) {
         return res.json({
           type: 'clarification',
@@ -134,14 +114,11 @@ router.post('/api/command/interpret', requireAuth, loadPerms, asyncHandler(async
       ).join('\n')
     : '(no clusters configured yet)';
 
-  // User scope block injected into LLM context
   const scopeBlock = permissionService.describeScope(req.permissions);
 
-  // Live pod/node state scoped to the user's permitted clusters
   let clusterState = '(cluster state unavailable)';
   try { clusterState = await chatService.buildClusterContext(scopedClusters); } catch (_e) {}
 
-  // ── Two-LLM chain via interpretGraph ─────────────────────────────────
   let result;
   try {
     result = await runInterpret({ order, pendingRequest, clusterList, clusterState, conversationHistory, clusters: scopedClusters, scopeBlock });
@@ -152,8 +129,6 @@ router.post('/api/command/interpret', requireAuth, loadPerms, asyncHandler(async
   }
 
   if (result.complete) {
-    // Post-LLM hard check: verify the generated command is within scope
-    // Use the LLM's category (authoritative) but extract cluster/ns from the actual command
     const cmdScope = permissionService.parseCommandScope(result.command);
     const cmdClusterName = cmdScope.cluster ? _clusterNameForContext(cmdScope.cluster, clusters) : null;
     const category = result.category || cmdScope.category;
@@ -178,7 +153,6 @@ router.post('/api/command/interpret', requireAuth, loadPerms, asyncHandler(async
     });
   }
 
-  // ── Clarification needed — return question + accumulated request ───────
   return res.json({
     type:          'clarification',
     question:      result.question,
@@ -188,7 +162,6 @@ router.post('/api/command/interpret', requireAuth, loadPerms, asyncHandler(async
   });
 }));
 
-// ── Command error diagnosis ───────────────────────────────────────────────
 router.post('/api/command/diagnose', requireAuth, asyncHandler(async (req, res) => {
   const { order, command, error } = req.body;
   if (!order?.trim() || !error?.trim())
@@ -240,35 +213,29 @@ Return ONLY valid JSON (no markdown, no extra text):
   res.json(result);
 }));
 
-router.post('/api/command/execute',  async (req, res) => {
+router.post('/api/command/execute', requireAuth, loadPerms, async (req, res) => {
   const { command } = req.body;
   if (!command?.trim()) return res.status(400).json({ error: 'command is required' });
 
-  // Sanitizer gate — same check the autonomous agent path applies before every
-  // direct runCommand() call (PolicyEngine.sanitizeCommand): blocks shell metachars,
-  // --force deletes, missing namespaces, and invalid resource names.
-  // const { safe, command: sanitized, reason } = policyEngine.sanitizeCommand(command);
-  // if (!safe) {
-  //   return res.status(400).json({ success: false, error: `Command blocked by policy: ${reason}` });
-  // }
+  const { safe, command: sanitized, reason } = policyEngine.sanitizeCommand(command);
+  if (!safe) {
+    return res.status(400).json({ success: false, error: `Command blocked by policy: ${reason}` });
+  }
 
-  // Permission gate — parse the command and check against user's scope. A command
-  // with no --context can't be scope-checked, so it must be denied rather than
-  // silently skipped, unless the caller has unrestricted (wildcard admin) access.
-  // const cmdScope = permissionService.parseCommandScope(sanitized);
-  // const cmdClusterName = cmdScope.cluster ? _clusterNameForContext(cmdScope.cluster, getClusters()) : null;
-  // if (!cmdClusterName) {
-  //   if (!hasUnrestrictedAccess(req.permissions)) {
-  //     return res.status(403).json({ success: false, error: 'Permission denied: command must target a specific cluster (missing --context=<cluster>)' });
-  //   }
-  // } else if (!permissionService.checkAccess(req.permissions, cmdClusterName, cmdScope.namespace, cmdScope.category)) {
-  //   return res.status(403).json({ success: false, error: `Permission denied: you cannot run ${cmdScope.category} commands on cluster "${cmdClusterName}"${cmdScope.namespace ? ` namespace "${cmdScope.namespace}"` : ''}` });
-  // }
+  const cmdScope = permissionService.parseCommandScope(sanitized);
+  const cmdClusterName = cmdScope.cluster ? _clusterNameForContext(cmdScope.cluster, getClusters()) : null;
+  if (!cmdClusterName) {
+    if (!hasUnrestrictedAccess(req.permissions)) {
+      return res.status(403).json({ success: false, error: 'Permission denied: command must target a specific cluster (missing --context=<cluster>)' });
+    }
+  } else if (!permissionService.checkAccess(req.permissions, cmdClusterName, cmdScope.namespace, cmdScope.category)) {
+    return res.status(403).json({ success: false, error: `Permission denied: you cannot run ${cmdScope.category} commands on cluster "${cmdClusterName}"${cmdScope.namespace ? ` namespace "${cmdScope.namespace}"` : ''}` });
+  }
 
-  // const impersonateAs = req.user.role === 'admin' ? null : req.user.email;
-  // console.log(`[CMD] ${req.user.name}${impersonateAs ? ` (--as=${impersonateAs})` : ''} → ${sanitized}`);
+  const impersonateAs = req.user.role === 'admin' ? null : req.user.email;
+  console.log(`[CMD] ${req.user.name}${impersonateAs ? ` (--as=${impersonateAs})` : ''} → ${sanitized}`);
   try {
-    const output = await kubectl.runCommand(command);
+    const output = await kubectl.runCommand(sanitized, { impersonateAs });
     res.json({ success: true, output: output || '(command completed with no output)' });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

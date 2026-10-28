@@ -7,7 +7,6 @@ const { authLimiter } = require('../middleware/rateLimit');
 
 const router = express.Router();
 
-// Request OTP for password change via email
 router.post('/api/profile/request-otp', authLimiter, requireAuth, asyncHandler(async (req, res) => {
   res.json(await profileService.requestOtp(req.user));
 }));
